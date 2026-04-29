@@ -2620,7 +2620,7 @@ async function* queryModel(
       errorFromRetry.originalError instanceof APIError &&
       errorFromRetry.originalError.status === 404
 
-    if (is404StreamCreationError) {
+    if (is404StreamCreationError && !chatGPTCodexRequiresStreaming()) {
       // 404 is thrown at .withResponse() before streamRequestId is assigned,
       // and CannotRetryError means every retry failed — so grab the failed
       // request's ID from the error header instead.
