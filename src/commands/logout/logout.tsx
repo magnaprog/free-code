@@ -6,12 +6,18 @@ import { getGroveNoticeConfig, getGroveSettings } from '../../services/api/grove
 import { clearPolicyLimitsCache } from '../../services/policyLimits/index.js';
 // flushTelemetry is loaded lazily to avoid pulling in ~1.1MB of OpenTelemetry at startup
 import { clearRemoteManagedSettingsCache } from '../../services/remoteManagedSettings/index.js';
-import { getClaudeAIOAuthTokens, removeApiKey } from '../../utils/auth.js';
+import {
+  clearCodexOAuthTokens,
+  getClaudeAIOAuthTokens,
+  getCodexOAuthTokens,
+  removeApiKey,
+} from '../../utils/auth.js';
 import { clearBetasCaches } from '../../utils/betas.js';
 import { saveGlobalConfig } from '../../utils/config.js';
 import { gracefulShutdownSync } from '../../utils/gracefulShutdown.js';
 import { getSecureStorage } from '../../utils/secureStorage/index.js';
 import { clearToolSchemaCache } from '../../utils/toolSchemaCache.js';
+import { getAPIProvider } from '../../utils/model/providers.js';
 import { resetUserCache } from '../../utils/user.js';
 export async function performLogout({
   clearOnboarding = false
@@ -47,6 +53,11 @@ export async function performLogout({
   });
 }
 
+export async function performCodexLogout(): Promise<void> {
+  clearCodexOAuthTokens();
+  await clearAuthRelatedCaches();
+}
+
 // clearing anything memoized that must be invalidated when user/session/auth changes
 export async function clearAuthRelatedCaches(): Promise<void> {
   // Clear the OAuth token cache
@@ -70,10 +81,22 @@ export async function clearAuthRelatedCaches(): Promise<void> {
   await clearPolicyLimitsCache();
 }
 export async function call(): Promise<React.ReactNode> {
-  await performLogout({
-    clearOnboarding: true
-  });
-  const message = <Text>Successfully logged out from your Anthropic account.</Text>;
+  let message: React.ReactNode;
+  if (getAPIProvider() === 'openai') {
+    if (getCodexOAuthTokens()) {
+      await performCodexLogout();
+      message = <Text>Successfully logged out from your Codex account.</Text>;
+    } else if (process.env.OPENAI_API_KEY) {
+      message = <Text>OpenAI authentication is coming from OPENAI_API_KEY. Unset that environment variable to log out.</Text>;
+    } else {
+      message = <Text>No Codex account is currently logged in.</Text>;
+    }
+  } else {
+    await performLogout({
+      clearOnboarding: true
+    });
+    message = <Text>Successfully logged out from your Anthropic account.</Text>;
+  }
   setTimeout(() => {
     gracefulShutdownSync(0, 'logout');
   }, 200);

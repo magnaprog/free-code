@@ -25,6 +25,7 @@ import {
 } from '../../constants/codex-oauth.js'
 import { openBrowser } from '../../utils/browser.js'
 import { logError } from '../../utils/log.js'
+import { redactSecrets } from '../../utils/redaction.js'
 import { generateCodeChallenge, generateCodeVerifier, generateState } from './crypto.js'
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -135,7 +136,7 @@ async function postToTokenUrl(body: URLSearchParams): Promise<TokenResult> {
       const text = await response.text().catch(() => '')
       logError(
         new Error(
-          `[codex-oauth] token endpoint responded ${response.status}: ${text}`,
+          `[codex-oauth] token endpoint responded ${response.status}: ${redactSecrets(text)}`,
         ),
       )
       return { type: 'failed' }

@@ -26,6 +26,7 @@ import {
   DEFAULT_CODEX_MODEL,
   isKnownOpenAIResponsesModel,
 } from '../../utils/model/providerCapabilities.js'
+import { redactSecrets } from '../../utils/redaction.js'
 
 // ── Available Codex models ──────────────────────────────────────────
 export const CODEX_MODELS = CHATGPT_CODEX_MODELS.map(m => ({
@@ -1330,7 +1331,7 @@ export function createOpenAIResponsesFetch(
           type: 'error',
           error: {
             type: 'api_error',
-            message: `OpenAI API error (${openAIResponse.status}): ${errorText}`,
+            message: `OpenAI API error (${openAIResponse.status}): ${redactSecrets(errorText)}`,
           },
         }),
         {

@@ -1322,7 +1322,10 @@ export function clearOAuthTokenCache(): void {
  * Saves the OpenAI Codex OAuth tokens to GlobalConfig.
  * Does NOT overwrite or interfere with Anthropic's claudeAiOauth block.
  */
+let codexOAuthGeneration = 0
+
 export function saveCodexOAuthTokens(tokens: CodexTokens): void {
+  codexOAuthGeneration++
   saveGlobalConfig((cfg) => ({
     ...cfg,
     codexOAuth: {
@@ -1361,6 +1364,8 @@ export function getCodexOAuthTokens(): CodexTokens | null {
  * Removes Codex OAuth tokens from GlobalConfig (e.g., on logout).
  */
 export function clearCodexOAuthTokens(): void {
+  codexOAuthGeneration++
+  pendingCodexRefreshCheck = null
   saveGlobalConfig((cfg) => {
     const { codexOAuth: _removed, ...rest } = cfg
     return rest as typeof cfg
@@ -1393,6 +1398,7 @@ async function getFreshCodexOAuthTokensImpl(
   force: boolean,
 ): Promise<CodexTokens | null> {
   const tokens = getCodexOAuthTokens()
+  const generation = codexOAuthGeneration
   if (!tokens?.refreshToken) {
     return tokens
   }
@@ -1413,6 +1419,9 @@ async function getFreshCodexOAuthTokensImpl(
       return tokens
     }
     await sleep(1000 + Math.random() * 1000)
+    if (generation !== codexOAuthGeneration) {
+      return getCodexOAuthTokens()
+    }
     const racedTokens = getCodexOAuthTokens()
     if (
       racedTokens &&
@@ -1426,6 +1435,9 @@ async function getFreshCodexOAuthTokensImpl(
 
   try {
     const lockedTokens = getCodexOAuthTokens()
+    if (generation !== codexOAuthGeneration) {
+      return lockedTokens
+    }
     if (!lockedTokens?.refreshToken) {
       return lockedTokens
     }
@@ -1434,6 +1446,9 @@ async function getFreshCodexOAuthTokensImpl(
     }
 
     const refreshedTokens = await refreshCodexToken(lockedTokens.refreshToken)
+    if (generation !== codexOAuthGeneration) {
+      return getCodexOAuthTokens()
+    }
     saveCodexOAuthTokens(refreshedTokens)
     return refreshedTokens
   } catch (error) {
