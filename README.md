@@ -103,9 +103,9 @@ ChatGPT Codex OAuth session or an official OpenAI API key.
 | GPT-5.3 Codex | `gpt-5.3-codex` |
 | GPT-5.3 Codex Spark (Codex OAuth) | `gpt-5.3-codex-spark` |
 | GPT-5.2 | `gpt-5.2` |
-| GPT-5.2 Codex (legacy) | `gpt-5.2-codex` |
-| GPT-5.1 Codex (legacy) | `gpt-5.1-codex` |
-| GPT-5 Codex (legacy) | `gpt-5-codex` |
+| GPT-5.2 Codex (official API key, deprecated) | `gpt-5.2-codex` |
+| GPT-5.1 Codex (official API key, deprecated) | `gpt-5.1-codex` |
+| GPT-5 Codex (official API key, deprecated) | `gpt-5-codex` |
 
 ```bash
 # Official OpenAI API

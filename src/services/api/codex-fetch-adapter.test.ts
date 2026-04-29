@@ -20,6 +20,8 @@ describe('codex fetch adapter translation', () => {
     expect(isCodexModel('gpt-5.3-codex-spark')).toBe(true)
     expect(isCodexModel('gpt-5.2')).toBe(true)
     expect(isCodexModel('gpt-5.4-nano')).toBe(false)
+    expect(isCodexModel('gpt-5.2-codex')).toBe(false)
+    expect(isCodexModel('gpt-5.1-codex')).toBe(false)
   })
 
   test('preserves explicit OpenAI Responses model IDs', () => {
@@ -48,6 +50,18 @@ describe('codex fetch adapter translation', () => {
 
     expect(codexModel).toBe('gpt-5.5')
     expect(codexBody.model).toBe('gpt-5.5')
+  })
+
+  test('maps Claude aliases only to ChatGPT Codex-supported models', () => {
+    expect(codexFetchAdapterTestHooks.mapClaudeModelToCodex('opus')).toBe(
+      'gpt-5.5',
+    )
+    expect(codexFetchAdapterTestHooks.mapClaudeModelToCodex('haiku')).toBe(
+      'gpt-5.4-mini',
+    )
+    expect(codexFetchAdapterTestHooks.mapClaudeModelToCodex('sonnet')).toBe(
+      'gpt-5.5',
+    )
   })
 
   test('maps Anthropic request controls to Responses fields', () => {
@@ -170,7 +184,7 @@ describe('codex fetch adapter translation', () => {
     const translated =
       await codexFetchAdapterTestHooks.translateCodexResponseToAnthropic(
         openAIResponse,
-        'gpt-5.2-codex',
+        'gpt-5.5',
       )
     const body = await translated.json()
 
@@ -187,7 +201,7 @@ describe('codex fetch adapter translation', () => {
           input: { file_path: 'a.ts' },
         },
       ],
-      model: 'gpt-5.2-codex',
+      model: 'gpt-5.5',
       stop_reason: 'tool_use',
       stop_sequence: null,
       usage: { input_tokens: 10, output_tokens: 20 },
@@ -329,7 +343,7 @@ describe('codex fetch adapter translation', () => {
             },
           },
         ]),
-        'gpt-5.2-codex',
+        'gpt-5.5',
       )
 
     const text = await translated.text()
@@ -392,7 +406,7 @@ describe('codex fetch adapter translation', () => {
             },
           },
         ]),
-        'gpt-5.2-codex',
+        'gpt-5.5',
       )
 
     const text = await translated.text()
@@ -410,7 +424,7 @@ describe('codex fetch adapter translation', () => {
             error: { message: 'stream transport failed' },
           },
         ]),
-        'gpt-5.2-codex',
+        'gpt-5.5',
       )
 
     const text = await translated.text()

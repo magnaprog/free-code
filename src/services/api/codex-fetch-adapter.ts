@@ -63,8 +63,8 @@ export function mapClaudeModelToCodex(
   }
   if (isCodexModel(claudeModel)) return claudeModel
   const lower = claudeModel.toLowerCase()
-  if (lower.includes('opus')) return 'gpt-5.1-codex-max'
-  if (lower.includes('haiku')) return 'gpt-5.1-codex-mini'
+  if (lower.includes('opus')) return DEFAULT_CODEX_MODEL
+  if (lower.includes('haiku')) return 'gpt-5.4-mini'
   if (lower.includes('sonnet')) return DEFAULT_CODEX_MODEL
   return DEFAULT_CODEX_MODEL
 }
@@ -1215,6 +1215,7 @@ export function createOpenAIResponsesFetch(
 }
 
 export const codexFetchAdapterTestHooks = {
+  mapClaudeModelToCodex,
   translateCodexStreamToAnthropic,
   translateToCodexBody,
   translateCodexResponseToAnthropic,

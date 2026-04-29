@@ -95,6 +95,12 @@ describe('provider capability adapter routing', () => {
       expect(CHATGPT_CODEX_MODELS.map(m => m.id)).not.toContain(
         'gpt-5.4-nano',
       )
+      expect(CHATGPT_CODEX_MODELS.map(m => m.id)).not.toContain(
+        'gpt-5.2-codex',
+      )
+      expect(CHATGPT_CODEX_MODELS.map(m => m.id)).not.toContain(
+        'gpt-5.1-codex',
+      )
       expect(getContextWindowForModel('gpt-5.5')).toBe(272_000)
       expect(getContextWindowForModel('gpt-5.4')).toBe(272_000)
       expect(getContextWindowForModel('gpt-5.4-mini')).toBe(272_000)
