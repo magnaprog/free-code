@@ -9,6 +9,7 @@ import type { QuerySource } from '../constants/querySource.js'
 import {
   getAttributionHeader,
   getCLISyspromptPrefix,
+  isAttributionHeaderEnabled,
 } from '../constants/system.js'
 import { logEvent } from '../services/analytics/index.js'
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../services/analytics/metadata.js'
@@ -30,11 +31,10 @@ export type SideQueryOptions = {
   /** Model to use for the query */
   model: string
   /**
-   * System prompt - string or array of text blocks (will be prefixed with CLI attribution).
+   * System prompt - string or array of text blocks.
    *
-   * The attribution header is always placed in its own TextBlockParam block to ensure
-   * server-side parsing correctly extracts the cc_entrypoint value without including
-   * system prompt content.
+   * When explicit upstream attribution compatibility is enabled, the attribution
+   * header is placed in its own TextBlockParam block.
    */
   system?: string | TextBlockParam[]
   /** Messages to send (supports cache_control on content blocks) */
@@ -81,12 +81,11 @@ function extractFirstUserMessageText(messages: MessageParam[]): string {
 /**
  * Lightweight API wrapper for "side queries" outside the main conversation loop.
  *
- * Use this instead of direct client.beta.messages.create() calls to ensure
- * proper OAuth token validation with fingerprint attribution headers.
+ * Use this instead of direct client.beta.messages.create() calls to keep
+ * lightweight query setup consistent with the main API path.
  *
  * This handles:
- * - Fingerprint computation for OAuth validation
- * - Attribution header injection
+ * - Optional upstream attribution compatibility when explicitly enabled
  * - CLI system prompt prefix
  * - Proper betas for the model
  * - API metadata
@@ -136,12 +135,13 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
     betas.push(STRUCTURED_OUTPUTS_BETA_HEADER)
   }
 
-  // Extract first user message text for fingerprint
-  const messageText = extractFirstUserMessageText(messages)
-
-  // Compute fingerprint for OAuth attribution
-  const fingerprint = computeFingerprint(messageText, MACRO.VERSION)
-  const attributionHeader = getAttributionHeader(fingerprint)
+  // free-code disables upstream attribution by default; only compute the
+  // prompt-derived fingerprint when explicit compatibility mode is enabled.
+  const attributionHeader = isAttributionHeaderEnabled()
+    ? getAttributionHeader(
+        computeFingerprint(extractFirstUserMessageText(messages), MACRO.VERSION),
+      )
+    : ''
 
   // Build system as array to keep attribution header in its own block
   // (prevents server-side parsing from including system content in cc_entrypoint)

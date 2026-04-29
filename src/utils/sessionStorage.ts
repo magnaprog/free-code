@@ -4352,12 +4352,19 @@ export function isLoggableMessage(m: Message): boolean {
   if (m.type === 'progress') return false
   // IMPORTANT: We deliberately filter out most attachments for non-ants because
   // they have sensitive info for training that we don't want exposed to the public.
-  // When enabled, we allow hook_additional_context through since it contains
-  // user-configured hook output that is useful for session context on resume.
+  // The exceptions below are either explicitly opted-in user hook output, or
+  // cache-reconstruction deltas for deferred tool announcements and MCP
+  // instructions that were already sent to the model.
   if (m.type === 'attachment' && getUserType() !== 'ant') {
     if (
       m.attachment.type === 'hook_additional_context' &&
       isEnvTruthy(process.env.CLAUDE_CODE_SAVE_HOOK_ADDITIONAL_CONTEXT)
+    ) {
+      return true
+    }
+    if (
+      m.attachment.type === 'deferred_tools_delta' ||
+      m.attachment.type === 'mcp_instructions_delta'
     ) {
       return true
     }

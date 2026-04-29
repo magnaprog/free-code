@@ -1,5 +1,6 @@
 import Anthropic, { type ClientOptions } from '@anthropic-ai/sdk'
 import { randomUUID } from 'crypto'
+import { isAttributionHeaderEnabled } from 'src/constants/system.js'
 import {
   computeCch,
   hasCchPlaceholder,
@@ -116,16 +117,22 @@ export async function getAnthropicClient({
   const clientApp = process.env.CLAUDE_AGENT_SDK_CLIENT_APP
   const customHeaders = getCustomHeaders()
   const defaultHeaders: { [key: string]: string } = {
-    'x-app': 'cli',
-    'User-Agent': getUserAgent(),
-    'X-Claude-Code-Session-Id': getSessionId(),
-    ...customHeaders,
-    ...(containerId ? { 'x-claude-remote-container-id': containerId } : {}),
-    ...(remoteSessionId
-      ? { 'x-claude-remote-session-id': remoteSessionId }
+    ...(isAttributionHeaderEnabled()
+      ? {
+          'x-app': 'cli',
+          'User-Agent': getUserAgent(),
+          'X-Claude-Code-Session-Id': getSessionId(),
+          ...(containerId
+            ? { 'x-claude-remote-container-id': containerId }
+            : {}),
+          ...(remoteSessionId
+            ? { 'x-claude-remote-session-id': remoteSessionId }
+            : {}),
+          // SDK consumers can identify their app/library for backend analytics
+          ...(clientApp ? { 'x-client-app': clientApp } : {}),
+        }
       : {}),
-    // SDK consumers can identify their app/library for backend analytics
-    ...(clientApp ? { 'x-client-app': clientApp } : {}),
+    ...customHeaders,
   }
 
   // Log API client configuration for HFI debugging
@@ -416,10 +423,12 @@ function buildFetch(
 ): ClientOptions['fetch'] {
   // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
   const inner = fetchOverride ?? globalThis.fetch
-  // Only send to the first-party API — Bedrock/Vertex/Foundry don't log it
-  // and unknown headers risk rejection by strict proxies (inc-4029 class).
+  // Only send in explicit upstream attribution mode. Bedrock/Vertex/Foundry
+  // don't log it and unknown headers risk rejection by strict proxies.
   const injectClientRequestId =
-    getAPIProvider() === 'firstParty' && isFirstPartyAnthropicBaseUrl()
+    isAttributionHeaderEnabled() &&
+    getAPIProvider() === 'firstParty' &&
+    isFirstPartyAnthropicBaseUrl()
   return async (input, init) => {
     // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
     const headers = new Headers(init?.headers)
@@ -437,6 +446,7 @@ function buildFetch(
       )
 
       if (
+        isAttributionHeaderEnabled() &&
         url.includes('/v1/messages') &&
         headers.has('anthropic-version') &&
         typeof body === 'string' &&

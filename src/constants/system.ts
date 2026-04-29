@@ -1,8 +1,6 @@
 // Critical system constants extracted to break circular dependencies
 
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { logForDebugging } from '../utils/debug.js'
-import { isEnvDefinedFalsy } from '../utils/envUtils.js'
 import { getAPIProvider } from '../utils/model/providers.js'
 import { getWorkload } from '../utils/workloadContext.js'
 
@@ -45,25 +43,23 @@ export function getCLISyspromptPrefix(options?: {
 }
 
 /**
- * Check if attribution header is enabled.
- * Enabled by default, can be disabled via env var or GrowthBook killswitch.
+ * Check if upstream Claude Code attribution is enabled.
+ *
+ * free-code disables Anthropic attribution, prompt-derived fingerprints, and
+ * CCH attestation by default to preserve the no-telemetry/no-fingerprinting
+ * project contract. Set this only for explicit upstream compatibility testing.
  */
-function isAttributionHeaderEnabled(): boolean {
-  if (isEnvDefinedFalsy(process.env.CLAUDE_CODE_ATTRIBUTION_HEADER)) {
-    return false
-  }
-  return getFeatureValue_CACHED_MAY_BE_STALE('tengu_attribution_header', true)
+export function isAttributionHeaderEnabled(): boolean {
+  return process.env.FREE_CODE_ENABLE_ANTHROPIC_ATTRIBUTION === 'true'
 }
 
 /**
  * Get attribution header for API requests.
  * Returns a header string with cc_version (including fingerprint) and cc_entrypoint.
- * Enabled by default, can be disabled via env var or GrowthBook killswitch.
+ * Disabled by default in free-code; opt in with FREE_CODE_ENABLE_ANTHROPIC_ATTRIBUTION=true.
  *
  * Includes a `cch=00000` placeholder that is replaced with a computed
- * xxHash64-based integrity hash before the request is sent. The fetch
- * wrapper in client.ts handles the replacement. The server verifies
- * this token to gate features like fast mode.
+ * xxHash64-based integrity hash before the request is sent when attribution is enabled.
  */
 export function getAttributionHeader(fingerprint: string): string {
   if (!isAttributionHeaderEnabled()) {
