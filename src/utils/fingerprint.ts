@@ -16,7 +16,9 @@ export const FINGERPRINT_SALT = '59cf53e54c78'
 export function extractFirstMessageText(
   messages: (UserMessage | AssistantMessage)[],
 ): string {
-  const firstUserMessage = messages.find(msg => msg.type === 'user')
+  const firstUserMessage = messages.find(
+    msg => msg.type === 'user' && !msg.isMeta,
+  )
   if (!firstUserMessage) {
     return ''
   }

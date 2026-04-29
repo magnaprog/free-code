@@ -2,6 +2,7 @@ import xxhash from 'xxhash-wasm'
 
 const CCH_SEED = 0x6E52736AC806831En
 const CCH_PLACEHOLDER = 'cch=00000'
+const BILLING_HEADER_KEY = 'x-anthropic-billing-header'
 const CCH_MASK = 0xFFFFFn
 
 let hasherPromise: ReturnType<typeof xxhash> | null = null
@@ -19,10 +20,18 @@ export async function computeCch(body: string): Promise<string> {
   return (hash & CCH_MASK).toString(16).padStart(5, '0')
 }
 
+function findBillingHeaderPlaceholder(body: string): number {
+  const headerStart = body.indexOf(BILLING_HEADER_KEY)
+  if (headerStart === -1) return -1
+  return body.indexOf(CCH_PLACEHOLDER, headerStart)
+}
+
 export function replaceCchPlaceholder(body: string, cch: string): string {
-  return body.replace(CCH_PLACEHOLDER, `cch=${cch}`)
+  const placeholderIndex = findBillingHeaderPlaceholder(body)
+  if (placeholderIndex === -1) return body
+  return `${body.slice(0, placeholderIndex)}cch=${cch}${body.slice(placeholderIndex + CCH_PLACEHOLDER.length)}`
 }
 
 export function hasCchPlaceholder(body: string): boolean {
-  return body.includes(CCH_PLACEHOLDER)
+  return findBillingHeaderPlaceholder(body) !== -1
 }
