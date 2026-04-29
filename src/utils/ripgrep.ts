@@ -36,7 +36,7 @@ function ripgrepCommandForRoot(root: string): string {
 }
 
 function isSpawnableRipgrepPath(command: string): boolean {
-  if (command.startsWith('/$bunfs/')) {
+  if (command.includes('$bunfs')) {
     return false
   }
   try {
