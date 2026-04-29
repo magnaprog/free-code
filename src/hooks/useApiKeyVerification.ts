@@ -8,6 +8,7 @@ import {
   isClaudeAISubscriber,
   isCodexSubscriber,
 } from '../utils/auth.js'
+import { getAPIProvider } from '../utils/model/providers.js'
 
 export type VerificationStatus =
   | 'loading'
@@ -22,9 +23,18 @@ export type ApiKeyVerificationResult = {
   error: Error | null
 }
 
+function hasOpenAIProviderAuth(): boolean {
+  return getAPIProvider() === 'openai' && !!process.env.OPENAI_API_KEY
+}
+
 export function useApiKeyVerification(): ApiKeyVerificationResult {
   const [status, setStatus] = useState<VerificationStatus>(() => {
-    if (!isAnthropicAuthEnabled() || isClaudeAISubscriber() || isCodexSubscriber()) {
+    if (
+      !isAnthropicAuthEnabled() ||
+      isClaudeAISubscriber() ||
+      isCodexSubscriber() ||
+      hasOpenAIProviderAuth()
+    ) {
       return 'valid'
     }
     // Use skipRetrievingKeyFromApiKeyHelper to avoid executing apiKeyHelper
@@ -42,7 +52,12 @@ export function useApiKeyVerification(): ApiKeyVerificationResult {
   const [error, setError] = useState<Error | null>(null)
 
   const verify = useCallback(async (): Promise<void> => {
-    if (!isAnthropicAuthEnabled() || isClaudeAISubscriber() || isCodexSubscriber()) {
+    if (
+      !isAnthropicAuthEnabled() ||
+      isClaudeAISubscriber() ||
+      isCodexSubscriber() ||
+      hasOpenAIProviderAuth()
+    ) {
       setStatus('valid')
       return
     }

@@ -9,6 +9,7 @@ import { findFirstMatch, getBedrockInferenceProfiles } from './bedrock.js'
 import {
   ALL_MODEL_CONFIGS,
   CANONICAL_ID_TO_KEY,
+  type AnthropicModelProvider,
   type CanonicalModelId,
   type ModelKey,
 } from './configs.js'
@@ -23,9 +24,13 @@ export type ModelStrings = Record<ModelKey, string>
 const MODEL_KEYS = Object.keys(ALL_MODEL_CONFIGS) as ModelKey[]
 
 function getBuiltinModelStrings(provider: APIProvider): ModelStrings {
+  // OpenAI/Codex models are not Anthropic model strings. Keep Claude aliases
+  // available for UI/back-compat, and let the OpenAI adapter translate aliases.
+  const configProvider: AnthropicModelProvider =
+    provider === 'openai' ? 'firstParty' : provider
   const out = {} as ModelStrings
   for (const key of MODEL_KEYS) {
-    out[key] = ALL_MODEL_CONFIGS[key][provider]
+    out[key] = ALL_MODEL_CONFIGS[key][configProvider]
   }
   return out
 }

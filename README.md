@@ -89,24 +89,38 @@ Use Anthropic's first-party API directly.
 | Claude Sonnet 4.6 | `claude-sonnet-4-6` |
 | Claude Haiku 4.5 | `claude-haiku-4-5` |
 
-### OpenAI Codex
+### OpenAI / Codex
 
-Use OpenAI's Codex models for code generation. Requires a Codex subscription.
+The OpenAI path uses the Responses API. You can authenticate with either a
+ChatGPT Codex OAuth session or an official OpenAI API key.
 
 | Model | ID |
 |---|---|
-| GPT-5.3 Codex (recommended) | `gpt-5.3-codex` |
+| GPT-5.5 (official API default) | `gpt-5.5` |
 | GPT-5.4 | `gpt-5.4` |
 | GPT-5.4 Mini | `gpt-5.4-mini` |
+| GPT-5.4 Nano | `gpt-5.4-nano` |
+| GPT-5.3 Codex (Codex OAuth default) | `gpt-5.3-codex` |
+| GPT-5.2 Codex (legacy) | `gpt-5.2-codex` |
+| GPT-5.1 Codex (legacy) | `gpt-5.1-codex` |
+| GPT-5 Codex (legacy) | `gpt-5-codex` |
 
 ```bash
+# Official OpenAI API
+export CLAUDE_CODE_USE_OPENAI=1
+export OPENAI_API_KEY="..."
+free-code
+
+# ChatGPT Codex OAuth
 export CLAUDE_CODE_USE_OPENAI=1
 free-code
 ```
 
 ### AWS Bedrock
 
-Route requests through your AWS account via Amazon Bedrock.
+Route requests through your AWS account via Amazon Bedrock. Claude models use
+Anthropic's Bedrock SDK. Non-Claude Bedrock model IDs, such as Amazon Nova,
+Meta Llama, Mistral, and Cohere models, use the Bedrock Converse API adapter.
 
 ```bash
 export CLAUDE_CODE_USE_BEDROCK=1
@@ -114,7 +128,7 @@ export AWS_REGION="us-east-1"   # or AWS_DEFAULT_REGION
 free-code
 ```
 
-Uses your standard AWS credentials (environment variables, `~/.aws/config`, or IAM role). Models are mapped to Bedrock ARN format automatically (e.g., `us.anthropic.claude-opus-4-6-v1`).
+Uses your standard AWS credentials (environment variables, `~/.aws/config`, or IAM role). Claude models are mapped to Bedrock ARN format automatically (e.g., `us.anthropic.claude-opus-4-6-v1`). Non-Claude Bedrock models should be provided as Bedrock model IDs or inference profile IDs.
 
 | Variable | Purpose |
 |---|---|
@@ -126,7 +140,9 @@ Uses your standard AWS credentials (environment variables, `~/.aws/config`, or I
 
 ### Google Cloud Vertex AI
 
-Route requests through your GCP project via Vertex AI.
+Route Claude requests through your GCP project via Vertex AI. This path uses
+Anthropic's Vertex SDK and is Claude-only. Gemini models require a separate
+Vertex Gemini adapter and are not wired through this path.
 
 ```bash
 export CLAUDE_CODE_USE_VERTEX=1
@@ -137,7 +153,7 @@ Uses Google Cloud Application Default Credentials (`gcloud auth application-defa
 
 ### Anthropic Foundry
 
-Use Anthropic Foundry for dedicated deployments.
+Use Anthropic Claude deployments on Microsoft Foundry.
 
 ```bash
 export CLAUDE_CODE_USE_FOUNDRY=1
@@ -145,17 +161,19 @@ export ANTHROPIC_FOUNDRY_API_KEY="..."
 free-code
 ```
 
-Supports custom deployment IDs as model names.
+Supports custom Claude deployment IDs as model names. Azure AI Foundry models
+from OpenAI, Meta, Mistral, DeepSeek, Phi, and other families require a separate
+Azure AI Inference/OpenAI-compatible adapter and are not wired through this path.
 
 ### Provider Selection Summary
 
 | Provider | Env Variable | Auth Method |
 |---|---|---|
 | Anthropic (default) | -- | `ANTHROPIC_API_KEY` or OAuth |
-| OpenAI Codex | `CLAUDE_CODE_USE_OPENAI=1` | OAuth via OpenAI |
+| OpenAI Responses / Codex | `CLAUDE_CODE_USE_OPENAI=1` | `OPENAI_API_KEY` or OAuth via OpenAI |
 | AWS Bedrock | `CLAUDE_CODE_USE_BEDROCK=1` | AWS credentials |
-| Google Vertex AI | `CLAUDE_CODE_USE_VERTEX=1` | `gcloud` ADC |
-| Anthropic Foundry | `CLAUDE_CODE_USE_FOUNDRY=1` | `ANTHROPIC_FOUNDRY_API_KEY` |
+| Google Vertex AI Claude | `CLAUDE_CODE_USE_VERTEX=1` | `gcloud` ADC |
+| Microsoft Foundry Claude | `CLAUDE_CODE_USE_FOUNDRY=1` | `ANTHROPIC_FOUNDRY_API_KEY` |
 
 ---
 

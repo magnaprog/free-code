@@ -33,6 +33,10 @@ import {
 } from './model.js'
 import { has1mContext } from '../context.js'
 import { getGlobalConfig } from '../config.js'
+import {
+  CHATGPT_CODEX_MODELS,
+  OPENAI_RESPONSES_MODELS,
+} from './providerCapabilities.js'
 
 // @[MODEL LAUNCH]: Update all the available and default model option strings below.
 
@@ -209,40 +213,29 @@ function getHaikuOption(): ModelOption {
     : getHaiku35Option()
 }
 
-// OpenAI Codex model options
-function getGpt55Option(): ModelOption {
-  return {
-    value: 'gpt-5.5',
-    label: 'GPT-5.5',
-    description: 'GPT-5.5 · Flagship reasoning and code generation',
-    descriptionForModel: 'GPT-5.5 - flagship reasoning and code generation capabilities',
+function formatOpenAIModelLabel(modelId: string): string {
+  const parts = modelId.split('-')
+  if (parts[0] !== 'gpt' || !parts[1]) {
+    return modelId
   }
+
+  const suffix = parts
+    .slice(2)
+    .map(part => part[0]?.toUpperCase() + part.slice(1))
+    .join(' ')
+  return `GPT-${parts[1]}${suffix ? ` ${suffix}` : ''}`
 }
 
-function getGpt54Option(): ModelOption {
+function getOpenAIModelOption(
+  modelId: string,
+  backendLabel = 'OpenAI Responses API model',
+): ModelOption {
+  const label = formatOpenAIModelLabel(modelId)
   return {
-    value: 'gpt-5.4',
-    label: 'GPT-5.4',
-    description: 'GPT-5.4 · Advanced reasoning and code generation',
-    descriptionForModel: 'GPT-5.4 - advanced reasoning and code generation capabilities',
-  }
-}
-
-function getGpt53CodexOption(): ModelOption {
-  return {
-    value: 'gpt-5.3-codex',
-    label: 'GPT-5.3 Codex',
-    description: 'GPT-5.3 Codex · Optimized for code generation and understanding',
-    descriptionForModel: 'GPT-5.3 Codex - specialized for code generation and understanding',
-  }
-}
-
-function getGpt54MiniOption(): ModelOption {
-  return {
-    value: 'gpt-5.4-mini',
-    label: 'GPT-5.4 Mini',
-    description: 'GPT-5.4 Mini · Fast and efficient for simple tasks',
-    descriptionForModel: 'GPT-5.4 Mini - fast and efficient for simple coding tasks',
+    value: modelId,
+    label,
+    description: `${label} · ${backendLabel}`,
+    descriptionForModel: `${label} - ${backendLabel}`,
   }
 }
 
@@ -325,14 +318,22 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
     ]
   }
 
-  // Codex subscribers get OpenAI model options
+  // Official OpenAI API users can use all verified Responses API model options.
+  if (getAPIProvider() === 'openai' && process.env.OPENAI_API_KEY) {
+    return [
+      getDefaultOptionForUser(),
+      ...OPENAI_RESPONSES_MODELS.map(m => getOpenAIModelOption(m.id)),
+    ]
+  }
+
+  // ChatGPT Codex OAuth uses the private Codex backend; keep this picker to
+  // Codex-family IDs that are known to belong on that path.
   if (isCodexSubscriber()) {
     return [
       getDefaultOptionForUser(),
-      getGpt55Option(),
-      getGpt54Option(),
-      getGpt53CodexOption(),
-      getGpt54MiniOption(),
+      ...CHATGPT_CODEX_MODELS.map(m =>
+        getOpenAIModelOption(m.id, 'ChatGPT Codex model'),
+      ),
     ]
   }
 

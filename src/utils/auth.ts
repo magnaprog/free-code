@@ -24,6 +24,7 @@ import {
   refreshOAuthToken,
   shouldUseClaudeAIAuth,
 } from '../services/oauth/client.js'
+import { refreshCodexToken } from '../services/oauth/codex-client.js'
 import type { CodexTokens } from '../services/oauth/codex-client.js'
 import { getOauthProfileFromOauthToken } from '../services/oauth/getOauthProfile.js'
 import type { OAuthTokens, SubscriptionType } from '../services/oauth/types.js'
@@ -1364,6 +1365,83 @@ export function clearCodexOAuthTokens(): void {
     const { codexOAuth: _removed, ...rest } = cfg
     return rest as typeof cfg
   })
+}
+
+let pendingCodexRefreshCheck: Promise<CodexTokens | null> | null = null
+
+export function getFreshCodexOAuthTokens(
+  force = false,
+): Promise<CodexTokens | null> {
+  if (!force && pendingCodexRefreshCheck) {
+    return pendingCodexRefreshCheck
+  }
+
+  const promise = getFreshCodexOAuthTokensImpl(force).finally(() => {
+    if (!force) {
+      pendingCodexRefreshCheck = null
+    }
+  })
+
+  if (!force) {
+    pendingCodexRefreshCheck = promise
+  }
+
+  return promise
+}
+
+async function getFreshCodexOAuthTokensImpl(
+  force: boolean,
+): Promise<CodexTokens | null> {
+  const tokens = getCodexOAuthTokens()
+  if (!tokens?.refreshToken) {
+    return tokens
+  }
+
+  if (!force && !isOAuthTokenExpired(tokens.expiresAt)) {
+    return tokens
+  }
+
+  const claudeDir = getClaudeConfigHomeDir()
+  await mkdir(claudeDir, { recursive: true })
+
+  let release
+  try {
+    release = await lockfile.lock(claudeDir)
+  } catch (error) {
+    if ((error as { code?: string }).code !== 'ELOCKED') {
+      logError(error)
+      return tokens
+    }
+    await sleep(1000 + Math.random() * 1000)
+    const racedTokens = getCodexOAuthTokens()
+    if (
+      racedTokens &&
+      (force || !isOAuthTokenExpired(racedTokens.expiresAt)) &&
+      racedTokens.accessToken !== tokens.accessToken
+    ) {
+      return racedTokens
+    }
+    return racedTokens ?? tokens
+  }
+
+  try {
+    const lockedTokens = getCodexOAuthTokens()
+    if (!lockedTokens?.refreshToken) {
+      return lockedTokens
+    }
+    if (!force && !isOAuthTokenExpired(lockedTokens.expiresAt)) {
+      return lockedTokens
+    }
+
+    const refreshedTokens = await refreshCodexToken(lockedTokens.refreshToken)
+    saveCodexOAuthTokens(refreshedTokens)
+    return refreshedTokens
+  } catch (error) {
+    logError(error)
+    return getCodexOAuthTokens()
+  } finally {
+    await release()
+  }
 }
 
 

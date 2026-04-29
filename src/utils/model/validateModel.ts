@@ -3,6 +3,7 @@ import { MODEL_ALIASES } from './aliases.js'
 import { isModelAllowed } from './modelAllowlist.js'
 import { getAPIProvider } from './providers.js'
 import { sideQuery } from '../sideQuery.js'
+import { getRequiredNonClaudeAdapterForModel } from './providerCapabilities.js'
 import {
   NotFoundError,
   APIError,
@@ -54,11 +55,25 @@ export async function validateModel(
     return { valid: true }
   }
 
+  const requiredAdapter = getRequiredNonClaudeAdapterForModel(
+    getAPIProvider(),
+    normalizedModel,
+  )
+  const wiredAdapters = new Set([
+    ...(process.env.OPENAI_API_KEY ? ['openai-responses'] : []),
+    'bedrock-converse',
+  ])
+  if (requiredAdapter && !wiredAdapters.has(requiredAdapter)) {
+    return {
+      valid: false,
+      error: `Model '${normalizedModel}' requires the ${requiredAdapter} adapter, which is not wired yet. Current Vertex and Foundry integrations are Claude-only.`,
+    }
+  }
+
   // Check cache first
   if (validModelCache.has(normalizedModel)) {
     return { valid: true }
   }
-
 
   // Try to make an actual API call with minimal parameters
   try {

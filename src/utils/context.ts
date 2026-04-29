@@ -4,6 +4,7 @@ import { getGlobalConfig } from './config.js'
 import { isEnvTruthy } from './envUtils.js'
 import { getCanonicalName } from './model/model.js'
 import { getModelCapability } from './model/modelCapabilities.js'
+import { getKnownNonClaudeModelCapability } from './model/providerCapabilities.js'
 
 // Model context window size (200k tokens for all models right now)
 export const MODEL_CONTEXT_WINDOW_DEFAULT = 200_000
@@ -69,6 +70,11 @@ export function getContextWindowForModel(
   // [1m] suffix — explicit client-side opt-in, respected over all detection
   if (has1mContext(model)) {
     return 1_000_000
+  }
+
+  const nonClaudeCap = getKnownNonClaudeModelCapability(model)
+  if (nonClaudeCap?.contextWindow) {
+    return nonClaudeCap.contextWindow
   }
 
   const cap = getModelCapability(model)
@@ -163,6 +169,14 @@ export function getModelMaxOutputTokens(model: string): {
   }
 
   const m = getCanonicalName(model)
+  const nonClaudeCap = getKnownNonClaudeModelCapability(model)
+
+  if (nonClaudeCap?.maxOutputTokens) {
+    return {
+      default: Math.min(nonClaudeCap.maxOutputTokens, MAX_OUTPUT_TOKENS_DEFAULT),
+      upperLimit: nonClaudeCap.maxOutputTokens,
+    }
+  }
 
   if (m.includes('opus-4-6')) {
     defaultTokens = 64_000

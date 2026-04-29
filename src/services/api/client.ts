@@ -11,7 +11,7 @@ import {
   getAnthropicApiKey,
   getApiKeyFromApiKeyHelper,
   getClaudeAIOAuthTokens,
-  getCodexOAuthTokens,
+  getFreshCodexOAuthTokens,
   isClaudeAISubscriber,
   isCodexSubscriber,
   refreshAndGetAwsCredentials,
@@ -35,7 +35,12 @@ import {
   getVertexRegionForModel,
   isEnvTruthy,
 } from '../../utils/envUtils.js'
-import { createCodexFetch } from './codex-fetch-adapter.js'
+import {
+  createCodexFetch,
+  createOpenAIResponsesFetch,
+} from './codex-fetch-adapter.js'
+import { createBedrockConverseFetch } from './bedrock-converse-fetch-adapter.js'
+import { getRequiredNonClaudeAdapterForModel } from '../../utils/model/providerCapabilities.js'
 
 /**
  * Environment variables for different client types:
@@ -159,6 +164,21 @@ export async function getAnthropicClient({
     }),
   }
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK)) {
+    if (
+      model &&
+      getRequiredNonClaudeAdapterForModel('bedrock', model) ===
+        'bedrock-converse'
+    ) {
+      const bedrockConverseFetch = createBedrockConverseFetch()
+      const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
+        apiKey: 'bedrock-converse-placeholder',
+        ...ARGS,
+        fetch: bedrockConverseFetch as unknown as typeof globalThis.fetch,
+        ...(isDebugToStdErr() && { logger: createStderrLogger() }),
+      }
+      return new Anthropic(clientConfig)
+    }
+
     const { AnthropicBedrock } = await import('@anthropic-ai/bedrock-sdk')
     // Use region override for small fast model if specified
     const awsRegion =
@@ -305,9 +325,21 @@ export async function getAnthropicClient({
     return new AnthropicVertex(vertexArgs) as unknown as Anthropic
   }
 
+  // Prefer explicit OpenAI API keys over ChatGPT Codex OAuth when both exist.
+  if (getAPIProvider() === 'openai' && process.env.OPENAI_API_KEY) {
+    const openAIFetch = createOpenAIResponsesFetch(process.env.OPENAI_API_KEY)
+    const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
+      apiKey: 'openai-placeholder',
+      ...ARGS,
+      fetch: openAIFetch as unknown as typeof globalThis.fetch,
+      ...(isDebugToStdErr() && { logger: createStderrLogger() }),
+    }
+    return new Anthropic(clientConfig)
+  }
+
   // ── Codex (OpenAI) provider via fetch adapter ─────────────────────
   if (isCodexSubscriber()) {
-    const codexTokens = getCodexOAuthTokens()
+    const codexTokens = await getFreshCodexOAuthTokens()
     if (codexTokens?.accessToken) {
       const codexFetch = createCodexFetch(codexTokens.accessToken)
       const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {

@@ -1,9 +1,9 @@
 /**
- * Codex Fetch Adapter
+ * OpenAI Responses / Codex Fetch Adapter
  *
  * Intercepts fetch calls from the Anthropic SDK and routes them to
- * ChatGPT's Codex backend API, translating between Anthropic Messages API
- * format and OpenAI Responses API format.
+ * either the official OpenAI Responses API or ChatGPT's Codex backend,
+ * translating between Anthropic Messages API and Responses API shapes.
  *
  * Supports:
  * - Text messages (user/assistant)
@@ -12,38 +12,59 @@
  * - Tool use (tool_use → function_call, tool_result → function_call_output)
  * - Streaming events translation
  *
- * Endpoint: https://chatgpt.com/backend-api/codex/responses
+ * Endpoints:
+ * - https://api.openai.com/v1/responses
+ * - https://chatgpt.com/backend-api/codex/responses
  */
 
-import { getCodexOAuthTokens } from '../../utils/auth.js'
+import {
+  getCodexOAuthTokens,
+  getFreshCodexOAuthTokens,
+} from '../../utils/auth.js'
+import {
+  CHATGPT_CODEX_MODELS,
+  DEFAULT_CODEX_MODEL,
+  isKnownOpenAIResponsesModel,
+} from '../../utils/model/providerCapabilities.js'
 
 // ── Available Codex models ──────────────────────────────────────────
-export const CODEX_MODELS = [
-  { id: 'gpt-5.5', label: 'GPT-5.5', description: 'Flagship reasoning and coding model' },
-  { id: 'gpt-5.4', label: 'GPT-5.4', description: 'Advanced reasoning and coding model' },
-  { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', description: 'Fast GPT-5.4 model' },
-  { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', description: 'Most capable agentic coding model' },
-  { id: 'gpt-5.2-codex', label: 'GPT-5.2 Codex', description: 'Frontier agentic coding model' },
-  { id: 'gpt-5.1-codex', label: 'GPT-5.1 Codex', description: 'Codex coding model' },
-  { id: 'gpt-5.1-codex-mini', label: 'GPT-5.1 Codex Mini', description: 'Fast Codex model' },
-  { id: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max', description: 'Max Codex model' },
-  { id: 'gpt-5.2', label: 'GPT-5.2', description: 'GPT-5.2' },
-] as const
+export const CODEX_MODELS = CHATGPT_CODEX_MODELS.map(m => ({
+  id: m.id,
+  label: m.id,
+  description: `${m.provider} model`,
+})) as Array<{ id: string; label: string; description: string }>
 
-export const DEFAULT_CODEX_MODEL = 'gpt-5.5'
+const OPENAI_REASONING_CACHE_LIMIT = 200
+const reasoningItemsByToolCallId = new Map<string, Record<string, unknown>[]>()
 
 /**
- * Maps Claude model names to corresponding Codex model names.
+ * Preserves known OpenAI Responses IDs and maps legacy Claude defaults to
+ * equivalent Codex-family fallbacks.
  * @param claudeModel - The Claude model name to map
  * @returns The corresponding Codex model ID
  */
-export function mapClaudeModelToCodex(claudeModel: string | null): string {
+type TranslationOptions = {
+  preserveOpenAIResponsesModelIds?: boolean
+}
+
+export function mapClaudeModelToCodex(
+  claudeModel: string | null,
+  options: TranslationOptions = {},
+): string {
   if (!claudeModel) return DEFAULT_CODEX_MODEL
+  const preserveOpenAIResponsesModelIds =
+    options.preserveOpenAIResponsesModelIds ?? true
+  if (
+    preserveOpenAIResponsesModelIds &&
+    isKnownOpenAIResponsesModel(claudeModel)
+  ) {
+    return claudeModel
+  }
   if (isCodexModel(claudeModel)) return claudeModel
   const lower = claudeModel.toLowerCase()
   if (lower.includes('opus')) return 'gpt-5.1-codex-max'
   if (lower.includes('haiku')) return 'gpt-5.1-codex-mini'
-  if (lower.includes('sonnet')) return 'gpt-5.2-codex'
+  if (lower.includes('sonnet')) return DEFAULT_CODEX_MODEL
   return DEFAULT_CODEX_MODEL
 }
 
@@ -54,6 +75,44 @@ export function mapClaudeModelToCodex(claudeModel: string | null): string {
  */
 export function isCodexModel(model: string): boolean {
   return CODEX_MODELS.some(m => m.id === model)
+}
+
+function cloneRecord(record: Record<string, unknown>): Record<string, unknown> {
+  try {
+    return JSON.parse(JSON.stringify(record)) as Record<string, unknown>
+  } catch {
+    return { ...record }
+  }
+}
+
+function createFallbackToolUseIdFactory(): () => string {
+  let counter = 0
+  return () => {
+    counter += 1
+    return `toolu_fallback_${counter}`
+  }
+}
+
+function rememberReasoningItemsForToolCall(
+  callId: unknown,
+  reasoningItems: Record<string, unknown>[],
+): void {
+  if (typeof callId !== 'string' || reasoningItems.length === 0) {
+    return
+  }
+
+  reasoningItemsByToolCallId.set(callId, reasoningItems.map(cloneRecord))
+  while (reasoningItemsByToolCallId.size > OPENAI_REASONING_CACHE_LIMIT) {
+    const oldestKey = reasoningItemsByToolCallId.keys().next().value
+    if (!oldestKey) break
+    reasoningItemsByToolCallId.delete(oldestKey)
+  }
+}
+
+function getCachedReasoningItemsForToolCall(
+  callId: string,
+): Record<string, unknown>[] {
+  return (reasoningItemsByToolCallId.get(callId) || []).map(cloneRecord)
 }
 
 type OpenAIReasoningEffort =
@@ -146,7 +205,7 @@ function translateTools(anthropicTools: AnthropicTool[]): Array<Record<string, u
     name: tool.name,
     description: tool.description || '',
     parameters: tool.input_schema || { type: 'object', properties: {} },
-    strict: null,
+    strict: false,
   }))
 }
 
@@ -219,6 +278,7 @@ function translateMessages(
       }
     } else {
       // Process assistant or tool blocks
+      const injectedReasoningIds = new Set<string>()
       for (const block of msg.content) {
         if (block.type === 'text' && typeof block.text === 'string') {
           if (msg.role === 'assistant') {
@@ -231,6 +291,16 @@ function translateMessages(
           }
         } else if (block.type === 'tool_use') {
           const callId = block.id || `call_${toolCallCounter++}`
+          for (const reasoningItem of getCachedReasoningItemsForToolCall(callId)) {
+            const key =
+              typeof reasoningItem.id === 'string'
+                ? reasoningItem.id
+                : JSON.stringify(reasoningItem)
+            if (!injectedReasoningIds.has(key)) {
+              codexInput.push(reasoningItem)
+              injectedReasoningIds.add(key)
+            }
+          }
           codexInput.push({
             type: 'function_call',
             call_id: callId,
@@ -245,6 +315,57 @@ function translateMessages(
   return codexInput
 }
 
+function translateToolChoice(toolChoice: unknown): unknown {
+  if (!toolChoice || typeof toolChoice !== 'object') {
+    return 'auto'
+  }
+
+  const choice = toolChoice as { type?: string; name?: string }
+  switch (choice.type) {
+    case 'auto':
+      return 'auto'
+    case 'none':
+      return 'none'
+    case 'any':
+      return 'required'
+    case 'tool':
+      return choice.name
+        ? { type: 'function', name: choice.name }
+        : 'required'
+    default:
+      return 'auto'
+  }
+}
+
+function translateOutputFormat(outputConfig: unknown): unknown {
+  if (!outputConfig || typeof outputConfig !== 'object') {
+    return undefined
+  }
+
+  const format = (outputConfig as { format?: unknown }).format
+  if (!format || typeof format !== 'object') {
+    return undefined
+  }
+
+  const typedFormat = format as {
+    type?: string
+    name?: string
+    schema?: Record<string, unknown>
+  }
+  if (typedFormat.type !== 'json_schema' || !typedFormat.schema) {
+    return undefined
+  }
+
+  return {
+    format: {
+      type: 'json_schema',
+      name: typedFormat.name || 'structured_output',
+      schema: typedFormat.schema,
+      strict: true,
+    },
+  }
+}
+
 // ── Full request translation ────────────────────────────────────────
 
 /**
@@ -252,7 +373,10 @@ function translateMessages(
  * @param anthropicBody - The Anthropic request body to translate
  * @returns Object containing the translated Codex body and model
  */
-function translateToCodexBody(anthropicBody: Record<string, unknown>): {
+function translateToCodexBody(
+  anthropicBody: Record<string, unknown>,
+  options: TranslationOptions = {},
+): {
   codexBody: Record<string, unknown>
   codexModel: string
 } {
@@ -266,8 +390,9 @@ function translateToCodexBody(anthropicBody: Record<string, unknown>): {
   const outputConfig = anthropicBody.output_config as
     | Record<string, unknown>
     | undefined
+  const shouldStream = anthropicBody.stream === true
 
-  const codexModel = mapClaudeModelToCodex(claudeModel)
+  const codexModel = mapClaudeModelToCodex(claudeModel, options)
   const reasoningEffort = mapFreeCodeEffortToOpenAIReasoningEffort(
     outputConfig?.effort,
   )
@@ -292,20 +417,46 @@ function translateToCodexBody(anthropicBody: Record<string, unknown>): {
   const codexBody: Record<string, unknown> = {
     model: codexModel,
     store: false,
-    stream: true,
+    stream: shouldStream,
     instructions,
     input,
-    tool_choice: 'auto',
-    parallel_tool_calls: true,
+  }
+
+  if (anthropicBody.parallel_tool_calls !== undefined) {
+    codexBody.parallel_tool_calls = anthropicBody.parallel_tool_calls
+  } else if (anthropicTools.length > 0) {
+    codexBody.parallel_tool_calls = true
+  }
+
+  if (typeof anthropicBody.max_tokens === 'number') {
+    codexBody.max_output_tokens = anthropicBody.max_tokens
+  }
+
+  if (typeof anthropicBody.temperature === 'number') {
+    codexBody.temperature = anthropicBody.temperature
+  }
+
+  if (Array.isArray(anthropicBody.stop_sequences)) {
+    codexBody.stop = anthropicBody.stop_sequences
+  }
+
+  const text = translateOutputFormat(outputConfig)
+  if (text !== undefined) {
+    codexBody.text = text
   }
 
   if (reasoningEffort !== undefined) {
     codexBody.reasoning = { effort: reasoningEffort }
   }
 
+  if (reasoningEffort !== undefined || anthropicTools.length > 0) {
+    codexBody.include = ['reasoning.encrypted_content']
+  }
+
   // Add tools if present
   if (anthropicTools.length > 0) {
     codexBody.tools = translateTools(anthropicTools)
+    codexBody.tool_choice = translateToolChoice(anthropicBody.tool_choice)
   }
 
   return { codexBody, codexModel }
@@ -321,6 +472,26 @@ function translateToCodexBody(anthropicBody: Record<string, unknown>): {
  */
 function formatSSE(event: string, data: string): string {
   return `event: ${event}\ndata: ${data}\n\n`
+}
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message) {
+    return error.message
+  }
+  if (typeof error === 'string' && error) {
+    return error
+  }
+  return fallback
+}
+
+function getOpenAIResponseErrorMessage(event: Record<string, unknown>): string {
+  const response = event.response as Record<string, unknown> | undefined
+  const error =
+    (response?.error as Record<string, unknown> | undefined) ??
+    (event.error as Record<string, unknown> | undefined)
+  return typeof error?.message === 'string'
+    ? error.message
+    : 'OpenAI Responses stream failed'
 }
 
 /**
@@ -379,13 +550,22 @@ async function translateCodexStreamToAnthropic(
       let currentToolCallArgs = ''
       let inToolCall = false
       let hadToolCalls = false
-      let inReasoningBlock = false
+      let streamStopReason: 'end_turn' | 'max_tokens' = 'end_turn'
+      const pendingReasoningItems: Record<string, unknown>[] = []
+      const createFallbackToolUseId = createFallbackToolUseIdFactory()
 
       try {
         const reader = codexResponse.body?.getReader()
         if (!reader) {
           emitTextBlock(controller, encoder, contentBlockIndex, 'Error: No response body')
-          finishStream(controller, encoder, outputTokens, inputTokens, false)
+          finishStream(
+            controller,
+            encoder,
+            outputTokens,
+            inputTokens,
+            false,
+            streamStopReason,
+          )
           return
         }
 
@@ -420,23 +600,16 @@ async function translateCodexStreamToAnthropic(
 
             const eventType = event.type as string
 
+            if (eventType === 'response.failed' || eventType === 'error') {
+              throw new Error(getOpenAIResponseErrorMessage(event))
+            }
+
             // ── Text output events ──────────────────────────────
             if (eventType === 'response.output_item.added') {
               const item = event.item as Record<string, unknown>
               if (item?.type === 'reasoning') {
-                inReasoningBlock = true
-                controller.enqueue(
-                  encoder.encode(
-                    formatSSE(
-                      'content_block_start',
-                      JSON.stringify({
-                        type: 'content_block_start',
-                        index: contentBlockIndex,
-                        content_block: { type: 'thinking', thinking: '' },
-                      }),
-                    ),
-                  ),
-                )
+                // OpenAI exposes reasoning summaries, not Anthropic signed
+                // thinking blocks. Do not synthesize Anthropic thinking.
               } else if (item?.type === 'message') {
                 // New text message block starting
                 if (inToolCall) {
@@ -461,7 +634,8 @@ async function translateCodexStreamToAnthropic(
                 }
 
                 // Start tool_use block (Anthropic format)
-                currentToolCallId = (item.call_id as string) || `toolu_${Date.now()}`
+                currentToolCallId =
+                  (item.call_id as string) || createFallbackToolUseId()
                 currentToolCallName = (item.name as string) || ''
                 currentToolCallArgs = (item.arguments as string) || ''
                 inToolCall = true
@@ -485,7 +659,10 @@ async function translateCodexStreamToAnthropic(
             }
 
             // Text deltas
-            else if (eventType === 'response.output_text.delta') {
+            else if (
+              eventType === 'response.output_text.delta' ||
+              eventType === 'response.refusal.delta'
+            ) {
               const text = event.delta as string
               if (typeof text === 'string' && text.length > 0) {
                 if (!currentTextBlockStarted) {
@@ -515,32 +692,12 @@ async function translateCodexStreamToAnthropic(
             }
             
             // Reasoning deltas
-            else if (eventType === 'response.reasoning.delta') {
-              const text = event.delta as string
-              if (typeof text === 'string' && text.length > 0) {
-                if (!inReasoningBlock) {
-                  inReasoningBlock = true
-                  controller.enqueue(
-                    encoder.encode(
-                      formatSSE('content_block_start', JSON.stringify({
-                        type: 'content_block_start',
-                        index: contentBlockIndex,
-                        content_block: { type: 'thinking', thinking: '' },
-                      })),
-                    ),
-                  )
-                }
-                controller.enqueue(
-                  encoder.encode(
-                    formatSSE('content_block_delta', JSON.stringify({
-                      type: 'content_block_delta',
-                      index: contentBlockIndex,
-                      delta: { type: 'thinking_delta', thinking: text },
-                    })),
-                  ),
-                )
-                outputTokens += 1 // approximate token counts
-              }
+            else if (
+              eventType === 'response.reasoning.delta' ||
+              eventType === 'response.reasoning_summary_text.delta'
+            ) {
+              // Intentionally ignored. Anthropic thinking blocks require a
+              // signature_delta; OpenAI reasoning summaries do not provide one.
             }
 
             // ── Tool call argument deltas ───────────────────────
@@ -574,6 +731,7 @@ async function translateCodexStreamToAnthropic(
             else if (eventType === 'response.output_item.done') {
               const item = event.item as Record<string, unknown>
               if (item?.type === 'function_call') {
+                rememberReasoningItemsForToolCall(item.call_id, pendingReasoningItems)
                 closeToolCallBlock(controller, encoder, contentBlockIndex, currentToolCallId, currentToolCallName, currentToolCallArgs)
                 contentBlockIndex++
                 inToolCall = false
@@ -592,18 +750,7 @@ async function translateCodexStreamToAnthropic(
                   currentTextBlockStarted = false
                 }
               } else if (item?.type === 'reasoning') {
-                if (inReasoningBlock) {
-                  controller.enqueue(
-                    encoder.encode(
-                      formatSSE('content_block_stop', JSON.stringify({
-                        type: 'content_block_stop',
-                        index: contentBlockIndex,
-                      })),
-                    ),
-                  )
-                  contentBlockIndex++
-                  inReasoningBlock = false
-                }
+                pendingReasoningItems.push(cloneRecord(item))
               }
             }
 
@@ -616,31 +763,40 @@ async function translateCodexStreamToAnthropic(
                 inputTokens = usage.input_tokens || inputTokens
               }
             }
+
+            else if (eventType === 'response.incomplete') {
+              const response = event.response as Record<string, unknown>
+              const usage = response?.usage as Record<string, number> | undefined
+              if (usage) {
+                outputTokens = usage.output_tokens || outputTokens
+                inputTokens = usage.input_tokens || inputTokens
+              }
+              const incompleteDetails = response?.incomplete_details as
+                | { reason?: string }
+                | undefined
+              if (
+                incompleteDetails?.reason === 'max_output_tokens' ||
+                incompleteDetails?.reason === 'max_tokens'
+              ) {
+                streamStopReason = 'max_tokens'
+              }
+            }
           }
         }
       } catch (err) {
-        // If we're in the middle of a text block, emit the error there
-        if (!currentTextBlockStarted) {
-          controller.enqueue(
-            encoder.encode(
-              formatSSE('content_block_start', JSON.stringify({
-                type: 'content_block_start',
-                index: contentBlockIndex,
-                content_block: { type: 'text', text: '' },
-              })),
-            ),
-          )
-          currentTextBlockStarted = true
-        }
         controller.enqueue(
           encoder.encode(
-            formatSSE('content_block_delta', JSON.stringify({
-              type: 'content_block_delta',
-              index: contentBlockIndex,
-              delta: { type: 'text_delta', text: `\n\n[Error: ${String(err)}]` },
+            formatSSE('error', JSON.stringify({
+              type: 'error',
+              error: {
+                type: 'api_error',
+                message: getErrorMessage(err, 'OpenAI Responses stream error'),
+              },
             })),
           ),
         )
+        controller.close()
+        return
       }
 
       // Close any remaining open blocks
@@ -654,21 +810,18 @@ async function translateCodexStreamToAnthropic(
           ),
         )
       }
-      if (inReasoningBlock) {
-        controller.enqueue(
-          encoder.encode(
-            formatSSE('content_block_stop', JSON.stringify({
-              type: 'content_block_stop',
-              index: contentBlockIndex,
-            })),
-          ),
-        )
-      }
       if (inToolCall) {
         closeToolCallBlock(controller, encoder, contentBlockIndex, currentToolCallId, currentToolCallName, currentToolCallArgs)
       }
 
-      finishStream(controller, encoder, outputTokens, inputTokens, hadToolCalls)
+      finishStream(
+        controller,
+        encoder,
+        outputTokens,
+        inputTokens,
+        hadToolCalls,
+        streamStopReason,
+      )
     },
   })
 
@@ -730,9 +883,10 @@ async function translateCodexStreamToAnthropic(
     outputTokens: number,
     inputTokens: number,
     hadToolCalls: boolean,
+    streamStopReason: 'end_turn' | 'max_tokens',
   ) {
     // Use 'tool_use' stop reason when model made tool calls
-    const stopReason = hadToolCalls ? 'tool_use' : 'end_turn'
+    const stopReason = hadToolCalls ? 'tool_use' : streamStopReason
 
     controller.enqueue(
       encoder.encode(
@@ -777,9 +931,121 @@ async function translateCodexStreamToAnthropic(
   })
 }
 
+async function translateCodexResponseToAnthropic(
+  codexResponse: Response,
+  codexModel: string,
+): Promise<Response> {
+  const response = (await codexResponse.json()) as Record<string, unknown>
+  const content: Array<Record<string, unknown>> = []
+  const outputItems = Array.isArray(response.output) ? response.output : []
+  let sawToolUse = false
+  const pendingReasoningItems: Record<string, unknown>[] = []
+  const createFallbackToolUseId = createFallbackToolUseIdFactory()
+
+  for (const item of outputItems) {
+    if (!item || typeof item !== 'object') {
+      continue
+    }
+    const output = item as Record<string, unknown>
+    if (output.type === 'reasoning') {
+      pendingReasoningItems.push(cloneRecord(output))
+    } else if (output.type === 'message') {
+      const parts = Array.isArray(output.content) ? output.content : []
+      for (const part of parts) {
+        if (!part || typeof part !== 'object') {
+          continue
+        }
+        const contentPart = part as Record<string, unknown>
+        if (
+          contentPart.type === 'output_text' &&
+          typeof contentPart.text === 'string'
+        ) {
+          content.push({ type: 'text', text: contentPart.text })
+        } else if (
+          contentPart.type === 'refusal' &&
+          typeof contentPart.refusal === 'string'
+        ) {
+          content.push({ type: 'text', text: contentPart.refusal })
+        }
+      }
+    } else if (output.type === 'function_call') {
+      sawToolUse = true
+      rememberReasoningItemsForToolCall(output.call_id, pendingReasoningItems)
+      content.push({
+        type: 'tool_use',
+        id:
+          typeof output.call_id === 'string'
+            ? output.call_id
+            : typeof output.id === 'string'
+              ? output.id
+              : createFallbackToolUseId(),
+        name: typeof output.name === 'string' ? output.name : '',
+        input: parseToolInput(output.arguments),
+      })
+    }
+  }
+
+  const usage = response.usage as Record<string, number> | undefined
+  const anthropicMessage = {
+    id:
+      typeof response.id === 'string'
+        ? response.id
+        : `msg_codex_${Date.now()}`,
+    type: 'message',
+    role: 'assistant',
+    content,
+    model: codexModel,
+    stop_reason: getAnthropicStopReason(response, sawToolUse),
+    stop_sequence: null,
+    usage: {
+      input_tokens: usage?.input_tokens ?? 0,
+      output_tokens: usage?.output_tokens ?? 0,
+    },
+  }
+
+  return new Response(JSON.stringify(anthropicMessage), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/json',
+      'x-request-id': anthropicMessage.id,
+    },
+  })
+}
+
+function parseToolInput(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'string') {
+    return {}
+  }
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object'
+      ? (parsed as Record<string, unknown>)
+      : {}
+  } catch {
+    return {}
+  }
+}
+
+function getAnthropicStopReason(
+  response: Record<string, unknown>,
+  sawToolUse: boolean,
+): 'end_turn' | 'max_tokens' | 'tool_use' {
+  if (sawToolUse) {
+    return 'tool_use'
+  }
+  const incomplete = response.incomplete_details as
+    | { reason?: string }
+    | undefined
+  if (response.status === 'incomplete' && incomplete?.reason === 'max_output_tokens') {
+    return 'max_tokens'
+  }
+  return 'end_turn'
+}
+
 // ── Main fetch interceptor ──────────────────────────────────────────
 
 const CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex/responses'
+const OPENAI_RESPONSES_BASE_URL = 'https://api.openai.com/v1/responses'
 
 /**
  * Creates a fetch function that intercepts Anthropic API calls and routes them to Codex.
@@ -789,8 +1055,6 @@ const CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex/responses'
 export function createCodexFetch(
   accessToken: string,
 ): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
-  const accountId = extractAccountId(accessToken)
-
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = input instanceof Request ? input.url : String(input)
 
@@ -813,26 +1077,35 @@ export function createCodexFetch(
       anthropicBody = {}
     }
 
-    // Get current token (may have been refreshed)
-    const tokens = getCodexOAuthTokens()
-    const currentToken = tokens?.accessToken || accessToken
-
     // Translate to Codex format
-    const { codexBody, codexModel } = translateToCodexBody(anthropicBody)
+    const { codexBody, codexModel } = translateToCodexBody(anthropicBody, {
+      preserveOpenAIResponsesModelIds: false,
+    })
+
+    const callCodex = async (forceRefresh: boolean): Promise<Response> => {
+      const freshTokens = await getFreshCodexOAuthTokens(forceRefresh)
+      const tokens = freshTokens || getCodexOAuthTokens()
+      const currentToken = tokens?.accessToken || accessToken
+      const accountId = tokens?.accountId || extractAccountId(currentToken)
+      return globalThis.fetch(CODEX_BASE_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: codexBody.stream ? 'text/event-stream' : 'application/json',
+          Authorization: `Bearer ${currentToken}`,
+          'chatgpt-account-id': accountId,
+          originator: 'pi',
+          'OpenAI-Beta': 'responses=experimental',
+        },
+        body: JSON.stringify(codexBody),
+      })
+    }
 
     // Call Codex API
-    const codexResponse = await globalThis.fetch(CODEX_BASE_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'text/event-stream',
-        Authorization: `Bearer ${currentToken}`,
-        'chatgpt-account-id': accountId,
-        originator: 'pi',
-        'OpenAI-Beta': 'responses=experimental',
-      },
-      body: JSON.stringify(codexBody),
-    })
+    let codexResponse = await callCodex(false)
+    if (codexResponse.status === 401) {
+      codexResponse = await callCodex(true)
+    }
 
     if (!codexResponse.ok) {
       const errorText = await codexResponse.text()
@@ -849,7 +1122,87 @@ export function createCodexFetch(
       })
     }
 
-    // Translate streaming response
-    return translateCodexStreamToAnthropic(codexResponse, codexModel)
+    if (codexBody.stream === true) {
+      return translateCodexStreamToAnthropic(codexResponse, codexModel)
+    }
+
+    return translateCodexResponseToAnthropic(codexResponse, codexModel)
   }
+}
+
+export function createOpenAIResponsesFetch(
+  apiKey: string,
+  baseUrl = process.env.OPENAI_BASE_URL || OPENAI_RESPONSES_BASE_URL,
+): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
+  const responsesUrl = baseUrl.endsWith('/responses')
+    ? baseUrl
+    : `${baseUrl.replace(/\/$/, '')}/responses`
+
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = input instanceof Request ? input.url : String(input)
+    if (!url.includes('/v1/messages')) {
+      return globalThis.fetch(input, init)
+    }
+
+    let anthropicBody: Record<string, unknown>
+    try {
+      const bodyText =
+        init?.body instanceof ReadableStream
+          ? await new Response(init.body).text()
+          : typeof init?.body === 'string'
+            ? init.body
+            : '{}'
+      anthropicBody = JSON.parse(bodyText)
+    } catch {
+      anthropicBody = {}
+    }
+
+    const { codexBody, codexModel } = translateToCodexBody(anthropicBody, {
+      preserveOpenAIResponsesModelIds: true,
+    })
+    const openAIResponse = await globalThis.fetch(responsesUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: codexBody.stream ? 'text/event-stream' : 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+        ...(process.env.OPENAI_ORG_ID && {
+          'OpenAI-Organization': process.env.OPENAI_ORG_ID,
+        }),
+        ...(process.env.OPENAI_PROJECT_ID && {
+          'OpenAI-Project': process.env.OPENAI_PROJECT_ID,
+        }),
+      },
+      body: JSON.stringify(codexBody),
+    })
+
+    if (!openAIResponse.ok) {
+      const errorText = await openAIResponse.text()
+      return new Response(
+        JSON.stringify({
+          type: 'error',
+          error: {
+            type: 'api_error',
+            message: `OpenAI API error (${openAIResponse.status}): ${errorText}`,
+          },
+        }),
+        {
+          status: openAIResponse.status,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      )
+    }
+
+    if (codexBody.stream === true) {
+      return translateCodexStreamToAnthropic(openAIResponse, codexModel)
+    }
+
+    return translateCodexResponseToAnthropic(openAIResponse, codexModel)
+  }
+}
+
+export const codexFetchAdapterTestHooks = {
+  translateCodexStreamToAnthropic,
+  translateToCodexBody,
+  translateCodexResponseToAnthropic,
 }
