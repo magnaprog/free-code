@@ -327,7 +327,7 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
   }
 
   // ChatGPT Codex OAuth uses the private Codex backend; keep this picker to
-  // Codex-family IDs that are known to belong on that path.
+  // the visible model catalog from that path, not just *-codex IDs.
   if (isCodexSubscriber()) {
     return [
       getDefaultOptionForUser(),

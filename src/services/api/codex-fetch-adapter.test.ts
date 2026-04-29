@@ -12,9 +12,14 @@ function sseResponse(events: Record<string, unknown>[]): Response {
 }
 
 describe('codex fetch adapter translation', () => {
-  test('keeps private Codex model recognition scoped to Codex-family IDs', () => {
+  test('recognizes ChatGPT Codex backend model IDs', () => {
+    expect(isCodexModel('gpt-5.5')).toBe(true)
+    expect(isCodexModel('gpt-5.4')).toBe(true)
+    expect(isCodexModel('gpt-5.4-mini')).toBe(true)
     expect(isCodexModel('gpt-5.3-codex')).toBe(true)
-    expect(isCodexModel('gpt-5.5')).toBe(false)
+    expect(isCodexModel('gpt-5.3-codex-spark')).toBe(true)
+    expect(isCodexModel('gpt-5.2')).toBe(true)
+    expect(isCodexModel('gpt-5.4-nano')).toBe(false)
   })
 
   test('preserves explicit OpenAI Responses model IDs', () => {
@@ -30,7 +35,7 @@ describe('codex fetch adapter translation', () => {
     expect(codexBody).not.toHaveProperty('tool_choice')
   })
 
-  test('maps official OpenAI model IDs to Codex defaults on the private Codex backend', () => {
+  test('preserves ChatGPT Codex-supported GPT IDs on the private backend', () => {
     const { codexBody, codexModel } =
       codexFetchAdapterTestHooks.translateToCodexBody(
         {
@@ -41,8 +46,8 @@ describe('codex fetch adapter translation', () => {
         { preserveOpenAIResponsesModelIds: false },
       )
 
-    expect(codexModel).toBe('gpt-5.3-codex')
-    expect(codexBody.model).toBe('gpt-5.3-codex')
+    expect(codexModel).toBe('gpt-5.5')
+    expect(codexBody.model).toBe('gpt-5.5')
   })
 
   test('maps Anthropic request controls to Responses fields', () => {
@@ -79,7 +84,7 @@ describe('codex fetch adapter translation', () => {
         messages: [{ role: 'user', content: 'hello' }],
       })
 
-    expect(codexModel).toBe('gpt-5.3-codex')
+    expect(codexModel).toBe('gpt-5.5')
     expect(codexBody.stream).toBe(false)
     expect(codexBody.max_output_tokens).toBe(1234)
     expect(codexBody.temperature).toBe(0.2)
@@ -132,8 +137,8 @@ describe('codex fetch adapter translation', () => {
         },
       )
 
-    expect(codexModel).toBe('gpt-5.3-codex')
-    expect(codexBody.model).toBe('gpt-5.3-codex')
+    expect(codexModel).toBe('gpt-5.5')
+    expect(codexBody.model).toBe('gpt-5.5')
     expect(codexBody).not.toHaveProperty('max_output_tokens')
     expect(codexBody).not.toHaveProperty('temperature')
     expect(codexBody).not.toHaveProperty('stop')

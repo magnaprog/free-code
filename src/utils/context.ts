@@ -5,6 +5,7 @@ import { isEnvTruthy } from './envUtils.js'
 import { getCanonicalName } from './model/model.js'
 import { getModelCapability } from './model/modelCapabilities.js'
 import { getKnownNonClaudeModelCapability } from './model/providerCapabilities.js'
+import { getAPIProvider } from './model/providers.js'
 
 // Model context window size (200k tokens for all models right now)
 export const MODEL_CONTEXT_WINDOW_DEFAULT = 200_000
@@ -72,7 +73,12 @@ export function getContextWindowForModel(
     return 1_000_000
   }
 
-  const nonClaudeCap = getKnownNonClaudeModelCapability(model)
+  const nonClaudeCap = getKnownNonClaudeModelCapability(
+    model,
+    getAPIProvider() === 'openai' && !process.env.OPENAI_API_KEY
+      ? 'chatgpt-codex'
+      : undefined,
+  )
   if (nonClaudeCap?.contextWindow) {
     return nonClaudeCap.contextWindow
   }
@@ -169,7 +175,12 @@ export function getModelMaxOutputTokens(model: string): {
   }
 
   const m = getCanonicalName(model)
-  const nonClaudeCap = getKnownNonClaudeModelCapability(model)
+  const nonClaudeCap = getKnownNonClaudeModelCapability(
+    model,
+    getAPIProvider() === 'openai' && !process.env.OPENAI_API_KEY
+      ? 'chatgpt-codex'
+      : undefined,
+  )
 
   if (nonClaudeCap?.maxOutputTokens) {
     return {

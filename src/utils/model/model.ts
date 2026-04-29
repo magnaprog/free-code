@@ -308,7 +308,7 @@ export function getClaudeAiUserDefaultModelDescription(
   fastMode = false,
 ): string {
   if (isCodexSubscriber()) {
-    return 'GPT-5.3 Codex · Agentic coding model'
+    return 'GPT-5.5 · Frontier coding model'
   }
   if (isMaxSubscriber() || isTeamPremiumSubscriber()) {
     if (isOpus1mMergeEnabled()) {

@@ -5,7 +5,10 @@ import {
   getBedrockRegionPrefix,
   isFoundationModel,
 } from './bedrock.js'
-import { getRequiredNonClaudeAdapterForModel } from './providerCapabilities.js'
+import {
+  CHATGPT_CODEX_MODELS,
+  getRequiredNonClaudeAdapterForModel,
+} from './providerCapabilities.js'
 
 describe('provider capability adapter routing', () => {
   test('keeps Claude Bedrock models on the Anthropic Bedrock path', () => {
@@ -74,5 +77,41 @@ describe('provider capability adapter routing', () => {
       default: 32_000,
       upperLimit: 128_000,
     })
+  })
+
+  test('uses ChatGPT Codex catalog and caps when running through Codex OAuth', () => {
+    const previousProvider = process.env.CLAUDE_CODE_USE_OPENAI
+    const previousOpenAIKey = process.env.OPENAI_API_KEY
+    process.env.CLAUDE_CODE_USE_OPENAI = '1'
+    delete process.env.OPENAI_API_KEY
+
+    try {
+      expect(CHATGPT_CODEX_MODELS.map(m => m.id)).toContain('gpt-5.5')
+      expect(CHATGPT_CODEX_MODELS.map(m => m.id)).toContain('gpt-5.4')
+      expect(CHATGPT_CODEX_MODELS.map(m => m.id)).toContain('gpt-5.4-mini')
+      expect(CHATGPT_CODEX_MODELS.map(m => m.id)).toContain(
+        'gpt-5.3-codex-spark',
+      )
+      expect(CHATGPT_CODEX_MODELS.map(m => m.id)).not.toContain(
+        'gpt-5.4-nano',
+      )
+      expect(getContextWindowForModel('gpt-5.5')).toBe(272_000)
+      expect(getContextWindowForModel('gpt-5.4')).toBe(272_000)
+      expect(getContextWindowForModel('gpt-5.4-mini')).toBe(272_000)
+      expect(getContextWindowForModel('gpt-5.3-codex')).toBe(272_000)
+      expect(getContextWindowForModel('gpt-5.3-codex-spark')).toBe(128_000)
+      expect(getContextWindowForModel('gpt-5.2')).toBe(272_000)
+    } finally {
+      if (previousProvider === undefined) {
+        delete process.env.CLAUDE_CODE_USE_OPENAI
+      } else {
+        process.env.CLAUDE_CODE_USE_OPENAI = previousProvider
+      }
+      if (previousOpenAIKey === undefined) {
+        delete process.env.OPENAI_API_KEY
+      } else {
+        process.env.OPENAI_API_KEY = previousOpenAIKey
+      }
+    }
   })
 })
