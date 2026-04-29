@@ -180,7 +180,7 @@ export function getRuntimeMainLoopModel(params: {
  */
 export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
   if (isCodexSubscriber()) {
-    return getModelStrings().gpt53codex
+    return getModelStrings().gpt55
   }
 
   // Ants default to defaultModel from flag config, or Opus 1M if not configured
@@ -269,6 +269,9 @@ export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
     return 'claude-3-haiku'
   }
   // OpenAI GPT models
+  if (name.includes('gpt-5.5')) {
+    return 'gpt-5.5'
+  }
   if (name.includes('gpt-5.4-mini')) {
     return 'gpt-5.4-mini'
   }
@@ -304,7 +307,7 @@ export function getClaudeAiUserDefaultModelDescription(
   fastMode = false,
 ): string {
   if (isCodexSubscriber()) {
-    return 'GPT-5.3 Codex · Optimized for code generation and understanding'
+    return 'GPT-5.5 · Flagship reasoning and code generation'
   }
   if (isMaxSubscriber() || isTeamPremiumSubscriber()) {
     if (isOpus1mMergeEnabled()) {
@@ -368,6 +371,7 @@ export function renderModelSetting(setting: ModelName | ModelAlias): string {
  */
 export function getPublicModelDisplayName(model: ModelName): string | null {
   if (model.includes('gpt-') || model.includes('codex')) {
+    if (model === 'gpt-5.5') return 'GPT 5.5'
     if (model === 'gpt-5.2-codex') return 'Codex 5.2'
     if (model === 'gpt-5.1-codex') return 'Codex 5.1'
     if (model === 'gpt-5.1-codex-mini') return 'Codex 5.1 Mini'
@@ -408,6 +412,8 @@ export function getPublicModelDisplayName(model: ModelName): string | null {
       return 'Haiku 4.5'
     case getModelStrings().haiku35:
       return 'Haiku 3.5'
+    case getModelStrings().gpt55:
+      return 'GPT-5.5'
     case getModelStrings().gpt54:
       return 'GPT-5.4'
     case getModelStrings().gpt53codex:
@@ -649,6 +655,9 @@ export function getMarketingNameForModel(modelId: string): string | undefined {
     return 'Claude 3.5 Haiku'
   }
   // OpenAI Codex models
+  if (canonical.includes('gpt-5.5')) {
+    return 'GPT-5.5'
+  }
   if (canonical.includes('gpt-5.4-mini')) {
     return 'GPT-5.4 Mini'
   }
