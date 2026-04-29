@@ -1,5 +1,5 @@
 import type { ChildProcess, ExecFileException } from 'child_process'
-import { execFile, spawn } from 'child_process'
+import { execFile, spawn, spawnSync } from 'child_process'
 import { accessSync, constants } from 'fs'
 import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
@@ -47,6 +47,30 @@ function isSpawnableRipgrepPath(command: string): boolean {
   }
 }
 
+function embeddedRipgrepConfig(): RipgrepConfig | null {
+  if (!isInBundledMode()) {
+    return null
+  }
+
+  const test = spawnSync(process.execPath, ['--version'], {
+    argv0: 'rg',
+    encoding: 'utf8',
+    timeout: 5_000,
+    windowsHide: true,
+  })
+
+  if (test.status === 0 && test.stdout.startsWith('ripgrep ')) {
+    return {
+      mode: 'embedded',
+      command: process.execPath,
+      args: ['--no-config'],
+      argv0: 'rg',
+    }
+  }
+
+  return null
+}
+
 const getRipgrepConfig = memoize((): RipgrepConfig => {
   const userWantsSystemRipgrep = isEnvDefinedFalsy(
     process.env.USE_BUILTIN_RIPGREP,
@@ -63,24 +87,14 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
     }
   }
 
-  // In bundled (native) mode, ripgrep is statically compiled into bun-internal
-  // and dispatches based on argv[0]. We spawn ourselves with argv0='rg'.
-  if (isInBundledMode()) {
-    return {
-      mode: 'embedded',
-      command: process.execPath,
-      args: ['--no-config'],
-      argv0: 'rg',
-    }
-  }
-
   const candidateRoots = [
     // Source tree layout: src/utils/ripgrep.ts -> src/vendor/ripgrep
     path.resolve(path.dirname(__filename), '..', 'vendor', 'ripgrep'),
-    // Bundled module layout used by compiled/source-snapshot builds.
-    path.resolve(__dirname, 'vendor', 'ripgrep'),
     // External assets copied next to compiled free-code binaries.
     path.resolve(path.dirname(process.execPath), 'vendor', 'ripgrep'),
+    // Bundled module layout used by compiled/source-snapshot builds, if it is a
+    // real executable path rather than Bun's virtual /$bunfs filesystem.
+    path.resolve(__dirname, 'vendor', 'ripgrep'),
   ]
 
   const seen = new Set<string>()
@@ -92,6 +106,13 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
     if (isSpawnableRipgrepPath(command)) {
       return { mode: 'builtin', command, args: [] }
     }
+  }
+
+  // Anthropic native builds can dispatch embedded ripgrep via argv0='rg'. Plain
+  // free-code Bun builds do not, so only use this path after probing it.
+  const embedded = embeddedRipgrepConfig()
+  if (embedded) {
+    return embedded
   }
 
   // No usable bundled binary exists. Fall back to PATH so callers fail with a

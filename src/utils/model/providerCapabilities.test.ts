@@ -17,6 +17,8 @@ function withProviderEnv(
     bedrock?: string
     vertex?: string
     foundry?: string
+    userType?: string
+    maxContextTokens?: string
   },
   callback: () => void,
 ): void {
@@ -26,6 +28,8 @@ function withProviderEnv(
     bedrock: process.env.CLAUDE_CODE_USE_BEDROCK,
     vertex: process.env.CLAUDE_CODE_USE_VERTEX,
     foundry: process.env.CLAUDE_CODE_USE_FOUNDRY,
+    userType: process.env.USER_TYPE,
+    maxContextTokens: process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS,
   }
 
   const setOrDelete = (key: string, value: string | undefined) => {
@@ -41,6 +45,8 @@ function withProviderEnv(
   setOrDelete('CLAUDE_CODE_USE_BEDROCK', env.bedrock)
   setOrDelete('CLAUDE_CODE_USE_VERTEX', env.vertex)
   setOrDelete('CLAUDE_CODE_USE_FOUNDRY', env.foundry)
+  setOrDelete('USER_TYPE', env.userType)
+  setOrDelete('CLAUDE_CODE_MAX_CONTEXT_TOKENS', env.maxContextTokens)
 
   try {
     callback()
@@ -50,6 +56,8 @@ function withProviderEnv(
     setOrDelete('CLAUDE_CODE_USE_BEDROCK', previous.bedrock)
     setOrDelete('CLAUDE_CODE_USE_VERTEX', previous.vertex)
     setOrDelete('CLAUDE_CODE_USE_FOUNDRY', previous.foundry)
+    setOrDelete('USER_TYPE', previous.userType)
+    setOrDelete('CLAUDE_CODE_MAX_CONTEXT_TOKENS', previous.maxContextTokens)
   }
 }
 
@@ -97,7 +105,7 @@ describe('provider capability adapter routing', () => {
   })
 
   test('uses verified context and output caps for Codex variants', () => {
-    withProviderEnv({}, () => {
+    withProviderEnv({ openai: '1', openaiApiKey: 'test' }, () => {
       for (const model of [
         'gpt-5.3-codex',
         'gpt-5.2-codex',
@@ -115,7 +123,7 @@ describe('provider capability adapter routing', () => {
   })
 
   test('uses verified context and output caps for current OpenAI Responses models', () => {
-    withProviderEnv({}, () => {
+    withProviderEnv({ openai: '1', openaiApiKey: 'test' }, () => {
       expect(getContextWindowForModel('gpt-5.5')).toBe(1_050_000)
       expect(getContextWindowForModel('gpt-5.4')).toBe(1_050_000)
       expect(getContextWindowForModel('gpt-5.4-mini')).toBe(400_000)

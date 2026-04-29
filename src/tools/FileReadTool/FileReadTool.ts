@@ -957,8 +957,8 @@ async function callInner(
     if (!isPDFSupported()) {
       throw new Error(
         'Reading full PDFs is not supported with this model or provider. ' +
-          `Use the pages parameter to read specific page ranges (e.g., pages: "1-5", maximum ${PDF_MAX_PAGES_PER_READ} pages per request). ` +
-          'Page extraction requires poppler-utils: install with `brew install poppler` on macOS or `apt-get install poppler-utils` on Debian/Ubuntu.',
+          `Use the pages parameter to render specific page ranges as images (e.g., pages: "1-5", maximum ${PDF_MAX_PAGES_PER_READ} pages per request). ` +
+          'PDF page rendering requires poppler-utils: install with `brew install poppler` on macOS or `apt-get install poppler-utils` on Debian/Ubuntu.',
       )
     }
 

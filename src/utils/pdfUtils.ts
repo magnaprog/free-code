@@ -53,16 +53,24 @@ export function parsePDFPageRange(
 
 /**
  * Check if full PDF document blocks are supported with the current model/provider.
- * Anthropic providers support PDF document blocks except legacy Haiku 3 models.
- * Non-Claude adapters do not translate Anthropic document blocks, so they must
- * use page extraction instead of sending full PDF documents.
+ * Currently wired Anthropic providers support PDF document blocks except legacy
+ * Haiku 3 models. Non-Claude adapters must use the pages/page-extraction path.
  */
 export function isPDFSupported(): boolean {
   const provider = getAPIProvider()
   const model = getMainLoopModel()
-  if (getRequiredNonClaudeAdapterForModel(provider, model) !== null) {
+
+  if (provider === 'openai') {
     return false
   }
+
+  if (
+    provider === 'bedrock' &&
+    getRequiredNonClaudeAdapterForModel(provider, model) === 'bedrock-converse'
+  ) {
+    return false
+  }
+
   return !model.toLowerCase().includes('claude-3-haiku')
 }
 
