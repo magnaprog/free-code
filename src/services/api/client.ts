@@ -1,5 +1,6 @@
 import Anthropic, { type ClientOptions } from '@anthropic-ai/sdk'
 import { randomUUID } from 'crypto'
+import { isAttributionHeaderEnabled } from 'src/constants/system.js'
 import {
   computeCch,
   hasCchPlaceholder,
@@ -437,6 +438,7 @@ function buildFetch(
       )
 
       if (
+        isAttributionHeaderEnabled() &&
         url.includes('/v1/messages') &&
         headers.has('anthropic-version') &&
         typeof body === 'string' &&

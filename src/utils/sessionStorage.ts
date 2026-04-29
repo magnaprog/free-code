@@ -4353,7 +4353,8 @@ export function isLoggableMessage(m: Message): boolean {
   // IMPORTANT: We deliberately filter out most attachments for non-ants because
   // they have sensitive info for training that we don't want exposed to the public.
   // The exceptions below are either explicitly opted-in user hook output, or
-  // structural cache-reconstruction deltas that are already sent to the model.
+  // cache-reconstruction deltas for deferred tool announcements and MCP
+  // instructions that were already sent to the model.
   if (m.type === 'attachment' && getUserType() !== 'ant') {
     if (
       m.attachment.type === 'hook_additional_context' &&
