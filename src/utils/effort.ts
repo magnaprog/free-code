@@ -19,6 +19,14 @@ export const EFFORT_LEVELS = [
 
 export type EffortValue = EffortLevel | number
 
+function isOpenAIReasoningModel(model: string): boolean {
+  if (getAPIProvider() !== 'openai') {
+    return false
+  }
+  const m = model.toLowerCase()
+  return m.includes('gpt-') || m.includes('codex')
+}
+
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports the effort parameter.
 export function modelSupportsEffort(model: string): boolean {
   const m = model.toLowerCase()
@@ -28,6 +36,9 @@ export function modelSupportsEffort(model: string): boolean {
   const supported3P = get3PModelCapabilityOverride(model, 'effort')
   if (supported3P !== undefined) {
     return supported3P
+  }
+  if (isOpenAIReasoningModel(model)) {
+    return true
   }
   // Supported by a subset of Claude 4 models
   if (m.includes('opus-4-6') || m.includes('sonnet-4-6')) {
@@ -49,11 +60,16 @@ export function modelSupportsEffort(model: string): boolean {
 }
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports 'max' effort.
-// Per API docs, 'max' is Opus 4.6 only for public models — other models return an error.
+// Per Anthropic API docs, 'max' is Opus 4.6 only for public Claude models.
+// OpenAI reasoning models use `xhigh`; the Codex adapter maps free-code's
+// `max` value to OpenAI's wire value.
 export function modelSupportsMaxEffort(model: string): boolean {
   const supported3P = get3PModelCapabilityOverride(model, 'max_effort')
   if (supported3P !== undefined) {
     return supported3P
+  }
+  if (isOpenAIReasoningModel(model)) {
+    return true
   }
   if (model.toLowerCase().includes('opus-4-6')) {
     return true
@@ -175,7 +191,8 @@ export function getDisplayedEffortLevel(
   model: string,
   appStateEffort: EffortValue | undefined,
 ): EffortLevel {
-  const resolved = resolveAppliedEffort(model, appStateEffort) ?? 'high'
+  const fallback = isOpenAIReasoningModel(model) ? 'medium' : 'high'
+  const resolved = resolveAppliedEffort(model, appStateEffort) ?? fallback
   return convertEffortValueToLevel(resolved)
 }
 
@@ -230,7 +247,7 @@ export function getEffortLevelDescription(level: EffortLevel): string {
     case 'high':
       return 'Comprehensive implementation with extensive testing and documentation'
     case 'max':
-      return 'Maximum capability with deepest reasoning (Opus 4.6 only)'
+      return 'Maximum capability with deepest reasoning (Opus 4.6, or xhigh for OpenAI)'
   }
 }
 
@@ -303,6 +320,11 @@ export function getDefaultEffortForModel(
   // IMPORTANT: Do not change the default effort level without notifying
   // the model launch DRI and research. Default effort is a sensitive setting
   // that can greatly affect model quality and bashing.
+
+  // OpenAI reasoning models default to medium effort in Codex.
+  if (isOpenAIReasoningModel(model)) {
+    return 'medium'
+  }
 
   // Default effort on Opus 4.6 to medium for Pro.
   // Max/Team also get medium when the tengu_grey_step2 config is enabled.

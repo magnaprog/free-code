@@ -56,6 +56,36 @@ export function isCodexModel(model: string): boolean {
   return CODEX_MODELS.some(m => m.id === model)
 }
 
+type OpenAIReasoningEffort =
+  | 'none'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+
+export function mapFreeCodeEffortToOpenAIReasoningEffort(
+  value: unknown,
+): OpenAIReasoningEffort | undefined {
+  if (typeof value !== 'string') {
+    return undefined
+  }
+
+  switch (value.toLowerCase()) {
+    case 'none':
+    case 'minimal':
+    case 'low':
+    case 'medium':
+    case 'high':
+    case 'xhigh':
+      return value.toLowerCase() as OpenAIReasoningEffort
+    case 'max':
+      return 'xhigh'
+    default:
+      return undefined
+  }
+}
+
 // ── JWT helpers ─────────────────────────────────────────────────────
 
 const JWT_CLAIM_PATH = 'https://api.openai.com/auth'
@@ -233,8 +263,14 @@ function translateToCodexBody(anthropicBody: Record<string, unknown>): {
     | undefined
   const claudeModel = anthropicBody.model as string
   const anthropicTools = (anthropicBody.tools || []) as AnthropicTool[]
+  const outputConfig = anthropicBody.output_config as
+    | Record<string, unknown>
+    | undefined
 
   const codexModel = mapClaudeModelToCodex(claudeModel)
+  const reasoningEffort = mapFreeCodeEffortToOpenAIReasoningEffort(
+    outputConfig?.effort,
+  )
 
   // Build system instructions
   let instructions = ''
@@ -261,6 +297,10 @@ function translateToCodexBody(anthropicBody: Record<string, unknown>): {
     input,
     tool_choice: 'auto',
     parallel_tool_calls: true,
+  }
+
+  if (reasoningEffort !== undefined) {
+    codexBody.reasoning = { effort: reasoningEffort }
   }
 
   // Add tools if present
