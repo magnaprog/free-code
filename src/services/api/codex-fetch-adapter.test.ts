@@ -114,6 +114,32 @@ describe('codex fetch adapter translation', () => {
     })
   })
 
+  test('omits request controls rejected by the ChatGPT Codex backend', () => {
+    const { codexBody, codexModel } =
+      codexFetchAdapterTestHooks.translateToCodexBody(
+        {
+          model: 'claude-sonnet-4-6',
+          stream: false,
+          max_tokens: 1234,
+          temperature: 0.2,
+          stop_sequences: ['</done>'],
+          output_config: { effort: 'high' },
+          messages: [{ role: 'user', content: 'hello' }],
+        },
+        {
+          preserveOpenAIResponsesModelIds: false,
+          targetBackend: 'chatgpt-codex',
+        },
+      )
+
+    expect(codexModel).toBe('gpt-5.3-codex')
+    expect(codexBody.model).toBe('gpt-5.3-codex')
+    expect(codexBody).not.toHaveProperty('max_output_tokens')
+    expect(codexBody).not.toHaveProperty('temperature')
+    expect(codexBody).not.toHaveProperty('stop')
+    expect(codexBody.reasoning).toEqual({ effort: 'high' })
+  })
+
   test('translates non-streaming Responses output to Anthropic message shape', async () => {
     const openAIResponse = new Response(
       JSON.stringify({

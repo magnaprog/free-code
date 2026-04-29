@@ -45,6 +45,7 @@ const reasoningItemsByToolCallId = new Map<string, Record<string, unknown>[]>()
  */
 type TranslationOptions = {
   preserveOpenAIResponsesModelIds?: boolean
+  targetBackend?: 'openai-responses' | 'chatgpt-codex'
 }
 
 export function mapClaudeModelToCodex(
@@ -391,6 +392,7 @@ function translateToCodexBody(
     | Record<string, unknown>
     | undefined
   const shouldStream = anthropicBody.stream === true
+  const targetBackend = options.targetBackend ?? 'openai-responses'
 
   const codexModel = mapClaudeModelToCodex(claudeModel, options)
   const reasoningEffort = mapFreeCodeEffortToOpenAIReasoningEffort(
@@ -428,15 +430,24 @@ function translateToCodexBody(
     codexBody.parallel_tool_calls = true
   }
 
-  if (typeof anthropicBody.max_tokens === 'number') {
+  if (
+    targetBackend === 'openai-responses' &&
+    typeof anthropicBody.max_tokens === 'number'
+  ) {
     codexBody.max_output_tokens = anthropicBody.max_tokens
   }
 
-  if (typeof anthropicBody.temperature === 'number') {
+  if (
+    targetBackend === 'openai-responses' &&
+    typeof anthropicBody.temperature === 'number'
+  ) {
     codexBody.temperature = anthropicBody.temperature
   }
 
-  if (Array.isArray(anthropicBody.stop_sequences)) {
+  if (
+    targetBackend === 'openai-responses' &&
+    Array.isArray(anthropicBody.stop_sequences)
+  ) {
     codexBody.stop = anthropicBody.stop_sequences
   }
 
@@ -1080,6 +1091,7 @@ export function createCodexFetch(
     // Translate to Codex format
     const { codexBody, codexModel } = translateToCodexBody(anthropicBody, {
       preserveOpenAIResponsesModelIds: false,
+      targetBackend: 'chatgpt-codex',
     })
 
     const callCodex = async (forceRefresh: boolean): Promise<Response> => {
@@ -1159,6 +1171,7 @@ export function createOpenAIResponsesFetch(
 
     const { codexBody, codexModel } = translateToCodexBody(anthropicBody, {
       preserveOpenAIResponsesModelIds: true,
+      targetBackend: 'openai-responses',
     })
     const openAIResponse = await globalThis.fetch(responsesUrl, {
       method: 'POST',
