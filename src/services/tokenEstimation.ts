@@ -24,8 +24,10 @@ import {
 import { jsonStringify } from '../utils/slowOperations.js'
 import { isToolReferenceBlock } from '../utils/toolSearch.js'
 import { getAPIMetadata, getExtraBodyParams } from './api/claude.js'
+import { translateToConverseRequest } from './api/bedrock-converse-fetch-adapter.js'
 import { getAnthropicClient } from './api/client.js'
 import { withTokenCountVCR } from './vcr.js'
+import { getRequiredNonClaudeAdapterForModel } from '../utils/model/providerCapabilities.js'
 
 // Minimal values for token counting with thinking enabled
 // API constraint: max_tokens must be greater than thinking.budget_tokens
@@ -455,6 +457,30 @@ async function countTokensWithBedrock({
       : await getInferenceProfileBackingModel(model)
     if (!modelId) {
       return null
+    }
+
+    if (getRequiredNonClaudeAdapterForModel('bedrock', model) === 'bedrock-converse') {
+      const converseRequest = translateToConverseRequest({
+        model,
+        messages:
+          messages.length > 0 ? messages : [{ role: 'user', content: 'foo' }],
+        ...(tools.length > 0 && { tools }),
+      })
+      const { CountTokensCommand } = await import(
+        '@aws-sdk/client-bedrock-runtime'
+      )
+      const input: CountTokensCommandInput = {
+        modelId,
+        input: {
+          converse: {
+            messages: converseRequest.messages,
+            system: converseRequest.system,
+            toolConfig: converseRequest.toolConfig,
+          },
+        },
+      }
+      const response = await client.send(new CountTokensCommand(input))
+      return response.inputTokens ?? null
     }
 
     const requestBody = {

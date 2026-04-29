@@ -86,7 +86,70 @@ export const COST_HAIKU_45 = {
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
 
+export const COST_GPT_5_5 = {
+  inputTokens: 5,
+  outputTokens: 30,
+  promptCacheWriteTokens: 5,
+  promptCacheReadTokens: 0.5,
+  webSearchRequests: 0,
+} as const satisfies ModelCosts
+
+export const COST_GPT_5_4 = {
+  inputTokens: 2.5,
+  outputTokens: 15,
+  promptCacheWriteTokens: 2.5,
+  promptCacheReadTokens: 0.25,
+  webSearchRequests: 0,
+} as const satisfies ModelCosts
+
+export const COST_GPT_5_4_MINI = {
+  inputTokens: 0.75,
+  outputTokens: 4.5,
+  promptCacheWriteTokens: 0.75,
+  promptCacheReadTokens: 0.075,
+  webSearchRequests: 0,
+} as const satisfies ModelCosts
+
+export const COST_GPT_5_4_NANO = {
+  inputTokens: 0.2,
+  outputTokens: 1.25,
+  promptCacheWriteTokens: 0.2,
+  promptCacheReadTokens: 0.02,
+  webSearchRequests: 0,
+} as const satisfies ModelCosts
+
+export const COST_GPT_5_2 = {
+  inputTokens: 1.75,
+  outputTokens: 14,
+  promptCacheWriteTokens: 1.75,
+  promptCacheReadTokens: 0.175,
+  webSearchRequests: 0,
+} as const satisfies ModelCosts
+
+export const COST_GPT_5_1 = {
+  inputTokens: 1.25,
+  outputTokens: 10,
+  promptCacheWriteTokens: 1.25,
+  promptCacheReadTokens: 0.125,
+  webSearchRequests: 0,
+} as const satisfies ModelCosts
+
+export const COST_GPT_5_1_CODEX_MINI = {
+  inputTokens: 0.25,
+  outputTokens: 2,
+  promptCacheWriteTokens: 0.25,
+  promptCacheReadTokens: 0.025,
+  webSearchRequests: 0,
+} as const satisfies ModelCosts
+
 const DEFAULT_UNKNOWN_MODEL_COST = COST_TIER_5_25
+const DEFAULT_UNKNOWN_NON_CLAUDE_MODEL_COST = {
+  inputTokens: 0,
+  outputTokens: 0,
+  promptCacheWriteTokens: 0,
+  promptCacheReadTokens: 0,
+  webSearchRequests: 0,
+} as const satisfies ModelCosts
 
 /**
  * Get the cost tier for Opus 4.6 based on fast mode.
@@ -123,6 +186,17 @@ export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
     COST_TIER_5_25,
   [firstPartyNameToCanonical(CLAUDE_OPUS_4_6_CONFIG.firstParty)]:
     COST_TIER_5_25,
+  'gpt-5.5': COST_GPT_5_5,
+  'gpt-5.4': COST_GPT_5_4,
+  'gpt-5.4-mini': COST_GPT_5_4_MINI,
+  'gpt-5.4-nano': COST_GPT_5_4_NANO,
+  'gpt-5.3-codex': COST_GPT_5_2,
+  'gpt-5.2': COST_GPT_5_2,
+  'gpt-5.2-codex': COST_GPT_5_2,
+  'gpt-5.1-codex': COST_GPT_5_1,
+  'gpt-5.1-codex-max': COST_GPT_5_1,
+  'gpt-5.1-codex-mini': COST_GPT_5_1_CODEX_MINI,
+  'gpt-5-codex': COST_GPT_5_1,
 }
 
 /**
@@ -155,6 +229,9 @@ export function getModelCosts(model: string, usage: Usage): ModelCosts {
   const costs = MODEL_COSTS[shortName]
   if (!costs) {
     trackUnknownModelCost(model, shortName)
+    if (shortName.includes('gpt') || shortName.includes('codex')) {
+      return DEFAULT_UNKNOWN_NON_CLAUDE_MODEL_COST
+    }
     return (
       MODEL_COSTS[getCanonicalName(getDefaultMainLoopModelSetting())] ??
       DEFAULT_UNKNOWN_MODEL_COST

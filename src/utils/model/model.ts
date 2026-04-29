@@ -13,7 +13,6 @@ import {
   isMaxSubscriber,
   isProSubscriber,
   isTeamPremiumSubscriber,
-  isCodexSubscriber,
 } from '../auth.js'
 import { getAntModelOverrideConfig, resolveAntModel } from './antModels.js'
 import {
@@ -31,6 +30,11 @@ import { LIGHTNING_BOLT } from '../../constants/figures.js'
 import { isModelAllowed } from './modelAllowlist.js'
 import { type ModelAlias, isModelAlias } from './aliases.js'
 import { capitalize } from '../stringUtils.js'
+import {
+  DEFAULT_CODEX_MODEL,
+  DEFAULT_OPENAI_RESPONSES_MODEL,
+  OPENAI_RESPONSES_MODELS,
+} from './providerCapabilities.js'
 
 export type ModelShortName = string
 export type ModelName = string
@@ -179,8 +183,14 @@ export function getRuntimeMainLoopModel(params: {
  * @returns The default model setting to use
  */
 export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
+  if (getAPIProvider() === 'openai' && process.env.OPENAI_API_KEY) {
+    return process.env.OPENAI_MODEL || DEFAULT_OPENAI_RESPONSES_MODEL
+  }
   if (isCodexSubscriber()) {
-    return getModelStrings().gpt55
+    return DEFAULT_CODEX_MODEL
+  }
+  if (getAPIProvider() === 'openai') {
+    return process.env.OPENAI_MODEL || DEFAULT_OPENAI_RESPONSES_MODEL
   }
 
   // Ants default to defaultModel from flag config, or Opus 1M if not configured
@@ -268,18 +278,9 @@ export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
   if (name.includes('claude-3-haiku')) {
     return 'claude-3-haiku'
   }
-  // OpenAI GPT models
-  if (name.includes('gpt-5.5')) {
-    return 'gpt-5.5'
-  }
-  if (name.includes('gpt-5.4-mini')) {
-    return 'gpt-5.4-mini'
-  }
-  if (name.includes('gpt-5.4')) {
-    return 'gpt-5.4'
-  }
-  if (name.includes('gpt-5.3-codex')) {
-    return 'gpt-5.3-codex'
+  const knownOpenAIModel = OPENAI_RESPONSES_MODELS.find(m => name.includes(m.id))
+  if (knownOpenAIModel) {
+    return knownOpenAIModel.id
   }
   const match = name.match(/(claude-(\d+-\d+-)?\w+)/)
   if (match && match[1]) {
@@ -307,7 +308,7 @@ export function getClaudeAiUserDefaultModelDescription(
   fastMode = false,
 ): string {
   if (isCodexSubscriber()) {
-    return 'GPT-5.5 · Flagship reasoning and code generation'
+    return 'GPT-5.3 Codex · Agentic coding model'
   }
   if (isMaxSubscriber() || isTeamPremiumSubscriber()) {
     if (isOpus1mMergeEnabled()) {
@@ -370,13 +371,17 @@ export function renderModelSetting(setting: ModelName | ModelAlias): string {
  * if the model is not recognized as a public model.
  */
 export function getPublicModelDisplayName(model: ModelName): string | null {
+  const knownNonClaudeName = formatKnownNonClaudeModelName(model)
+  if (knownNonClaudeName) {
+    return knownNonClaudeName
+  }
+
   if (model.includes('gpt-') || model.includes('codex')) {
-    if (model === 'gpt-5.5') return 'GPT 5.5'
     if (model === 'gpt-5.2-codex') return 'Codex 5.2'
     if (model === 'gpt-5.1-codex') return 'Codex 5.1'
     if (model === 'gpt-5.1-codex-mini') return 'Codex 5.1 Mini'
     if (model === 'gpt-5.1-codex-max') return 'Codex 5.1 Max'
-    if (model === 'gpt-5.4') return 'GPT 5.4'
+    if (model === 'gpt-5-codex') return 'Codex 5'
     if (model === 'gpt-5.2') return 'GPT 5.2'
     return model
   }
@@ -412,17 +417,31 @@ export function getPublicModelDisplayName(model: ModelName): string | null {
       return 'Haiku 4.5'
     case getModelStrings().haiku35:
       return 'Haiku 3.5'
-    case getModelStrings().gpt55:
-      return 'GPT-5.5'
-    case getModelStrings().gpt54:
-      return 'GPT-5.4'
-    case getModelStrings().gpt53codex:
-      return 'GPT-5.3 Codex'
-    case getModelStrings().gpt54mini:
-      return 'GPT-5.4 Mini'
     default:
-      return null
+      return formatKnownNonClaudeModelName(model)
   }
+}
+
+function formatKnownNonClaudeModelName(model: string): string | null {
+  const known = OPENAI_RESPONSES_MODELS.find(m => m.id === model)
+  if (!known) {
+    return null
+  }
+
+  const parts = known.id.split('-')
+  if (parts[0] !== 'gpt' || !parts[1]) {
+    return known.id
+  }
+
+  const version = parts[1]
+  const suffix = parts.slice(2)
+  if (suffix[0] === 'codex') {
+    const variant = suffix.slice(1).map(capitalize).join(' ')
+    return `GPT-${version} Codex${variant ? ` ${variant}` : ''}`
+  }
+
+  const variant = suffix.map(capitalize).join(' ')
+  return `GPT-${version}${variant ? ` ${variant}` : ''}`
 }
 
 function maskModelCodename(baseName: string): string {
@@ -654,18 +673,11 @@ export function getMarketingNameForModel(modelId: string): string | undefined {
   if (canonical.includes('claude-3-5-haiku')) {
     return 'Claude 3.5 Haiku'
   }
-  // OpenAI Codex models
-  if (canonical.includes('gpt-5.5')) {
-    return 'GPT-5.5'
-  }
-  if (canonical.includes('gpt-5.4-mini')) {
-    return 'GPT-5.4 Mini'
-  }
-  if (canonical.includes('gpt-5.4')) {
-    return 'GPT-5.4'
-  }
-  if (canonical.includes('gpt-5.3-codex')) {
-    return 'GPT-5.3 Codex'
+  const knownOpenAIModel = OPENAI_RESPONSES_MODELS.find(m =>
+    canonical.includes(m.id),
+  )
+  if (knownOpenAIModel) {
+    return formatKnownNonClaudeModelName(knownOpenAIModel.id) ?? knownOpenAIModel.id
   }
 
   return undefined

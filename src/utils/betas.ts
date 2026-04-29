@@ -28,6 +28,7 @@ import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
 import { getCanonicalName } from './model/model.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { getAPIProvider } from './model/providers.js'
+import { getKnownNonClaudeModelCapability } from './model/providerCapabilities.js'
 import { getInitialSettings } from './settings/settings.js'
 
 /**
@@ -142,6 +143,10 @@ export function modelSupportsContextManagement(model: string): boolean {
 export function modelSupportsStructuredOutputs(model: string): boolean {
   const canonical = getCanonicalName(model)
   const provider = getAPIProvider()
+  const nonClaudeCap = getKnownNonClaudeModelCapability(model)
+  if (nonClaudeCap) {
+    return nonClaudeCap.supportsStructuredOutputs
+  }
   // Structured outputs only supported on firstParty and Foundry (not Bedrock/Vertex yet)
   if (provider !== 'firstParty' && provider !== 'foundry') {
     return false
