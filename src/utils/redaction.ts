@@ -42,17 +42,24 @@ function isPlainObject(value: object): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null
 }
 
-export function redactSecretValues(value: unknown): unknown {
+function redactSecretValuesInternal(
+  value: unknown,
+  seen: WeakSet<object>,
+): unknown {
   if (Array.isArray(value)) {
-    return value.map(redactSecretValues)
+    if (seen.has(value)) return '[Circular]'
+    seen.add(value)
+    return value.map(item => redactSecretValuesInternal(item, seen))
   }
 
   if (value && typeof value === 'object' && isPlainObject(value)) {
+    if (seen.has(value)) return '[Circular]'
+    seen.add(value)
     const result: Record<string, unknown> = {}
     for (const [key, nestedValue] of Object.entries(value)) {
       result[key] = isSecretKey(key)
         ? REDACTED
-        : redactSecretValues(nestedValue)
+        : redactSecretValuesInternal(nestedValue, seen)
     }
     return result
   }
@@ -60,11 +67,24 @@ export function redactSecretValues(value: unknown): unknown {
   return value
 }
 
+export function redactSecretValues(value: unknown): unknown {
+  return redactSecretValuesInternal(value, new WeakSet<object>())
+}
+
+function decodeJsonStringLiteral(value: string): string {
+  try {
+    return JSON.parse(`"${value}"`)
+  } catch {
+    return value
+  }
+}
+
 export function redactSecrets(input: string): string {
   return input
     .replace(
-      /("([^"\\]|\\.)*(?:token|secret|authorization|cookie|api[_-]?key|assertion|device[_-]?code)([^"\\]|\\.)*"\s*:\s*)"([^"\\]|\\.)*"/gi,
-      `$1"${REDACTED}"`,
+      /("((?:[^"\\]|\\.)*)"\s*:\s*)"((?:[^"\\]|\\.)*)"/g,
+      (match: string, prefix: string, key: string) =>
+        isSecretKey(decodeJsonStringLiteral(key)) ? `${prefix}"${REDACTED}"` : match,
     )
     .replace(/\bBearer\s+[-._~+/A-Za-z0-9]+=*/gi, `Bearer ${REDACTED}`)
     .replace(

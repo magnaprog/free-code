@@ -31,14 +31,25 @@ describe('secret redaction', () => {
     })
   })
 
+  test('handles circular references', () => {
+    const value: Record<string, unknown> = { safe: 'visible' }
+    value.self = value
+
+    expect(redactSecretValues(value)).toEqual({
+      safe: 'visible',
+      self: '[Circular]',
+    })
+  })
+
   test('redacts token-like JSON strings and bearer tokens', () => {
     const redacted = redactSecrets(
-      '{"access_token":"abc123","clientSecret":"def456","safe":"visible"} Authorization: Bearer sk-secret-token',
+      '{"access_token":"abc123","clientSecret":"def456","token_type":"Bearer","safe":"visible"} Authorization: Bearer sk-secret-token',
     )
 
     expect(redacted).not.toContain('abc123')
     expect(redacted).not.toContain('def456')
     expect(redacted).not.toContain('sk-secret-token')
+    expect(redacted).toContain('"token_type":"Bearer"')
     expect(redacted).toContain('"safe":"visible"')
   })
 
