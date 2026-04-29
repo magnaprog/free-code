@@ -1,5 +1,5 @@
-import { chmodSync, existsSync, mkdirSync } from 'fs'
-import { dirname } from 'path'
+import { chmodSync, cpSync, existsSync, mkdirSync } from 'fs'
+import { dirname, join } from 'path'
 
 const pkg = await Bun.file(new URL('../package.json', import.meta.url)).json() as {
   name: string
@@ -202,6 +202,13 @@ if (proc.exitCode !== 0) {
 
 if (existsSync(outfile)) {
   chmodSync(outfile, 0o755)
+}
+
+const ripgrepVendorDir = './src/vendor/ripgrep'
+if (existsSync(ripgrepVendorDir)) {
+  cpSync(ripgrepVendorDir, join(outDir, 'vendor', 'ripgrep'), {
+    recursive: true,
+  })
 }
 
 console.log(`Built ${outfile}`)

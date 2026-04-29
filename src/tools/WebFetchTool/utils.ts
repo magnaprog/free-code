@@ -20,7 +20,9 @@ import { makeSecondaryModelPrompt } from './prompt.js'
 // Custom error classes for domain blocking
 class DomainBlockedError extends Error {
   constructor(domain: string) {
-    super(`Claude Code is unable to fetch from ${domain}`)
+    super(
+      `WebFetch cannot fetch from ${domain} because the domain was blocked by the WebFetch domain preflight policy.`,
+    )
     this.name = 'DomainBlockedError'
   }
 }
@@ -28,7 +30,7 @@ class DomainBlockedError extends Error {
 class DomainCheckFailedError extends Error {
   constructor(domain: string) {
     super(
-      `Unable to verify if domain ${domain} is safe to fetch. This may be due to network restrictions or enterprise security policies blocking claude.ai.`,
+      `Unable to verify if domain ${domain} is safe to fetch because the WebFetch domain preflight check failed. This may be due to network restrictions or enterprise security policies blocking claude.ai.`,
     )
     this.name = 'DomainCheckFailedError'
   }

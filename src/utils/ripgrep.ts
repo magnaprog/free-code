@@ -1,5 +1,6 @@
 import type { ChildProcess, ExecFileException } from 'child_process'
 import { execFile, spawn } from 'child_process'
+import { existsSync } from 'fs'
 import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
 import * as path from 'path'
@@ -26,6 +27,16 @@ type RipgrepConfig = {
   command: string
   args: string[]
   argv0?: string
+}
+
+function ripgrepCommandForRoot(root: string): string {
+  return process.platform === 'win32'
+    ? path.resolve(root, `${process.arch}-win32`, 'rg.exe')
+    : path.resolve(root, `${process.arch}-${process.platform}`, 'rg')
+}
+
+function isSpawnableRipgrepPath(command: string): boolean {
+  return !command.startsWith('/$bunfs/') && existsSync(command)
 }
 
 const getRipgrepConfig = memoize((): RipgrepConfig => {
@@ -55,13 +66,30 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
     }
   }
 
-  const rgRoot = path.resolve(__dirname, 'vendor', 'ripgrep')
-  const command =
-    process.platform === 'win32'
-      ? path.resolve(rgRoot, `${process.arch}-win32`, 'rg.exe')
-      : path.resolve(rgRoot, `${process.arch}-${process.platform}`, 'rg')
+  const candidateRoots = [
+    // Source tree layout: src/utils/ripgrep.ts -> src/vendor/ripgrep
+    path.resolve(path.dirname(__filename), '..', 'vendor', 'ripgrep'),
+    // Bundled module layout used by compiled/source-snapshot builds.
+    path.resolve(__dirname, 'vendor', 'ripgrep'),
+    // External assets copied next to compiled free-code binaries.
+    path.resolve(path.dirname(process.execPath), 'vendor', 'ripgrep'),
+  ]
 
-  return { mode: 'builtin', command, args: [] }
+  const seen = new Set<string>()
+  for (const root of candidateRoots) {
+    if (seen.has(root)) continue
+    seen.add(root)
+
+    const command = ripgrepCommandForRoot(root)
+    if (isSpawnableRipgrepPath(command)) {
+      return { mode: 'builtin', command, args: [] }
+    }
+  }
+
+  // No usable bundled binary exists. Fall back to PATH so callers fail with a
+  // standard "rg not found" error instead of aliasing/spawning a virtual bunfs
+  // path or a missing platform-specific vendor path.
+  return { mode: 'system', command: 'rg', args: [] }
 })
 
 export function ripgrepCommand(): {

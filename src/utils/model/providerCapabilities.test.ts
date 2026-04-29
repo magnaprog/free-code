@@ -10,6 +10,43 @@ import {
   getRequiredNonClaudeAdapterForModel,
 } from './providerCapabilities.js'
 
+function withOpenAIEnv(
+  provider: string | undefined,
+  apiKey: string | undefined,
+  callback: () => void,
+): void {
+  const previousProvider = process.env.CLAUDE_CODE_USE_OPENAI
+  const previousOpenAIKey = process.env.OPENAI_API_KEY
+
+  if (provider === undefined) {
+    delete process.env.CLAUDE_CODE_USE_OPENAI
+  } else {
+    process.env.CLAUDE_CODE_USE_OPENAI = provider
+  }
+
+  if (apiKey === undefined) {
+    delete process.env.OPENAI_API_KEY
+  } else {
+    process.env.OPENAI_API_KEY = apiKey
+  }
+
+  try {
+    callback()
+  } finally {
+    if (previousProvider === undefined) {
+      delete process.env.CLAUDE_CODE_USE_OPENAI
+    } else {
+      process.env.CLAUDE_CODE_USE_OPENAI = previousProvider
+    }
+
+    if (previousOpenAIKey === undefined) {
+      delete process.env.OPENAI_API_KEY
+    } else {
+      process.env.OPENAI_API_KEY = previousOpenAIKey
+    }
+  }
+}
+
 describe('provider capability adapter routing', () => {
   test('keeps Claude Bedrock models on the Anthropic Bedrock path', () => {
     expect(
@@ -54,38 +91,37 @@ describe('provider capability adapter routing', () => {
   })
 
   test('uses verified context and output caps for Codex variants', () => {
-    for (const model of [
-      'gpt-5.3-codex',
-      'gpt-5.2-codex',
-      'gpt-5.1-codex',
-      'gpt-5.1-codex-mini',
-      'gpt-5.1-codex-max',
-    ]) {
-      expect(getContextWindowForModel(model)).toBe(400_000)
-      expect(getModelMaxOutputTokens(model)).toEqual({
-        default: 32_000,
-        upperLimit: 128_000,
-      })
-    }
+    withOpenAIEnv(undefined, undefined, () => {
+      for (const model of [
+        'gpt-5.3-codex',
+        'gpt-5.2-codex',
+        'gpt-5.1-codex',
+        'gpt-5.1-codex-mini',
+        'gpt-5.1-codex-max',
+      ]) {
+        expect(getContextWindowForModel(model)).toBe(400_000)
+        expect(getModelMaxOutputTokens(model)).toEqual({
+          default: 32_000,
+          upperLimit: 128_000,
+        })
+      }
+    })
   })
 
   test('uses verified context and output caps for current OpenAI Responses models', () => {
-    expect(getContextWindowForModel('gpt-5.5')).toBe(1_050_000)
-    expect(getContextWindowForModel('gpt-5.4')).toBe(1_050_000)
-    expect(getContextWindowForModel('gpt-5.4-mini')).toBe(400_000)
-    expect(getModelMaxOutputTokens('gpt-5.5')).toEqual({
-      default: 32_000,
-      upperLimit: 128_000,
+    withOpenAIEnv(undefined, undefined, () => {
+      expect(getContextWindowForModel('gpt-5.5')).toBe(1_050_000)
+      expect(getContextWindowForModel('gpt-5.4')).toBe(1_050_000)
+      expect(getContextWindowForModel('gpt-5.4-mini')).toBe(400_000)
+      expect(getModelMaxOutputTokens('gpt-5.5')).toEqual({
+        default: 32_000,
+        upperLimit: 128_000,
+      })
     })
   })
 
   test('uses ChatGPT Codex catalog and caps when running through Codex OAuth', () => {
-    const previousProvider = process.env.CLAUDE_CODE_USE_OPENAI
-    const previousOpenAIKey = process.env.OPENAI_API_KEY
-    process.env.CLAUDE_CODE_USE_OPENAI = '1'
-    delete process.env.OPENAI_API_KEY
-
-    try {
+    withOpenAIEnv('1', undefined, () => {
       expect(CHATGPT_CODEX_MODELS.map(m => m.id)).toContain('gpt-5.5')
       expect(CHATGPT_CODEX_MODELS.map(m => m.id)).toContain('gpt-5.4')
       expect(CHATGPT_CODEX_MODELS.map(m => m.id)).toContain('gpt-5.4-mini')
@@ -107,17 +143,6 @@ describe('provider capability adapter routing', () => {
       expect(getContextWindowForModel('gpt-5.3-codex')).toBe(272_000)
       expect(getContextWindowForModel('gpt-5.3-codex-spark')).toBe(128_000)
       expect(getContextWindowForModel('gpt-5.2')).toBe(272_000)
-    } finally {
-      if (previousProvider === undefined) {
-        delete process.env.CLAUDE_CODE_USE_OPENAI
-      } else {
-        process.env.CLAUDE_CODE_USE_OPENAI = previousProvider
-      }
-      if (previousOpenAIKey === undefined) {
-        delete process.env.OPENAI_API_KEY
-      } else {
-        process.env.OPENAI_API_KEY = previousOpenAIKey
-      }
-    }
+    })
   })
 })
