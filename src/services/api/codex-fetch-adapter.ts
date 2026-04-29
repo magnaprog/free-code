@@ -394,8 +394,11 @@ function translateToCodexBody(
   const outputConfig = anthropicBody.output_config as
     | Record<string, unknown>
     | undefined
-  const shouldStream = anthropicBody.stream === true
   const targetBackend = options.targetBackend ?? 'openai-responses'
+  // ChatGPT's private Codex backend rejects non-streaming calls; for Anthropic
+  // non-streaming callers we stream upstream and aggregate back to JSON locally.
+  const shouldStream =
+    targetBackend === 'chatgpt-codex' ? true : anthropicBody.stream === true
 
   const codexModel = mapClaudeModelToCodex(claudeModel, options)
   const reasoningEffort = mapFreeCodeEffortToOpenAIReasoningEffort(
@@ -945,6 +948,132 @@ async function translateCodexStreamToAnthropic(
   })
 }
 
+async function translateCodexStreamToAnthropicResponse(
+  codexResponse: Response,
+  codexModel: string,
+): Promise<Response> {
+  const streamResponse = await translateCodexStreamToAnthropic(
+    codexResponse,
+    codexModel,
+  )
+  const streamText = await streamResponse.text()
+  const requestId =
+    streamResponse.headers.get('x-request-id') ?? `msg_codex_${Date.now()}`
+  const content: Array<Record<string, unknown>> = []
+  const toolInputBuffers = new Map<number, string>()
+  let usage: Record<string, number> = { input_tokens: 0, output_tokens: 0 }
+  let stopReason: string | null = null
+  let stopSequence: string | null = null
+
+  for (const line of streamText.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('data: ')) continue
+
+    const dataStr = trimmed.slice(6)
+    if (!dataStr || dataStr === '[DONE]') continue
+
+    let event: Record<string, unknown>
+    try {
+      event = JSON.parse(dataStr)
+    } catch {
+      continue
+    }
+
+    if (event.type === 'error') {
+      return new Response(JSON.stringify(event), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
+    if (event.type === 'message_start') {
+      const message = event.message as Record<string, unknown> | undefined
+      const messageUsage = message?.usage as Record<string, number> | undefined
+      if (messageUsage) usage = { ...usage, ...messageUsage }
+      continue
+    }
+
+    if (event.type === 'content_block_start') {
+      const index = event.index as number
+      const contentBlock = event.content_block as Record<string, unknown>
+      content[index] = { ...contentBlock }
+      if (contentBlock.type === 'tool_use') {
+        toolInputBuffers.set(index, '')
+      }
+      continue
+    }
+
+    if (event.type === 'content_block_delta') {
+      const index = event.index as number
+      const delta = event.delta as Record<string, unknown>
+      const block = content[index]
+      if (!block) continue
+
+      if (delta.type === 'text_delta' && typeof delta.text === 'string') {
+        block.text = `${typeof block.text === 'string' ? block.text : ''}${delta.text}`
+      } else if (
+        delta.type === 'input_json_delta' &&
+        typeof delta.partial_json === 'string'
+      ) {
+        toolInputBuffers.set(
+          index,
+          `${toolInputBuffers.get(index) ?? ''}${delta.partial_json}`,
+        )
+      }
+      continue
+    }
+
+    if (event.type === 'content_block_stop') {
+      const index = event.index as number
+      const block = content[index]
+      if (block?.type === 'tool_use') {
+        const inputJson = toolInputBuffers.get(index) ?? ''
+        try {
+          block.input = inputJson ? JSON.parse(inputJson) : {}
+        } catch {
+          block.input = {}
+        }
+      }
+      continue
+    }
+
+    if (event.type === 'message_delta') {
+      const delta = event.delta as Record<string, unknown> | undefined
+      stopReason = (delta?.stop_reason as string | null | undefined) ?? stopReason
+      stopSequence =
+        (delta?.stop_sequence as string | null | undefined) ?? stopSequence
+      const deltaUsage = event.usage as Record<string, number> | undefined
+      if (deltaUsage) usage = { ...usage, ...deltaUsage }
+      continue
+    }
+
+    if (event.type === 'message_stop') {
+      const stopUsage = event.usage as Record<string, number> | undefined
+      if (stopUsage) usage = { ...usage, ...stopUsage }
+    }
+  }
+
+  return new Response(
+    JSON.stringify({
+      id: requestId,
+      type: 'message',
+      role: 'assistant',
+      content: content.filter(Boolean),
+      model: codexModel,
+      stop_reason: stopReason ?? 'end_turn',
+      stop_sequence: stopSequence,
+      usage,
+    }),
+    {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-request-id': requestId,
+      },
+    },
+  )
+}
+
 async function translateCodexResponseToAnthropic(
   codexResponse: Response,
   codexModel: string,
@@ -1091,6 +1220,8 @@ export function createCodexFetch(
       anthropicBody = {}
     }
 
+    const anthropicWantsStream = anthropicBody.stream === true
+
     // Translate to Codex format
     const { codexBody, codexModel } = translateToCodexBody(anthropicBody, {
       preserveOpenAIResponsesModelIds: false,
@@ -1137,11 +1268,11 @@ export function createCodexFetch(
       })
     }
 
-    if (codexBody.stream === true) {
+    if (anthropicWantsStream) {
       return translateCodexStreamToAnthropic(codexResponse, codexModel)
     }
 
-    return translateCodexResponseToAnthropic(codexResponse, codexModel)
+    return translateCodexStreamToAnthropicResponse(codexResponse, codexModel)
   }
 }
 
