@@ -20,6 +20,7 @@ import {
 import type { AccountInfo } from '../../utils/config.js'
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { redactSecrets } from '../../utils/redaction.js'
 import { getOauthProfileFromOauthToken } from './getOauthProfile.js'
 import type {
   BillingType,
@@ -287,7 +288,7 @@ export async function refreshOAuthToken(
   } catch (error) {
     const responseBody =
       axios.isAxiosError(error) && error.response?.data
-        ? JSON.stringify(error.response.data)
+        ? redactSecrets(JSON.stringify(error.response.data))
         : undefined
     logEvent('tengu_oauth_token_refresh_failure', {
       error: (error as Error)

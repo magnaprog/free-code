@@ -4,34 +4,12 @@ import {
 } from '../services/analytics/index.js'
 import { logForDebugging } from '../utils/debug.js'
 import { errorMessage } from '../utils/errors.js'
+import { redactSecrets, redactSecretValues } from '../utils/redaction.js'
 import { jsonStringify } from '../utils/slowOperations.js'
 
+export { redactSecrets }
+
 const DEBUG_MSG_LIMIT = 2000
-
-const SECRET_FIELD_NAMES = [
-  'session_ingress_token',
-  'environment_secret',
-  'access_token',
-  'secret',
-  'token',
-]
-
-const SECRET_PATTERN = new RegExp(
-  `"(${SECRET_FIELD_NAMES.join('|')})"\\s*:\\s*"([^"]*)"`,
-  'g',
-)
-
-const REDACT_MIN_LENGTH = 16
-
-export function redactSecrets(s: string): string {
-  return s.replace(SECRET_PATTERN, (_match, field: string, value: string) => {
-    if (value.length < REDACT_MIN_LENGTH) {
-      return `"${field}":"[REDACTED]"`
-    }
-    const redacted = `${value.slice(0, 8)}...${value.slice(-4)}`
-    return `"${field}":"${redacted}"`
-  })
-}
 
 /** Truncate a string for debug logging, collapsing newlines. */
 export function debugTruncate(s: string): string {
@@ -44,7 +22,8 @@ export function debugTruncate(s: string): string {
 
 /** Truncate a JSON-serializable value for debug logging. */
 export function debugBody(data: unknown): string {
-  const raw = typeof data === 'string' ? data : jsonStringify(data)
+  const raw =
+    typeof data === 'string' ? data : jsonStringify(redactSecretValues(data))
   const s = redactSecrets(raw)
   if (s.length <= DEBUG_MSG_LIMIT) {
     return s
@@ -74,7 +53,7 @@ export function describeAxiosError(err: unknown): string {
             ? (data.error as Record<string, unknown>).message
             : undefined
       if (detail) {
-        return `${msg}: ${detail}`
+        return redactSecrets(`${msg}: ${detail}`)
       }
     }
   }
