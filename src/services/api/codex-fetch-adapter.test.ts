@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   codexFetchAdapterTestHooks,
+  createCodexFetch,
   isCodexModel,
 } from './codex-fetch-adapter.js'
 
@@ -171,10 +172,58 @@ describe('codex fetch adapter translation', () => {
 
     expect(codexModel).toBe('gpt-5.5')
     expect(codexBody.model).toBe('gpt-5.5')
+    expect(codexBody.stream).toBe(true)
     expect(codexBody).not.toHaveProperty('max_output_tokens')
     expect(codexBody).not.toHaveProperty('temperature')
     expect(codexBody).not.toHaveProperty('stop')
     expect(codexBody.reasoning).toEqual({ effort: 'high' })
+  })
+
+  test('uses ChatGPT Codex streaming upstream for non-streaming Anthropic callers', async () => {
+    const previousFetch = globalThis.fetch
+    const payload = btoa(
+      JSON.stringify({
+        'https://api.openai.com/auth': { chatgpt_account_id: 'acct_test' },
+      }),
+    )
+    const token = `header.${payload}.signature`
+    let upstreamBody: Record<string, unknown> | undefined
+
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      upstreamBody = JSON.parse(String(init?.body ?? '{}'))
+      return sseResponse([
+        {
+          type: 'response.output_item.added',
+          item: { type: 'message' },
+        },
+        { type: 'response.output_text.delta', delta: 'done' },
+        {
+          type: 'response.completed',
+          response: { usage: { input_tokens: 3, output_tokens: 4 } },
+        },
+      ])
+    }) as typeof fetch
+
+    try {
+      const response = await createCodexFetch(token)(
+        'https://api.anthropic.com/v1/messages',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            model: 'gpt-5.5',
+            stream: false,
+            messages: [{ role: 'user', content: 'hello' }],
+          }),
+        },
+      )
+      const body = await response.json()
+
+      expect(upstreamBody?.stream).toBe(true)
+      expect(body.content).toEqual([{ type: 'text', text: 'done' }])
+      expect(body.usage).toEqual({ input_tokens: 3, output_tokens: 4 })
+    } finally {
+      globalThis.fetch = previousFetch
+    }
   })
 
   test('translates non-streaming Responses output to Anthropic message shape', async () => {

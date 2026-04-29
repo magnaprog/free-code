@@ -5,6 +5,7 @@ import {
   logEvent,
 } from '../../services/analytics/index.js'
 import { queryHaiku } from '../../services/api/claude.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
 import { AbortError } from '../../utils/errors.js'
 import { getWebFetchUserAgent } from '../../utils/http.js'
 import { logError } from '../../utils/log.js'
@@ -20,7 +21,9 @@ import { makeSecondaryModelPrompt } from './prompt.js'
 // Custom error classes for domain blocking
 class DomainBlockedError extends Error {
   constructor(domain: string) {
-    super(`Claude Code is unable to fetch from ${domain}`)
+    super(
+      `WebFetch cannot fetch from ${domain} because the domain was blocked by the WebFetch domain preflight policy.`,
+    )
     this.name = 'DomainBlockedError'
   }
 }
@@ -28,7 +31,7 @@ class DomainBlockedError extends Error {
 class DomainCheckFailedError extends Error {
   constructor(domain: string) {
     super(
-      `Unable to verify if domain ${domain} is safe to fetch. This may be due to network restrictions or enterprise security policies blocking claude.ai.`,
+      `Unable to verify if domain ${domain} is safe to fetch because the Anthropic WebFetch preflight endpoint (api.anthropic.com) could not be reached or returned an unexpected response.`,
     )
     this.name = 'DomainCheckFailedError'
   }
@@ -172,6 +175,10 @@ type DomainCheckResult =
   | { status: 'allowed' }
   | { status: 'blocked' }
   | { status: 'check_failed'; error: Error }
+
+function shouldRunAnthropicWebFetchPreflight(): boolean {
+  return isEnvTruthy(process.env.FREE_CODE_ENABLE_ANTHROPIC_WEBFETCH_PREFLIGHT)
+}
 
 export async function checkDomainBlocklist(
   domain: string,
@@ -380,11 +387,15 @@ export async function getURLMarkdownContent(
 
     const hostname = parsedUrl.hostname
 
-    // Check if the user has opted to skip the blocklist check
-    // This is for enterprise customers with restrictive security policies
-    // that prevent outbound connections to claude.ai
+    // free-code does not call Anthropic's domain preflight endpoint by default.
+    // Users who explicitly want Anthropic's WebFetch domain policy can opt in
+    // with FREE_CODE_ENABLE_ANTHROPIC_WEBFETCH_PREFLIGHT=true. The legacy
+    // skipWebFetchPreflight setting still wins as an explicit off switch.
     const settings = getSettings_DEPRECATED()
-    if (!settings.skipWebFetchPreflight) {
+    if (
+      !settings.skipWebFetchPreflight &&
+      shouldRunAnthropicWebFetchPreflight()
+    ) {
       const checkResult = await checkDomainBlocklist(hostname)
       switch (checkResult.status) {
         case 'allowed':

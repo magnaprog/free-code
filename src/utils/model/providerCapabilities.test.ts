@@ -10,6 +10,57 @@ import {
   getRequiredNonClaudeAdapterForModel,
 } from './providerCapabilities.js'
 
+function withProviderEnv(
+  env: {
+    openai?: string
+    openaiApiKey?: string
+    bedrock?: string
+    vertex?: string
+    foundry?: string
+    userType?: string
+    maxContextTokens?: string
+  },
+  callback: () => void,
+): void {
+  const previous = {
+    openai: process.env.CLAUDE_CODE_USE_OPENAI,
+    openaiApiKey: process.env.OPENAI_API_KEY,
+    bedrock: process.env.CLAUDE_CODE_USE_BEDROCK,
+    vertex: process.env.CLAUDE_CODE_USE_VERTEX,
+    foundry: process.env.CLAUDE_CODE_USE_FOUNDRY,
+    userType: process.env.USER_TYPE,
+    maxContextTokens: process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS,
+  }
+
+  const setOrDelete = (key: string, value: string | undefined) => {
+    if (value === undefined) {
+      delete process.env[key]
+    } else {
+      process.env[key] = value
+    }
+  }
+
+  setOrDelete('CLAUDE_CODE_USE_OPENAI', env.openai)
+  setOrDelete('OPENAI_API_KEY', env.openaiApiKey)
+  setOrDelete('CLAUDE_CODE_USE_BEDROCK', env.bedrock)
+  setOrDelete('CLAUDE_CODE_USE_VERTEX', env.vertex)
+  setOrDelete('CLAUDE_CODE_USE_FOUNDRY', env.foundry)
+  setOrDelete('USER_TYPE', env.userType)
+  setOrDelete('CLAUDE_CODE_MAX_CONTEXT_TOKENS', env.maxContextTokens)
+
+  try {
+    callback()
+  } finally {
+    setOrDelete('CLAUDE_CODE_USE_OPENAI', previous.openai)
+    setOrDelete('OPENAI_API_KEY', previous.openaiApiKey)
+    setOrDelete('CLAUDE_CODE_USE_BEDROCK', previous.bedrock)
+    setOrDelete('CLAUDE_CODE_USE_VERTEX', previous.vertex)
+    setOrDelete('CLAUDE_CODE_USE_FOUNDRY', previous.foundry)
+    setOrDelete('USER_TYPE', previous.userType)
+    setOrDelete('CLAUDE_CODE_MAX_CONTEXT_TOKENS', previous.maxContextTokens)
+  }
+}
+
 describe('provider capability adapter routing', () => {
   test('keeps Claude Bedrock models on the Anthropic Bedrock path', () => {
     expect(
@@ -54,38 +105,37 @@ describe('provider capability adapter routing', () => {
   })
 
   test('uses verified context and output caps for Codex variants', () => {
-    for (const model of [
-      'gpt-5.3-codex',
-      'gpt-5.2-codex',
-      'gpt-5.1-codex',
-      'gpt-5.1-codex-mini',
-      'gpt-5.1-codex-max',
-    ]) {
-      expect(getContextWindowForModel(model)).toBe(400_000)
-      expect(getModelMaxOutputTokens(model)).toEqual({
-        default: 32_000,
-        upperLimit: 128_000,
-      })
-    }
+    withProviderEnv({ openai: '1', openaiApiKey: 'test' }, () => {
+      for (const model of [
+        'gpt-5.3-codex',
+        'gpt-5.2-codex',
+        'gpt-5.1-codex',
+        'gpt-5.1-codex-mini',
+        'gpt-5.1-codex-max',
+      ]) {
+        expect(getContextWindowForModel(model)).toBe(400_000)
+        expect(getModelMaxOutputTokens(model)).toEqual({
+          default: 32_000,
+          upperLimit: 128_000,
+        })
+      }
+    })
   })
 
   test('uses verified context and output caps for current OpenAI Responses models', () => {
-    expect(getContextWindowForModel('gpt-5.5')).toBe(1_050_000)
-    expect(getContextWindowForModel('gpt-5.4')).toBe(1_050_000)
-    expect(getContextWindowForModel('gpt-5.4-mini')).toBe(400_000)
-    expect(getModelMaxOutputTokens('gpt-5.5')).toEqual({
-      default: 32_000,
-      upperLimit: 128_000,
+    withProviderEnv({ openai: '1', openaiApiKey: 'test' }, () => {
+      expect(getContextWindowForModel('gpt-5.5')).toBe(1_050_000)
+      expect(getContextWindowForModel('gpt-5.4')).toBe(1_050_000)
+      expect(getContextWindowForModel('gpt-5.4-mini')).toBe(400_000)
+      expect(getModelMaxOutputTokens('gpt-5.5')).toEqual({
+        default: 32_000,
+        upperLimit: 128_000,
+      })
     })
   })
 
   test('uses ChatGPT Codex catalog and caps when running through Codex OAuth', () => {
-    const previousProvider = process.env.CLAUDE_CODE_USE_OPENAI
-    const previousOpenAIKey = process.env.OPENAI_API_KEY
-    process.env.CLAUDE_CODE_USE_OPENAI = '1'
-    delete process.env.OPENAI_API_KEY
-
-    try {
+    withProviderEnv({ openai: '1' }, () => {
       expect(CHATGPT_CODEX_MODELS.map(m => m.id)).toContain('gpt-5.5')
       expect(CHATGPT_CODEX_MODELS.map(m => m.id)).toContain('gpt-5.4')
       expect(CHATGPT_CODEX_MODELS.map(m => m.id)).toContain('gpt-5.4-mini')
@@ -107,17 +157,6 @@ describe('provider capability adapter routing', () => {
       expect(getContextWindowForModel('gpt-5.3-codex')).toBe(272_000)
       expect(getContextWindowForModel('gpt-5.3-codex-spark')).toBe(128_000)
       expect(getContextWindowForModel('gpt-5.2')).toBe(272_000)
-    } finally {
-      if (previousProvider === undefined) {
-        delete process.env.CLAUDE_CODE_USE_OPENAI
-      } else {
-        process.env.CLAUDE_CODE_USE_OPENAI = previousProvider
-      }
-      if (previousOpenAIKey === undefined) {
-        delete process.env.OPENAI_API_KEY
-      } else {
-        process.env.OPENAI_API_KEY = previousOpenAIKey
-      }
-    }
+    })
   })
 })

@@ -1,4 +1,6 @@
 import { getMainLoopModel } from './model/model.js'
+import { getRequiredNonClaudeAdapterForModel } from './model/providerCapabilities.js'
+import { getAPIProvider } from './model/providers.js'
 
 // Document extensions that are handled specially
 export const DOCUMENT_EXTENSIONS = new Set(['pdf'])
@@ -50,14 +52,26 @@ export function parsePDFPageRange(
 }
 
 /**
- * Check if PDF reading is supported with the current model.
- * PDF document blocks work on all providers (1P, Vertex, Bedrock, Foundry).
- * Haiku 3 is the only remaining model that predates PDF support; users on
- * it fall back to the page-extraction path (poppler-utils). Substring match
- * covers all provider ID formats (Bedrock prefixes, Vertex @-dates).
+ * Check if full PDF document blocks are supported with the current model/provider.
+ * Currently wired Anthropic providers support PDF document blocks except legacy
+ * Haiku 3 models. Non-Claude adapters must use the pages/page-extraction path.
  */
 export function isPDFSupported(): boolean {
-  return !getMainLoopModel().toLowerCase().includes('claude-3-haiku')
+  const provider = getAPIProvider()
+  const model = getMainLoopModel()
+
+  if (provider === 'openai') {
+    return false
+  }
+
+  if (
+    provider === 'bedrock' &&
+    getRequiredNonClaudeAdapterForModel(provider, model) === 'bedrock-converse'
+  ) {
+    return false
+  }
+
+  return !model.toLowerCase().includes('claude-3-haiku')
 }
 
 /**

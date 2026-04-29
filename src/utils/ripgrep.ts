@@ -1,5 +1,6 @@
 import type { ChildProcess, ExecFileException } from 'child_process'
-import { execFile, spawn } from 'child_process'
+import { execFile, spawn, spawnSync } from 'child_process'
+import { accessSync, constants } from 'fs'
 import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
 import * as path from 'path'
@@ -28,6 +29,48 @@ type RipgrepConfig = {
   argv0?: string
 }
 
+function ripgrepCommandForRoot(root: string): string {
+  return process.platform === 'win32'
+    ? path.resolve(root, `${process.arch}-win32`, 'rg.exe')
+    : path.resolve(root, `${process.arch}-${process.platform}`, 'rg')
+}
+
+function isSpawnableRipgrepPath(command: string): boolean {
+  if (command.includes('$bunfs')) {
+    return false
+  }
+  try {
+    accessSync(command, constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function embeddedRipgrepConfig(): RipgrepConfig | null {
+  if (!isInBundledMode()) {
+    return null
+  }
+
+  const test = spawnSync(process.execPath, ['--version'], {
+    argv0: 'rg',
+    encoding: 'utf8',
+    timeout: 5_000,
+    windowsHide: true,
+  })
+
+  if (test.status === 0 && test.stdout.startsWith('ripgrep ')) {
+    return {
+      mode: 'embedded',
+      command: process.execPath,
+      args: ['--no-config'],
+      argv0: 'rg',
+    }
+  }
+
+  return null
+}
+
 const getRipgrepConfig = memoize((): RipgrepConfig => {
   const userWantsSystemRipgrep = isEnvDefinedFalsy(
     process.env.USE_BUILTIN_RIPGREP,
@@ -44,24 +87,38 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
     }
   }
 
-  // In bundled (native) mode, ripgrep is statically compiled into bun-internal
-  // and dispatches based on argv[0]. We spawn ourselves with argv0='rg'.
-  if (isInBundledMode()) {
-    return {
-      mode: 'embedded',
-      command: process.execPath,
-      args: ['--no-config'],
-      argv0: 'rg',
+  const candidateRoots = [
+    // Source tree layout: src/utils/ripgrep.ts -> src/vendor/ripgrep
+    path.resolve(path.dirname(__filename), '..', 'vendor', 'ripgrep'),
+    // External assets copied next to compiled free-code binaries.
+    path.resolve(path.dirname(process.execPath), 'vendor', 'ripgrep'),
+    // Bundled module layout used by compiled/source-snapshot builds, if it is a
+    // real executable path rather than Bun's virtual /$bunfs filesystem.
+    path.resolve(__dirname, 'vendor', 'ripgrep'),
+  ]
+
+  const seen = new Set<string>()
+  for (const root of candidateRoots) {
+    if (seen.has(root)) continue
+    seen.add(root)
+
+    const command = ripgrepCommandForRoot(root)
+    if (isSpawnableRipgrepPath(command)) {
+      return { mode: 'builtin', command, args: [] }
     }
   }
 
-  const rgRoot = path.resolve(__dirname, 'vendor', 'ripgrep')
-  const command =
-    process.platform === 'win32'
-      ? path.resolve(rgRoot, `${process.arch}-win32`, 'rg.exe')
-      : path.resolve(rgRoot, `${process.arch}-${process.platform}`, 'rg')
+  // Anthropic native builds can dispatch embedded ripgrep via argv0='rg'. Plain
+  // free-code Bun builds do not, so only use this path after probing it.
+  const embedded = embeddedRipgrepConfig()
+  if (embedded) {
+    return embedded
+  }
 
-  return { mode: 'builtin', command, args: [] }
+  // No usable bundled binary exists. Fall back to PATH so callers fail with a
+  // standard "rg not found" error instead of aliasing/spawning a virtual bunfs
+  // path or a missing platform-specific vendor path.
+  return { mode: 'system', command: 'rg', args: [] }
 })
 
 export function ripgrepCommand(): {

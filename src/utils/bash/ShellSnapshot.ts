@@ -65,8 +65,16 @@ function createArgv0ShellFunction(
 export function createRipgrepShellIntegration(): {
   type: 'alias' | 'function'
   snippet: string
-} {
+} | null {
   const rgCommand = ripgrepCommand()
+
+  if (
+    !rgCommand.argv0 &&
+    rgCommand.rgPath === 'rg' &&
+    rgCommand.rgArgs.length === 0
+  ) {
+    return null
+  }
 
   // For embedded ripgrep (bun-internal), we need a shell function that sets argv0
   if (rgCommand.argv0) {
@@ -285,34 +293,36 @@ async function getClaudeCodeSnapshotContent(): Promise<string> {
 
   let content = ''
 
-  // Check if rg is available, if not create an alias/function to bundled ripgrep
-  // We use a subshell to unalias rg before checking, so that user aliases like
-  // `alias rg='rg --smart-case'` don't shadow the real binary check. The subshell
-  // ensures we don't modify the user's aliases in the parent shell.
-  content += `
+  if (rgIntegration) {
+    // Check if rg is available, if not create an alias/function to bundled ripgrep
+    // We use a subshell to unalias rg before checking, so that user aliases like
+    // `alias rg='rg --smart-case'` don't shadow the real binary check. The subshell
+    // ensures we don't modify the user's aliases in the parent shell.
+    content += `
       # Check for rg availability
       echo "# Check for rg availability" >> "$SNAPSHOT_FILE"
       echo "if ! (unalias rg 2>/dev/null; command -v rg) >/dev/null 2>&1; then" >> "$SNAPSHOT_FILE"
   `
 
-  if (rgIntegration.type === 'function') {
-    // For embedded ripgrep, write the function definition using heredoc
-    content += `
+    if (rgIntegration.type === 'function') {
+      // For embedded ripgrep, write the function definition using heredoc
+      content += `
       cat >> "$SNAPSHOT_FILE" << 'RIPGREP_FUNC_END'
   ${rgIntegration.snippet}
 RIPGREP_FUNC_END
     `
-  } else {
-    // For regular ripgrep, write a simple alias
-    const escapedSnippet = rgIntegration.snippet.replace(/'/g, "'\\''")
-    content += `
+    } else {
+      // For regular ripgrep, write a simple alias
+      const escapedSnippet = rgIntegration.snippet.replace(/'/g, "'\\''")
+      content += `
       echo '  alias rg='"'${escapedSnippet}'" >> "$SNAPSHOT_FILE"
     `
-  }
+    }
 
-  content += `
+    content += `
       echo "fi" >> "$SNAPSHOT_FILE"
   `
+  }
 
   // For ant-native builds, shadow find/grep with bfs/ugrep embedded in the bun
   // binary. Unlike rg (which only activates if system rg is absent), we always
