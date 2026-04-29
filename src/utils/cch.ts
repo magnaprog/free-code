@@ -3,6 +3,7 @@ import xxhash from 'xxhash-wasm'
 const CCH_SEED = 0x6E52736AC806831En
 const CCH_PLACEHOLDER = 'cch=00000'
 const BILLING_HEADER_KEY = 'x-anthropic-billing-header'
+const SYSTEM_PROPERTY_PATTERN = /[{,]"system"\s*:/
 const CCH_MASK = 0xFFFFFn
 
 let hasherPromise: ReturnType<typeof xxhash> | null = null
@@ -21,7 +22,10 @@ export async function computeCch(body: string): Promise<string> {
 }
 
 function findBillingHeaderPlaceholder(body: string): number {
-  const headerStart = body.indexOf(BILLING_HEADER_KEY)
+  const systemMatch = SYSTEM_PROPERTY_PATTERN.exec(body)
+  if (!systemMatch) return -1
+
+  const headerStart = body.indexOf(BILLING_HEADER_KEY, systemMatch.index)
   if (headerStart === -1) return -1
   return body.indexOf(CCH_PLACEHOLDER, headerStart)
 }

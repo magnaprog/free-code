@@ -50,7 +50,13 @@ describe('session transcript loggability', () => {
     expect(
       isLoggableMessage({
         type: 'attachment',
-        attachment: { type: 'tool_use_error', content: 'hidden' },
+        attachment: {
+          type: 'hook_success',
+          content: 'hidden',
+          hookName: 'test',
+          toolUseID: 'toolu_1',
+          hookEvent: 'PostToolUse',
+        },
       } as any),
     ).toBe(false)
   })

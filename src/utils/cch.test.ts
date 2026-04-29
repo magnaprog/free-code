@@ -11,8 +11,10 @@ describe('CCH placeholder replacement', () => {
   })
 
   test('replaces the billing header placeholder without mutating earlier user content', () => {
+    const userContent =
+      'debug x-anthropic-billing-header with literal cch=00000 value'
     const body = JSON.stringify({
-      messages: [{ role: 'user', content: 'literal cch=00000 value' }],
+      messages: [{ role: 'user', content: userContent }],
       system: [
         {
           type: 'text',
@@ -26,7 +28,7 @@ describe('CCH placeholder replacement', () => {
     const replaced = replaceCchPlaceholder(body, 'abcde')
     const parsed = JSON.parse(replaced)
 
-    expect(parsed.messages[0].content).toBe('literal cch=00000 value')
+    expect(parsed.messages[0].content).toBe(userContent)
     expect(parsed.system[0].text).toContain('cch=abcde')
     expect(parsed.system[0].text).not.toContain('cch=00000')
   })
