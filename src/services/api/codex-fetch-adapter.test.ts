@@ -64,6 +64,24 @@ describe('codex fetch adapter translation', () => {
     )
   })
 
+  test('does not silently remap unsupported explicit GPT IDs on the private backend', () => {
+    const { codexBody, codexModel } =
+      codexFetchAdapterTestHooks.translateToCodexBody(
+        {
+          model: 'gpt-5.2-codex',
+          stream: false,
+          messages: [{ role: 'user', content: 'hello' }],
+        },
+        {
+          preserveOpenAIResponsesModelIds: false,
+          targetBackend: 'chatgpt-codex',
+        },
+      )
+
+    expect(codexModel).toBe('gpt-5.2-codex')
+    expect(codexBody.model).toBe('gpt-5.2-codex')
+  })
+
   test('maps Anthropic request controls to Responses fields', () => {
     const { codexBody, codexModel } =
       codexFetchAdapterTestHooks.translateToCodexBody({
