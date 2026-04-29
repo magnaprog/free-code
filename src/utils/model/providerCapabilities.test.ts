@@ -10,40 +10,46 @@ import {
   getRequiredNonClaudeAdapterForModel,
 } from './providerCapabilities.js'
 
-function withOpenAIEnv(
-  provider: string | undefined,
-  apiKey: string | undefined,
+function withProviderEnv(
+  env: {
+    openai?: string
+    openaiApiKey?: string
+    bedrock?: string
+    vertex?: string
+    foundry?: string
+  },
   callback: () => void,
 ): void {
-  const previousProvider = process.env.CLAUDE_CODE_USE_OPENAI
-  const previousOpenAIKey = process.env.OPENAI_API_KEY
-
-  if (provider === undefined) {
-    delete process.env.CLAUDE_CODE_USE_OPENAI
-  } else {
-    process.env.CLAUDE_CODE_USE_OPENAI = provider
+  const previous = {
+    openai: process.env.CLAUDE_CODE_USE_OPENAI,
+    openaiApiKey: process.env.OPENAI_API_KEY,
+    bedrock: process.env.CLAUDE_CODE_USE_BEDROCK,
+    vertex: process.env.CLAUDE_CODE_USE_VERTEX,
+    foundry: process.env.CLAUDE_CODE_USE_FOUNDRY,
   }
 
-  if (apiKey === undefined) {
-    delete process.env.OPENAI_API_KEY
-  } else {
-    process.env.OPENAI_API_KEY = apiKey
+  const setOrDelete = (key: string, value: string | undefined) => {
+    if (value === undefined) {
+      delete process.env[key]
+    } else {
+      process.env[key] = value
+    }
   }
+
+  setOrDelete('CLAUDE_CODE_USE_OPENAI', env.openai)
+  setOrDelete('OPENAI_API_KEY', env.openaiApiKey)
+  setOrDelete('CLAUDE_CODE_USE_BEDROCK', env.bedrock)
+  setOrDelete('CLAUDE_CODE_USE_VERTEX', env.vertex)
+  setOrDelete('CLAUDE_CODE_USE_FOUNDRY', env.foundry)
 
   try {
     callback()
   } finally {
-    if (previousProvider === undefined) {
-      delete process.env.CLAUDE_CODE_USE_OPENAI
-    } else {
-      process.env.CLAUDE_CODE_USE_OPENAI = previousProvider
-    }
-
-    if (previousOpenAIKey === undefined) {
-      delete process.env.OPENAI_API_KEY
-    } else {
-      process.env.OPENAI_API_KEY = previousOpenAIKey
-    }
+    setOrDelete('CLAUDE_CODE_USE_OPENAI', previous.openai)
+    setOrDelete('OPENAI_API_KEY', previous.openaiApiKey)
+    setOrDelete('CLAUDE_CODE_USE_BEDROCK', previous.bedrock)
+    setOrDelete('CLAUDE_CODE_USE_VERTEX', previous.vertex)
+    setOrDelete('CLAUDE_CODE_USE_FOUNDRY', previous.foundry)
   }
 }
 
@@ -91,7 +97,7 @@ describe('provider capability adapter routing', () => {
   })
 
   test('uses verified context and output caps for Codex variants', () => {
-    withOpenAIEnv(undefined, undefined, () => {
+    withProviderEnv({}, () => {
       for (const model of [
         'gpt-5.3-codex',
         'gpt-5.2-codex',
@@ -109,7 +115,7 @@ describe('provider capability adapter routing', () => {
   })
 
   test('uses verified context and output caps for current OpenAI Responses models', () => {
-    withOpenAIEnv(undefined, undefined, () => {
+    withProviderEnv({}, () => {
       expect(getContextWindowForModel('gpt-5.5')).toBe(1_050_000)
       expect(getContextWindowForModel('gpt-5.4')).toBe(1_050_000)
       expect(getContextWindowForModel('gpt-5.4-mini')).toBe(400_000)
@@ -121,7 +127,7 @@ describe('provider capability adapter routing', () => {
   })
 
   test('uses ChatGPT Codex catalog and caps when running through Codex OAuth', () => {
-    withOpenAIEnv('1', undefined, () => {
+    withProviderEnv({ openai: '1' }, () => {
       expect(CHATGPT_CODEX_MODELS.map(m => m.id)).toContain('gpt-5.5')
       expect(CHATGPT_CODEX_MODELS.map(m => m.id)).toContain('gpt-5.4')
       expect(CHATGPT_CODEX_MODELS.map(m => m.id)).toContain('gpt-5.4-mini')

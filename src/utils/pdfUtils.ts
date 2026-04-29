@@ -1,4 +1,5 @@
 import { getMainLoopModel } from './model/model.js'
+import { getRequiredNonClaudeAdapterForModel } from './model/providerCapabilities.js'
 import { getAPIProvider } from './model/providers.js'
 
 // Document extensions that are handled specially
@@ -53,14 +54,16 @@ export function parsePDFPageRange(
 /**
  * Check if full PDF document blocks are supported with the current model/provider.
  * Anthropic providers support PDF document blocks except legacy Haiku 3 models.
- * The OpenAI/Codex adapter does not translate Anthropic document blocks, so it
- * must use page extraction instead of sending full PDF documents.
+ * Non-Claude adapters do not translate Anthropic document blocks, so they must
+ * use page extraction instead of sending full PDF documents.
  */
 export function isPDFSupported(): boolean {
-  if (getAPIProvider() === 'openai') {
+  const provider = getAPIProvider()
+  const model = getMainLoopModel()
+  if (getRequiredNonClaudeAdapterForModel(provider, model) !== null) {
     return false
   }
-  return !getMainLoopModel().toLowerCase().includes('claude-3-haiku')
+  return !model.toLowerCase().includes('claude-3-haiku')
 }
 
 /**

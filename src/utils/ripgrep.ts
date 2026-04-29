@@ -1,6 +1,6 @@
 import type { ChildProcess, ExecFileException } from 'child_process'
 import { execFile, spawn } from 'child_process'
-import { existsSync } from 'fs'
+import { accessSync, constants } from 'fs'
 import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
 import * as path from 'path'
@@ -36,7 +36,15 @@ function ripgrepCommandForRoot(root: string): string {
 }
 
 function isSpawnableRipgrepPath(command: string): boolean {
-  return !command.startsWith('/$bunfs/') && existsSync(command)
+  if (command.startsWith('/$bunfs/')) {
+    return false
+  }
+  try {
+    accessSync(command, constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
 }
 
 const getRipgrepConfig = memoize((): RipgrepConfig => {

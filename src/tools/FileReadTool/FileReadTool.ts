@@ -954,10 +954,17 @@ async function callInner(
       )
     }
 
+    if (!isPDFSupported()) {
+      throw new Error(
+        'Reading full PDFs is not supported with this model or provider. ' +
+          `Use the pages parameter to read specific page ranges (e.g., pages: "1-5", maximum ${PDF_MAX_PAGES_PER_READ} pages per request). ` +
+          'Page extraction requires poppler-utils: install with `brew install poppler` on macOS or `apt-get install poppler-utils` on Debian/Ubuntu.',
+      )
+    }
+
     const fs = getFsImplementation()
     const stats = await fs.stat(resolvedFilePath)
-    const shouldExtractPages =
-      !isPDFSupported() || stats.size > PDF_EXTRACT_SIZE_THRESHOLD
+    const shouldExtractPages = stats.size > PDF_EXTRACT_SIZE_THRESHOLD
 
     if (shouldExtractPages) {
       const extractResult = await extractPDFPages(resolvedFilePath)
@@ -974,14 +981,6 @@ async function callInner(
           fileSize: stats.size,
         })
       }
-    }
-
-    if (!isPDFSupported()) {
-      throw new Error(
-        'Reading full PDFs is not supported with this model or provider. ' +
-          `Use the pages parameter to read specific page ranges (e.g., pages: "1-5", maximum ${PDF_MAX_PAGES_PER_READ} pages per request). ` +
-          'Page extraction requires poppler-utils: install with `brew install poppler` on macOS or `apt-get install poppler-utils` on Debian/Ubuntu.',
-      )
     }
 
     const readResult = await readPDF(resolvedFilePath)
