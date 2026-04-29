@@ -85,6 +85,14 @@ function cloneRecord(record: Record<string, unknown>): Record<string, unknown> {
   }
 }
 
+function createFallbackToolUseIdFactory(): () => string {
+  let counter = 0
+  return () => {
+    counter += 1
+    return `toolu_fallback_${counter}`
+  }
+}
+
 function rememberReasoningItemsForToolCall(
   callId: unknown,
   reasoningItems: Record<string, unknown>[],
@@ -544,6 +552,7 @@ async function translateCodexStreamToAnthropic(
       let hadToolCalls = false
       let streamStopReason: 'end_turn' | 'max_tokens' = 'end_turn'
       const pendingReasoningItems: Record<string, unknown>[] = []
+      const createFallbackToolUseId = createFallbackToolUseIdFactory()
 
       try {
         const reader = codexResponse.body?.getReader()
@@ -625,7 +634,8 @@ async function translateCodexStreamToAnthropic(
                 }
 
                 // Start tool_use block (Anthropic format)
-                currentToolCallId = (item.call_id as string) || `toolu_${Date.now()}`
+                currentToolCallId =
+                  (item.call_id as string) || createFallbackToolUseId()
                 currentToolCallName = (item.name as string) || ''
                 currentToolCallArgs = (item.arguments as string) || ''
                 inToolCall = true
@@ -930,6 +940,7 @@ async function translateCodexResponseToAnthropic(
   const outputItems = Array.isArray(response.output) ? response.output : []
   let sawToolUse = false
   const pendingReasoningItems: Record<string, unknown>[] = []
+  const createFallbackToolUseId = createFallbackToolUseIdFactory()
 
   for (const item of outputItems) {
     if (!item || typeof item !== 'object') {
@@ -967,7 +978,7 @@ async function translateCodexResponseToAnthropic(
             ? output.call_id
             : typeof output.id === 'string'
               ? output.id
-              : `toolu_${Date.now()}`,
+              : createFallbackToolUseId(),
         name: typeof output.name === 'string' ? output.name : '',
         input: parseToolInput(output.arguments),
       })

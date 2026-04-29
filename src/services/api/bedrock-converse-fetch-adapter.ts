@@ -4,6 +4,7 @@ import type {
   ConverseCommandOutput,
   ConverseStreamCommandInput,
   ConverseStreamCommandOutput,
+  ImageBlock,
   ConverseStreamOutput,
   Message,
   Tool,
@@ -127,6 +128,41 @@ function mediaTypeToBedrockImageFormat(mediaType: string | undefined):
   }
 }
 
+function createFallbackToolUseIdFactory(): () => string {
+  let counter = 0
+  return () => {
+    counter += 1
+    return `toolu_fallback_${counter}`
+  }
+}
+
+function modelSupportsBedrockToolResultImages(modelId: string): boolean {
+  const model = modelId.toLowerCase()
+  return model.includes('amazon.nova') || model.includes('anthropic.claude')
+}
+
+function translateImageBlock(block: AnthropicContentBlock): ImageBlock | null {
+  if (
+    block.type !== 'image' ||
+    block.source?.type !== 'base64' ||
+    typeof block.source.data !== 'string'
+  ) {
+    return null
+  }
+
+  const format = mediaTypeToBedrockImageFormat(block.source.media_type)
+  if (!format) {
+    return null
+  }
+
+  return {
+    format,
+    source: {
+      bytes: Buffer.from(block.source.data, 'base64'),
+    },
+  }
+}
+
 function translateSystem(system: unknown): Array<{ text: string }> | undefined {
   if (typeof system === 'string' && system.length > 0) {
     return [{ text: system }]
@@ -149,6 +185,7 @@ function translateSystem(system: unknown): Array<{ text: string }> | undefined {
 
 function translateToolResultContent(
   content: string | AnthropicContentBlock[] | undefined,
+  modelId: string,
 ): ToolResultContentBlock[] {
   if (typeof content === 'string') {
     return [{ text: content }]
@@ -168,7 +205,14 @@ function translateToolResultContent(
       block.json !== null
     ) {
       result.push({ json: block.json })
-    } else if (block.type !== 'image') {
+    } else if (block.type === 'image') {
+      const image = translateImageBlock(block)
+      if (image && modelSupportsBedrockToolResultImages(modelId)) {
+        result.push({ image })
+      } else {
+        result.push({ text: '[Image data attached]' })
+      }
+    } else {
       result.push({ text: JSON.stringify(block) })
     }
   }
@@ -176,7 +220,11 @@ function translateToolResultContent(
   return result.length > 0 ? result : [{ text: '' }]
 }
 
-function translateContentBlock(block: AnthropicContentBlock): ContentBlock | null {
+function translateContentBlock(
+  block: AnthropicContentBlock,
+  modelId: string,
+  createFallbackToolUseId: () => string,
+): ContentBlock | null {
   if (block.type === 'text' && typeof block.text === 'string') {
     return { text: block.text }
   }
@@ -184,7 +232,7 @@ function translateContentBlock(block: AnthropicContentBlock): ContentBlock | nul
   if (block.type === 'tool_use') {
     return {
       toolUse: {
-        toolUseId: block.id || `toolu_${Date.now()}`,
+        toolUseId: block.id || createFallbackToolUseId(),
         name: block.name || '',
         input: coerceObject(block.input),
       },
@@ -195,36 +243,23 @@ function translateContentBlock(block: AnthropicContentBlock): ContentBlock | nul
     return {
       toolResult: {
         toolUseId: block.tool_use_id || '',
-        content: translateToolResultContent(block.content),
+        content: translateToolResultContent(block.content, modelId),
         ...(block.is_error === true && { status: 'error' as const }),
       },
     }
   }
 
-  if (
-    block.type === 'image' &&
-    block.source?.type === 'base64' &&
-    typeof block.source.data === 'string'
-  ) {
-    const format = mediaTypeToBedrockImageFormat(block.source.media_type)
-    if (!format) {
-      return null
-    }
-    return {
-      image: {
-        format,
-        source: {
-          bytes: Buffer.from(block.source.data, 'base64'),
-        },
-      },
-    }
+  const image = translateImageBlock(block)
+  if (image) {
+    return { image }
   }
 
   return null
 }
 
-function translateMessages(messages: AnthropicMessage[]): Message[] {
+function translateMessages(messages: AnthropicMessage[], modelId: string): Message[] {
   const translated: Message[] = []
+  const createFallbackToolUseId = createFallbackToolUseIdFactory()
 
   for (const message of messages) {
     if (message.role !== 'user' && message.role !== 'assistant') {
@@ -244,7 +279,7 @@ function translateMessages(messages: AnthropicMessage[]): Message[] {
     }
 
     const content = message.content
-      .map(translateContentBlock)
+      .map(block => translateContentBlock(block, modelId, createFallbackToolUseId))
       .filter((block): block is ContentBlock => block !== null)
     if (content.length > 0) {
       translated.push({ role: message.role, content })
@@ -302,10 +337,12 @@ function translateToolChoice(
 export function translateToConverseRequest(
   anthropicBody: Record<string, unknown>,
 ): ConverseCommandInput & ConverseStreamCommandInput {
+  const modelId = String(anthropicBody.model || '')
   const messages = translateMessages(
     Array.isArray(anthropicBody.messages)
       ? (anthropicBody.messages as AnthropicMessage[])
       : [],
+    modelId,
   )
   const requestedNoTools =
     typeof anthropicBody.tool_choice === 'object' &&
@@ -318,7 +355,6 @@ export function translateToConverseRequest(
           ? (anthropicBody.tools as AnthropicTool[])
           : [],
       )
-  const modelId = String(anthropicBody.model || '')
   const toolChoice = translateToolChoice(anthropicBody.tool_choice, modelId)
   const system = translateSystem(anthropicBody.system)
   const inferenceConfig: ConverseCommandInput['inferenceConfig'] = {}
@@ -375,6 +411,7 @@ function translateConverseOutputToAnthropic(
   const content: Array<Record<string, unknown>> = []
   const blocks = response.output?.message?.content || []
   let sawToolUse = false
+  const createFallbackToolUseId = createFallbackToolUseIdFactory()
 
   for (const block of blocks) {
     if ('text' in block && typeof block.text === 'string') {
@@ -383,7 +420,7 @@ function translateConverseOutputToAnthropic(
       sawToolUse = true
       content.push({
         type: 'tool_use',
-        id: block.toolUse.toolUseId || `toolu_${Date.now()}`,
+        id: block.toolUse.toolUseId || createFallbackToolUseId(),
         name: block.toolUse.name || '',
         input: coerceObject(block.toolUse.input),
       })
@@ -427,6 +464,7 @@ function createAnthropicStreamFromBedrock(
       let stopReason: string | undefined
       let sawToolUse = false
       const openBlocks = new Set<number>()
+      const createFallbackToolUseId = createFallbackToolUseIdFactory()
 
       const emit = (event: string, payload: Record<string, unknown>) => {
         controller.enqueue(encoder.encode(formatSSE(event, JSON.stringify(payload))))
@@ -472,7 +510,7 @@ function createAnthropicStreamFromBedrock(
                 index,
                 content_block: {
                   type: 'tool_use',
-                  id: toolUse.toolUseId || `toolu_${Date.now()}`,
+                  id: toolUse.toolUseId || createFallbackToolUseId(),
                   name: toolUse.name || '',
                   input: {},
                 },

@@ -101,6 +101,131 @@ describe('bedrock converse fetch adapter translation', () => {
     ])
   })
 
+  test('generates unique fallback toolUse IDs within one request', () => {
+    const request =
+      bedrockConverseFetchAdapterTestHooks.translateToConverseRequest({
+        model: 'amazon.nova-pro-v1:0',
+        messages: [
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                name: 'Read',
+                input: { file_path: 'a.ts' },
+              },
+              {
+                type: 'tool_use',
+                name: 'Read',
+                input: { file_path: 'b.ts' },
+              },
+            ],
+          },
+        ],
+      })
+
+    const content = request.messages?.[0]?.content || []
+    expect(content).toEqual([
+      {
+        toolUse: {
+          toolUseId: 'toolu_fallback_1',
+          name: 'Read',
+          input: { file_path: 'a.ts' },
+        },
+      },
+      {
+        toolUse: {
+          toolUseId: 'toolu_fallback_2',
+          name: 'Read',
+          input: { file_path: 'b.ts' },
+        },
+      },
+    ])
+  })
+
+  test('preserves tool result images for Bedrock models that support them', () => {
+    const request =
+      bedrockConverseFetchAdapterTestHooks.translateToConverseRequest({
+        model: 'amazon.nova-pro-v1:0',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_123',
+                content: [
+                  { type: 'text', text: 'screenshot' },
+                  {
+                    type: 'image',
+                    source: {
+                      type: 'base64',
+                      media_type: 'image/png',
+                      data: 'aGVsbG8=',
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      })
+
+    expect(request.messages?.[0]?.content).toEqual([
+      {
+        toolResult: {
+          toolUseId: 'toolu_123',
+          content: [
+            { text: 'screenshot' },
+            {
+              image: {
+                format: 'png',
+                source: { bytes: Buffer.from('aGVsbG8=', 'base64') },
+              },
+            },
+          ],
+        },
+      },
+    ])
+  })
+
+  test('degrades tool result images for Bedrock models without image tool results', () => {
+    const request =
+      bedrockConverseFetchAdapterTestHooks.translateToConverseRequest({
+        model: 'mistral.mistral-large-2407-v1:0',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_123',
+                content: [
+                  {
+                    type: 'image',
+                    source: {
+                      type: 'base64',
+                      media_type: 'image/png',
+                      data: 'aGVsbG8=',
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      })
+
+    expect(request.messages?.[0]?.content).toEqual([
+      {
+        toolResult: {
+          toolUseId: 'toolu_123',
+          content: [{ text: '[Image data attached]' }],
+        },
+      },
+    ])
+  })
+
   test('translates non-stream Converse output to Anthropic message shape', async () => {
     const response =
       bedrockConverseFetchAdapterTestHooks.translateConverseOutputToAnthropic(
@@ -147,6 +272,34 @@ describe('bedrock converse fetch adapter translation', () => {
       usage: { input_tokens: 10, output_tokens: 20 },
     })
     expect(body.id).toStartWith('msg_bedrock_')
+  })
+
+  test('generates unique fallback tool_use IDs from non-stream Converse output', async () => {
+    const response =
+      bedrockConverseFetchAdapterTestHooks.translateConverseOutputToAnthropic(
+        {
+          output: {
+            message: {
+              role: 'assistant',
+              content: [
+                { toolUse: { name: 'Read', input: { file_path: 'a.ts' } } },
+                { toolUse: { name: 'Read', input: { file_path: 'b.ts' } } },
+              ],
+            },
+          },
+          stopReason: 'tool_use',
+          usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+          metrics: { latencyMs: 1 },
+          $metadata: {},
+        },
+        'amazon.nova-pro-v1:0',
+      )
+
+    const body = await response.json()
+    expect(body.content.map((block: { id?: string }) => block.id)).toEqual([
+      'toolu_fallback_1',
+      'toolu_fallback_2',
+    ])
   })
 
   test('omits Bedrock tools when Anthropic tool_choice is none', () => {
@@ -226,6 +379,36 @@ describe('bedrock converse fetch adapter translation', () => {
     )
     expect(text).toContain('"stop_reason":"tool_use"')
     expect(text).toContain('"usage":{"input_tokens":10,"output_tokens":20}')
+  })
+
+  test('generates unique fallback tool_use IDs from ConverseStream output', async () => {
+    async function* stream() {
+      yield {
+        contentBlockStart: {
+          contentBlockIndex: 0,
+          start: { toolUse: { name: 'Read' } },
+        },
+      }
+      yield { contentBlockStop: { contentBlockIndex: 0 } }
+      yield {
+        contentBlockStart: {
+          contentBlockIndex: 1,
+          start: { toolUse: { name: 'Read' } },
+        },
+      }
+      yield { contentBlockStop: { contentBlockIndex: 1 } }
+      yield { messageStop: { stopReason: 'tool_use' } }
+    }
+
+    const response =
+      bedrockConverseFetchAdapterTestHooks.createAnthropicStreamFromBedrock(
+        stream(),
+        'amazon.nova-pro-v1:0',
+      )
+
+    const text = await response.text()
+    expect(text).toContain('"id":"toolu_fallback_1"')
+    expect(text).toContain('"id":"toolu_fallback_2"')
   })
 
   test('translates ConverseStream service errors to Anthropic error events', async () => {

@@ -163,6 +163,40 @@ describe('codex fetch adapter translation', () => {
     })
   })
 
+  test('generates unique fallback tool_use IDs from non-streaming Responses output', async () => {
+    const openAIResponse = new Response(
+      JSON.stringify({
+        id: 'resp_fallback_ids',
+        status: 'completed',
+        output: [
+          {
+            type: 'function_call',
+            name: 'Read',
+            arguments: '{"file_path":"a.ts"}',
+          },
+          {
+            type: 'function_call',
+            name: 'Read',
+            arguments: '{"file_path":"b.ts"}',
+          },
+        ],
+        usage: { input_tokens: 1, output_tokens: 2 },
+      }),
+    )
+
+    const translated =
+      await codexFetchAdapterTestHooks.translateCodexResponseToAnthropic(
+        openAIResponse,
+        'gpt-5.5',
+      )
+    const body = await translated.json()
+
+    expect(body.content.map((block: { id?: string }) => block.id)).toEqual([
+      'toolu_fallback_1',
+      'toolu_fallback_2',
+    ])
+  })
+
   test('carries OpenAI reasoning items across tool result turns', async () => {
     const openAIResponse = new Response(
       JSON.stringify({
@@ -272,6 +306,47 @@ describe('codex fetch adapter translation', () => {
     expect(text).toContain('"type":"text_delta","text":" refusal"')
     expect(text).toContain('"stop_reason":"max_tokens"')
     expect(text).toContain('"usage":{"input_tokens":10,"output_tokens":20}')
+  })
+
+  test('generates unique fallback tool_use IDs from streaming Responses output', async () => {
+    const translated =
+      await codexFetchAdapterTestHooks.translateCodexStreamToAnthropic(
+        sseResponse([
+          {
+            type: 'response.output_item.added',
+            item: { type: 'function_call', name: 'Read' },
+          },
+          {
+            type: 'response.function_call_arguments.done',
+            arguments: '{"file_path":"a.ts"}',
+          },
+          {
+            type: 'response.output_item.done',
+            item: { type: 'function_call', name: 'Read' },
+          },
+          {
+            type: 'response.output_item.added',
+            item: { type: 'function_call', name: 'Read' },
+          },
+          {
+            type: 'response.function_call_arguments.done',
+            arguments: '{"file_path":"b.ts"}',
+          },
+          {
+            type: 'response.output_item.done',
+            item: { type: 'function_call', name: 'Read' },
+          },
+          {
+            type: 'response.completed',
+            response: { usage: { input_tokens: 1, output_tokens: 2 } },
+          },
+        ]),
+        'gpt-5.5',
+      )
+
+    const text = await translated.text()
+    expect(text).toContain('"id":"toolu_fallback_1"')
+    expect(text).toContain('"id":"toolu_fallback_2"')
   })
 
   test('translates streaming failures to Anthropic error events', async () => {
