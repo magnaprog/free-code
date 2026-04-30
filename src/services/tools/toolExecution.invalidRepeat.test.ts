@@ -58,5 +58,12 @@ describe('repeated tool error guidance', () => {
     )
 
     expect(normalized.length).toBe(2_000)
+    expect(normalized.startsWith('<tool_use_error>')).toBe(false)
+  })
+
+  test('counts matching huge tagged errors without requiring full tag extraction', () => {
+    const error = 'InputValidationError: ' + 'x '.repeat(10_000)
+
+    expect(countMatchingToolUseErrors([toolError(error)], error)).toBe(1)
   })
 })

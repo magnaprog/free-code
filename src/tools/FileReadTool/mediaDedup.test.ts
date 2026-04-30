@@ -15,10 +15,11 @@ function messageWithUuid(uuid: string): Message {
   } as Message
 }
 
-function messageWithImage(uuid: string): Message {
+function messageWithImage(uuid: string, sourceToolAssistantUUID?: string): Message {
   return {
     type: 'user',
     uuid,
+    sourceToolAssistantUUID,
     message: {
       role: 'user',
       content: [
@@ -37,6 +38,18 @@ function messageWithImage(uuid: string): Message {
           ],
         },
       ],
+    },
+  } as Message
+}
+
+function apiErrorMessage(): Message {
+  return {
+    type: 'assistant',
+    uuid: 'api-error',
+    isApiErrorMessage: true,
+    message: {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'Request too large' }],
     },
   } as Message
 }
@@ -75,36 +88,50 @@ describe('media read dedup helpers', () => {
     ).toBe(false)
   })
 
-  test('requires the source assistant message to remain visible', () => {
+  test('requires the source media to remain visible', () => {
     expect(
       isMediaReadRecordVisible(
         { timestamp: 10, size: 20, lastMessageUuid: 'assistant-1' },
-        [messageWithUuid('assistant-1')],
+        [messageWithImage('tool-result-1', 'assistant-1')],
+      ),
+    ).toBe(true)
+    expect(
+      isMediaReadRecordVisible(
+        { timestamp: 10, size: 20, lastMessageUuid: 'media-message-1' },
+        [messageWithImage('media-message-1')],
       ),
     ).toBe(true)
     expect(
       isMediaReadRecordVisible(
         { timestamp: 10, size: 20, lastMessageUuid: 'assistant-1' },
-        [messageWithUuid('other')],
+        [messageWithUuid('assistant-1')],
       ),
     ).toBe(false)
     expect(
       isMediaReadRecordVisible({ timestamp: 10, size: 20 }, [
-        messageWithUuid('assistant-1'),
+        messageWithImage('tool-result-1', 'assistant-1'),
       ]),
     ).toBe(false)
   })
 
   test('does not reuse media reads after API media stripping would apply', () => {
-    const messages = [
-      messageWithUuid('assistant-1'),
-      ...Array.from({ length: 101 }, (_, index) => messageWithImage(`media-${index}`)),
-    ]
+    const messages = Array.from({ length: 101 }, (_, index) =>
+      messageWithImage(`media-${index}`),
+    )
 
     expect(
       isMediaReadRecordVisible(
-        { timestamp: 10, size: 20, lastMessageUuid: 'assistant-1' },
+        { timestamp: 10, size: 20, lastMessageUuid: 'media-0' },
         messages,
+      ),
+    ).toBe(false)
+  })
+
+  test('does not reuse media reads after a later API error', () => {
+    expect(
+      isMediaReadRecordVisible(
+        { timestamp: 10, size: 20, lastMessageUuid: 'media-1' },
+        [messageWithImage('media-1'), apiErrorMessage()],
       ),
     ).toBe(false)
   })

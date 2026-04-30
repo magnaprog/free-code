@@ -814,19 +814,42 @@ function countMediaContentBlocks(content: unknown): number {
   return count
 }
 
+function getMessageContent(message: Message): unknown {
+  return 'message' in message ? message.message.content : undefined
+}
+
+function isApiErrorMessage(message: Message): boolean {
+  return 'isApiErrorMessage' in message && message.isApiErrorMessage === true
+}
+
+function getSourceToolAssistantUuid(message: Message): string | undefined {
+  return 'sourceToolAssistantUUID' in message
+    ? message.sourceToolAssistantUUID
+    : undefined
+}
+
 export function isMediaReadRecordVisible(
   previous: MediaReadRecord | undefined,
   messages: readonly Message[],
 ): boolean {
   if (!previous?.lastMessageUuid) return false
-  let sourceMessageVisible = false
+  let mediaSourceIndex = -1
   let mediaItemCount = 0
-  for (const message of messages) {
-    if (message.uuid === previous.lastMessageUuid) sourceMessageVisible = true
-    mediaItemCount += countMediaContentBlocks(message.message.content)
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i]!
+    const messageMediaCount = countMediaContentBlocks(getMessageContent(message))
+    mediaItemCount += messageMediaCount
     if (mediaItemCount > API_MAX_MEDIA_PER_REQUEST) return false
+    if (
+      messageMediaCount > 0 &&
+      (message.uuid === previous.lastMessageUuid ||
+        getSourceToolAssistantUuid(message) === previous.lastMessageUuid)
+    ) {
+      mediaSourceIndex = i
+    }
   }
-  return sourceMessageVisible
+  if (mediaSourceIndex === -1) return false
+  return !messages.slice(mediaSourceIndex + 1).some(isApiErrorMessage)
 }
 
 async function getMediaReadSnapshot(
@@ -1094,13 +1117,15 @@ async function callInner(
           }
         }),
       )
-      recordMediaRead(context, mediaReadSnapshot, sourceAssistantUuid)
+      const mediaMessage =
+        imageBlocks.length > 0
+          ? createUserMessage({ content: imageBlocks, isMeta: true })
+          : undefined
+      recordMediaRead(context, mediaReadSnapshot, mediaMessage?.uuid)
       return {
         data: extractResult.data,
-        ...(imageBlocks.length > 0 && {
-          newMessages: [
-            createUserMessage({ content: imageBlocks, isMeta: true }),
-          ],
+        ...(mediaMessage && {
+          newMessages: [mediaMessage],
         }),
       }
     }
@@ -1153,25 +1178,24 @@ async function callInner(
       filePath: fullFilePath,
       content: pdfData.file.base64,
     })
-    recordMediaRead(context, mediaReadSnapshot, sourceAssistantUuid)
+    const mediaMessage = createUserMessage({
+      content: [
+        {
+          type: 'document',
+          source: {
+            type: 'base64',
+            media_type: 'application/pdf',
+            data: pdfData.file.base64,
+          },
+        },
+      ],
+      isMeta: true,
+    })
+    recordMediaRead(context, mediaReadSnapshot, mediaMessage.uuid)
 
     return {
       data: pdfData,
-      newMessages: [
-        createUserMessage({
-          content: [
-            {
-              type: 'document',
-              source: {
-                type: 'base64',
-                media_type: 'application/pdf',
-                data: pdfData.file.base64,
-              },
-            },
-          ],
-          isMeta: true,
-        }),
-      ],
+      newMessages: [mediaMessage],
     }
   }
 

@@ -595,7 +595,9 @@ export function normalizeToolUseErrorContent(content: string): string {
     content.length > MAX_TOOL_ERROR_NORMALIZATION_INPUT_CHARS
       ? content.slice(0, MAX_TOOL_ERROR_NORMALIZATION_INPUT_CHARS)
       : content
-  const taggedContent = extractTag(bounded, 'tool_use_error') ?? bounded
+  const taggedContent =
+    extractTag(bounded, 'tool_use_error') ??
+    bounded.replace(/<\/?tool_use_error>/g, '')
   const normalized = stripRepeatedToolErrorGuidance(taggedContent)
     .replace(/\s+/g, ' ')
     .trim()
@@ -615,7 +617,7 @@ function* iterateToolUseErrorContentReverse(
       block.is_error === true &&
       typeof block.content === 'string'
     ) {
-      yield extractTag(block.content, 'tool_use_error') ?? block.content
+      yield block.content
     }
   }
 }
