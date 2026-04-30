@@ -4,6 +4,7 @@ import * as path from 'path'
 import { posix, win32 } from 'path'
 import { z } from 'zod/v4'
 import {
+  API_MAX_MEDIA_PER_REQUEST,
   PDF_AT_MENTION_INLINE_THRESHOLD,
   PDF_EXTRACT_SIZE_THRESHOLD,
   PDF_MAX_PAGES_PER_READ,
@@ -25,7 +26,7 @@ import {
   addSkillDirectories,
   discoverSkillDirsForPaths,
 } from '../../skills/loadSkillsDir.js'
-import type { ToolUseContext } from '../../Tool.js'
+import type { MediaReadRecord, ToolUseContext } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
 import { getCwd } from '../../utils/cwd.js'
@@ -752,11 +753,6 @@ const memoryFileMtimes = new WeakMap<object, number>()
 const MEDIA_READ_STATE_LIMIT = 100
 
 type MediaReadKind = 'image' | 'pdf' | 'pdf_pages'
-type MediaReadRecord = {
-  timestamp: number
-  size: number
-  lastMessageUuid?: string
-}
 type MediaReadSnapshot = {
   key: string
   kind: MediaReadKind
@@ -792,12 +788,45 @@ export function isMediaReadUnchanged(
   )
 }
 
+function isMediaContentBlock(block: unknown): boolean {
+  if (typeof block !== 'object' || block === null || !('type' in block)) {
+    return false
+  }
+  const type = (block as { type?: unknown }).type
+  return type === 'image' || type === 'document'
+}
+
+function getNestedToolResultContent(block: unknown): unknown {
+  if (typeof block !== 'object' || block === null || !('type' in block)) {
+    return undefined
+  }
+  const typedBlock = block as { type?: unknown; content?: unknown }
+  return typedBlock.type === 'tool_result' ? typedBlock.content : undefined
+}
+
+function countMediaContentBlocks(content: unknown): number {
+  if (!Array.isArray(content)) return 0
+  let count = 0
+  for (const block of content) {
+    if (isMediaContentBlock(block)) count++
+    count += countMediaContentBlocks(getNestedToolResultContent(block))
+  }
+  return count
+}
+
 export function isMediaReadRecordVisible(
   previous: MediaReadRecord | undefined,
   messages: readonly Message[],
 ): boolean {
   if (!previous?.lastMessageUuid) return false
-  return messages.some(message => message.uuid === previous.lastMessageUuid)
+  let sourceMessageVisible = false
+  let mediaItemCount = 0
+  for (const message of messages) {
+    if (message.uuid === previous.lastMessageUuid) sourceMessageVisible = true
+    mediaItemCount += countMediaContentBlocks(message.message.content)
+    if (mediaItemCount > API_MAX_MEDIA_PER_REQUEST) return false
+  }
+  return sourceMessageVisible
 }
 
 async function getMediaReadSnapshot(

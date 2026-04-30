@@ -3,6 +3,7 @@ import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/messages/
 import * as React from 'react';
 import { stripUnderlineAnsi } from 'src/components/shell/OutputLine.js';
 import { extractTag } from 'src/utils/messages.js';
+import { extractMissingRequiredParameters } from 'src/utils/toolErrors.js';
 import { removeSandboxViolationTags } from 'src/utils/sandbox/sandbox-ui-utils.js';
 import { Box, Text } from '../ink.js';
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
@@ -17,7 +18,7 @@ type Props = {
 
 export function summarizeToolUseErrorForDisplay(error: string): string {
   const withoutValidationPrefix = error.replace(/^InputValidationError:\s*/i, '').trim();
-  const missingParams = Array.from(withoutValidationPrefix.matchAll(/required parameter [`'"]?([A-Za-z0-9_.-]+)[`'"]? is missing/gi), match => match[1]);
+  const missingParams = extractMissingRequiredParameters(withoutValidationPrefix);
   if (missingParams.length > 0) {
     return `Invalid tool parameters: missing ${missingParams.join(', ')}`;
   }

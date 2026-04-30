@@ -13,6 +13,7 @@ import type { Command } from '../commands.js'
 import {
   findToolByName,
   getEmptyToolPermissionContext,
+  type MediaReadState,
   type ToolUseContext,
 } from '../Tool.js'
 import { getTools } from '../tools.js'
@@ -43,6 +44,7 @@ export async function startMCPServer(
   const readFileStateCache = createFileStateCacheWithSizeLimit(
     READ_FILE_STATE_CACHE_SIZE,
   )
+  const mediaReadState: MediaReadState = new Map()
   setCwd(cwd)
   const server = new Server(
     {
@@ -127,6 +129,7 @@ export async function startMCPServer(
         setAppState: () => {},
         messages: [],
         readFileState: readFileStateCache,
+        mediaReadState,
         setInProgressToolUseIDs: () => {},
         setResponseLength: () => {},
         updateFileHistoryState: () => {},

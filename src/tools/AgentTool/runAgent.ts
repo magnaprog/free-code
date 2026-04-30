@@ -703,6 +703,8 @@ export async function* runAgent({
     agentType: agentDefinition.agentType,
     messages: initialMessages,
     readFileState: agentReadFileState,
+    mediaReadState:
+      forkContextMessages !== undefined ? toolUseContext.mediaReadState : undefined,
     abortController: agentAbortController,
     getAppState: agentGetAppState,
     // Sync agents share these callbacks with parent

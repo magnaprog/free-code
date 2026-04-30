@@ -15,6 +15,7 @@ import {
   logEvent,
 } from '../../services/analytics/index.js'
 import type { AppState } from '../../state/AppState.js'
+import type { MediaReadState } from '../../Tool.js'
 import { isInProcessTeammateTask } from '../../tasks/InProcessTeammateTask/types.js'
 import {
   isLocalAgentTask,
@@ -58,7 +59,7 @@ export async function clearConversation({
 }: {
   setMessages: (updater: (prev: Message[]) => Message[]) => void
   readFileState: FileStateCache
-  mediaReadState?: Map<string, unknown>
+  mediaReadState?: MediaReadState
   discoveredSkillNames?: Set<string>
   loadedNestedMemoryPaths?: Set<string>
   getAppState?: () => AppState

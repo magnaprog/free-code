@@ -15,6 +15,32 @@ function messageWithUuid(uuid: string): Message {
   } as Message
 }
 
+function messageWithImage(uuid: string): Message {
+  return {
+    type: 'user',
+    uuid,
+    message: {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'toolu_test',
+          content: [
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: 'image/png',
+                data: 'abc',
+              },
+            },
+          ],
+        },
+      ],
+    },
+  } as Message
+}
+
 describe('media read dedup helpers', () => {
   test('classifies media reads without using specific workflows', () => {
     expect(getMediaReadKind('png')).toBe('image')
@@ -66,6 +92,20 @@ describe('media read dedup helpers', () => {
       isMediaReadRecordVisible({ timestamp: 10, size: 20 }, [
         messageWithUuid('assistant-1'),
       ]),
+    ).toBe(false)
+  })
+
+  test('does not reuse media reads after API media stripping would apply', () => {
+    const messages = [
+      messageWithUuid('assistant-1'),
+      ...Array.from({ length: 101 }, (_, index) => messageWithImage(`media-${index}`)),
+    ]
+
+    expect(
+      isMediaReadRecordVisible(
+        { timestamp: 10, size: 20, lastMessageUuid: 'assistant-1' },
+        messages,
+      ),
     ).toBe(false)
   })
 })

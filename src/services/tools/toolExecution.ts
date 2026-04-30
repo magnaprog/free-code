@@ -577,14 +577,9 @@ function streamedCheckPermissionsAndCallTool(
   return stream
 }
 
-/**
- * Appended to Zod errors when a deferred tool wasn't in the discovered-tool
- * set — re-runs the claude.ts schema-filter scan dispatch-time to detect the
- * mismatch. The raw Zod error ("expected array, got string") doesn't tell the
- * model to re-load the tool; this hint does. Null if the schema was sent.
- */
 const REPEATED_TOOL_ERROR_THRESHOLD = 3
 const MAX_REPEATED_TOOL_ERROR_SCAN = 100
+const MAX_REPEATED_TOOL_ERROR_MESSAGE_SCAN = 200
 const MAX_NORMALIZED_TOOL_ERROR_CHARS = 2_000
 const REPEATED_TOOL_ERROR_GUIDANCE =
   'This is the same invalid tool call again. Change the arguments, use a different tool, or ask the user before retrying.'
@@ -600,8 +595,8 @@ export function normalizeToolUseErrorContent(content: string): string {
     content.length > MAX_TOOL_ERROR_NORMALIZATION_INPUT_CHARS
       ? content.slice(0, MAX_TOOL_ERROR_NORMALIZATION_INPUT_CHARS)
       : content
-  const normalized = stripRepeatedToolErrorGuidance(bounded)
-    .replace(/<\/?tool_use_error>/g, '')
+  const taggedContent = extractTag(bounded, 'tool_use_error') ?? bounded
+  const normalized = stripRepeatedToolErrorGuidance(taggedContent)
     .replace(/\s+/g, ' ')
     .trim()
   return normalized.length > MAX_NORMALIZED_TOOL_ERROR_CHARS
@@ -609,21 +604,20 @@ export function normalizeToolUseErrorContent(content: string): string {
     : normalized
 }
 
-function extractToolUseErrorContent(message: Message): string[] {
-  if (message.type !== 'user' || !Array.isArray(message.message.content)) {
-    return []
-  }
-  const errors: string[] = []
-  for (const block of message.message.content) {
+function* iterateToolUseErrorContentReverse(
+  message: Message,
+): Generator<string> {
+  if (message.type !== 'user' || !Array.isArray(message.message.content)) return
+  for (let i = message.message.content.length - 1; i >= 0; i--) {
+    const block = message.message.content[i]
     if (
-      block.type === 'tool_result' &&
+      block?.type === 'tool_result' &&
       block.is_error === true &&
       typeof block.content === 'string'
     ) {
-      errors.push(extractTag(block.content, 'tool_use_error') ?? block.content)
+      yield extractTag(block.content, 'tool_use_error') ?? block.content
     }
   }
-  return errors
 }
 
 export function countMatchingToolUseErrors(
@@ -634,8 +628,10 @@ export function countMatchingToolUseErrors(
   if (!target) return 0
   let matches = 0
   let scannedErrors = 0
+  let scannedMessages = 0
   for (let i = messages.length - 1; i >= 0; i--) {
-    for (const prior of extractToolUseErrorContent(messages[i]!).reverse()) {
+    scannedMessages++
+    for (const prior of iterateToolUseErrorContentReverse(messages[i]!)) {
       scannedErrors++
       if (normalizeToolUseErrorContent(prior) === target) matches++
       if (
@@ -645,6 +641,7 @@ export function countMatchingToolUseErrors(
         return matches
       }
     }
+    if (scannedMessages >= MAX_REPEATED_TOOL_ERROR_MESSAGE_SCAN) return matches
   }
   return matches
 }
@@ -665,6 +662,12 @@ export function addRepeatedToolErrorGuidance(
   }
 }
 
+/**
+ * Appended to Zod errors when a deferred tool wasn't in the discovered-tool
+ * set — re-runs the claude.ts schema-filter scan dispatch-time to detect the
+ * mismatch. The raw Zod error ("expected array, got string") doesn't tell the
+ * model to re-load the tool; this hint does. Null if the schema was sent.
+ */
 export function buildSchemaNotSentHint(
   tool: Tool,
   messages: Message[],
