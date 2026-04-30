@@ -4791,6 +4791,7 @@ export function REPL({
               await clearConversation({
                 setMessages,
                 readFileState: readFileState.current,
+                mediaReadState: mediaReadState.current,
                 discoveredSkillNames: discoveredSkillNamesRef.current,
                 loadedNestedMemoryPaths: loadedNestedMemoryPathsRef.current,
                 getAppState: () => store.getState(),
