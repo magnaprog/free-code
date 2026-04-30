@@ -605,6 +605,7 @@ export const FileReadTool = buildTool({
         readFileState,
         context,
         parentMessage?.message.id,
+        parentMessage?.uuid,
       )
     } catch (error) {
       // Handle file-not-found: suggest similar files
@@ -628,6 +629,7 @@ export const FileReadTool = buildTool({
               readFileState,
               context,
               parentMessage?.message.id,
+              parentMessage?.uuid,
             )
           } catch (altError) {
             if (!isENOENT(altError)) {
@@ -790,7 +792,7 @@ export function isMediaReadUnchanged(
   )
 }
 
-function isMediaReadRecordVisible(
+export function isMediaReadRecordVisible(
   previous: MediaReadRecord | undefined,
   messages: readonly Message[],
 ): boolean {
@@ -811,7 +813,7 @@ async function getMediaReadSnapshot(
     return {
       key: getMediaReadKey(fullFilePath, kind, pages),
       kind,
-      timestamp: Math.floor(stats.mtimeMs),
+      timestamp: stats.mtimeMs,
       size: stats.size,
     }
   } catch {
@@ -829,6 +831,7 @@ function getMediaReadState(context: ToolUseContext) {
 function recordMediaRead(
   context: ToolUseContext,
   snapshot: MediaReadSnapshot | null,
+  sourceAssistantUuid: string | undefined,
 ): void {
   if (!snapshot) return
   const state = getMediaReadState(context)
@@ -839,7 +842,7 @@ function recordMediaRead(
   state.set(snapshot.key, {
     timestamp: snapshot.timestamp,
     size: snapshot.size,
-    lastMessageUuid: context.messages.at(-1)?.uuid,
+    lastMessageUuid: sourceAssistantUuid,
   })
 }
 
@@ -911,6 +914,7 @@ async function callInner(
   readFileState: ToolUseContext['readFileState'],
   context: ToolUseContext,
   messageId: string | undefined,
+  sourceAssistantUuid: string | undefined,
 ): Promise<{
   data: Output
   newMessages?: ReturnType<typeof createUserMessage>[]
@@ -1004,7 +1008,7 @@ async function callInner(
       ? createImageMetadataText(data.file.dimensions)
       : null
 
-    recordMediaRead(context, mediaReadSnapshot)
+    recordMediaRead(context, mediaReadSnapshot, sourceAssistantUuid)
 
     return {
       data,
@@ -1061,7 +1065,7 @@ async function callInner(
           }
         }),
       )
-      recordMediaRead(context, mediaReadSnapshot)
+      recordMediaRead(context, mediaReadSnapshot, sourceAssistantUuid)
       return {
         data: extractResult.data,
         ...(imageBlocks.length > 0 && {
@@ -1120,7 +1124,7 @@ async function callInner(
       filePath: fullFilePath,
       content: pdfData.file.base64,
     })
-    recordMediaRead(context, mediaReadSnapshot)
+    recordMediaRead(context, mediaReadSnapshot, sourceAssistantUuid)
 
     return {
       data: pdfData,

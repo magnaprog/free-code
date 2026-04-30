@@ -1078,12 +1078,12 @@ export async function runInProcessTeammate(
         logForDebugging(
           `[inProcessRunner] ${identity.agentId} compacting history (${tokenCount} tokens)`,
         )
-        // Create an isolated copy of toolUseContext so that compaction
-        // does not clear the main session's readFileState cache or
-        // trigger the main session's UI callbacks.
+        // Create an isolated copy of toolUseContext so compaction does not
+        // clear main-session caches or trigger main-session UI callbacks.
         const isolatedContext: ToolUseContext = {
           ...toolUseContext,
           readFileState: cloneFileStateCache(toolUseContext.readFileState),
+          mediaReadState: new Map(toolUseContext.mediaReadState ?? []),
           onCompactProgress: undefined,
           setStreamMode: undefined,
         }

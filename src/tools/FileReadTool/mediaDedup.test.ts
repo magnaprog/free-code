@@ -1,9 +1,19 @@
 import { describe, expect, test } from 'bun:test'
+import type { Message } from '../../types/message.js'
 import {
   getMediaReadKey,
   getMediaReadKind,
+  isMediaReadRecordVisible,
   isMediaReadUnchanged,
 } from './FileReadTool.js'
+
+function messageWithUuid(uuid: string): Message {
+  return {
+    type: 'user',
+    uuid,
+    message: { role: 'user', content: 'message' },
+  } as Message
+}
 
 describe('media read dedup helpers', () => {
   test('classifies media reads without using specific workflows', () => {
@@ -24,18 +34,38 @@ describe('media read dedup helpers', () => {
   test('matches unchanged media by timestamp and size', () => {
     expect(
       isMediaReadUnchanged(
-        { timestamp: 10, size: 20 },
-        { timestamp: 10, size: 20 },
+        { timestamp: 10.25, size: 20 },
+        { timestamp: 10.25, size: 20 },
       ),
     ).toBe(true)
     expect(
       isMediaReadUnchanged(
-        { timestamp: 10, size: 20 },
-        { timestamp: 11, size: 20 },
+        { timestamp: 10.25, size: 20 },
+        { timestamp: 10.5, size: 20 },
       ),
     ).toBe(false)
     expect(
       isMediaReadUnchanged(undefined, { timestamp: 10, size: 20 }),
+    ).toBe(false)
+  })
+
+  test('requires the source assistant message to remain visible', () => {
+    expect(
+      isMediaReadRecordVisible(
+        { timestamp: 10, size: 20, lastMessageUuid: 'assistant-1' },
+        [messageWithUuid('assistant-1')],
+      ),
+    ).toBe(true)
+    expect(
+      isMediaReadRecordVisible(
+        { timestamp: 10, size: 20, lastMessageUuid: 'assistant-1' },
+        [messageWithUuid('other')],
+      ),
+    ).toBe(false)
+    expect(
+      isMediaReadRecordVisible({ timestamp: 10, size: 20 }, [
+        messageWithUuid('assistant-1'),
+      ]),
     ).toBe(false)
   })
 })
