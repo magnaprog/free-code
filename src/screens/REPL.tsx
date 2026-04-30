@@ -1956,6 +1956,7 @@ export function REPL({
   // it exactly once, then feed that stable reference into useRef.
   const [initialReadFileState] = useState(() => createFileStateCacheWithSizeLimit(READ_FILE_STATE_CACHE_SIZE));
   const readFileState = useRef(initialReadFileState);
+  const mediaReadState = useRef(new Map<string, { timestamp: number; size: number; lastMessageUuid?: string }>());
   const bashTools = useRef(new Set<string>());
   const bashToolsProcessedIdx = useRef(0);
   // Session-scoped skill discovery tracking (feeds was_discovered on
@@ -2472,6 +2473,7 @@ export function REPL({
       },
       onChangeAPIKey: reverify,
       readFileState: readFileState.current,
+      mediaReadState: mediaReadState.current,
       setToolJSX,
       addNotification,
       appendSystemMessage: msg => setMessages(prev => [...prev, msg]),
@@ -3047,6 +3049,7 @@ export function REPL({
         await clearConversation({
           setMessages,
           readFileState: readFileState.current,
+          mediaReadState: mediaReadState.current,
           discoveredSkillNames: discoveredSkillNamesRef.current,
           loadedNestedMemoryPaths: loadedNestedMemoryPathsRef.current,
           getAppState: () => store.getState(),

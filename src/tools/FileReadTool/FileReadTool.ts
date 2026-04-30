@@ -27,6 +27,7 @@ import {
 } from '../../skills/loadSkillsDir.js'
 import type { ToolUseContext } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
+import type { Message } from '../../types/message.js'
 import { getCwd } from '../../utils/cwd.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from '../../utils/envUtils.js'
 import { getErrnoCode, isENOENT } from '../../utils/errors.js'
@@ -746,6 +747,102 @@ function shouldIncludeFileReadMitigation(): boolean {
  */
 const memoryFileMtimes = new WeakMap<object, number>()
 
+const MEDIA_READ_STATE_LIMIT = 100
+
+type MediaReadKind = 'image' | 'pdf' | 'pdf_pages'
+type MediaReadRecord = {
+  timestamp: number
+  size: number
+  lastMessageUuid?: string
+}
+type MediaReadSnapshot = {
+  key: string
+  kind: MediaReadKind
+  timestamp: number
+  size: number
+}
+
+export function getMediaReadKind(
+  ext: string,
+  pages?: string,
+): MediaReadKind | undefined {
+  if (IMAGE_EXTENSIONS.has(ext)) return 'image'
+  if (isPDFExtension(ext)) return pages ? 'pdf_pages' : 'pdf'
+  return undefined
+}
+
+export function getMediaReadKey(
+  fullFilePath: string,
+  kind: MediaReadKind,
+  pages?: string,
+): string {
+  return pages ? `${kind}:${fullFilePath}:${pages}` : `${kind}:${fullFilePath}`
+}
+
+export function isMediaReadUnchanged(
+  previous: { timestamp: number; size: number } | undefined,
+  current: { timestamp: number; size: number },
+): boolean {
+  return (
+    previous !== undefined &&
+    previous.timestamp === current.timestamp &&
+    previous.size === current.size
+  )
+}
+
+function isMediaReadRecordVisible(
+  previous: MediaReadRecord | undefined,
+  messages: readonly Message[],
+): boolean {
+  if (!previous?.lastMessageUuid) return false
+  return messages.some(message => message.uuid === previous.lastMessageUuid)
+}
+
+async function getMediaReadSnapshot(
+  fullFilePath: string,
+  resolvedFilePath: string,
+  ext: string,
+  pages?: string,
+): Promise<MediaReadSnapshot | null> {
+  const kind = getMediaReadKind(ext, pages)
+  if (!kind) return null
+  try {
+    const stats = await getFsImplementation().stat(resolvedFilePath)
+    return {
+      key: getMediaReadKey(fullFilePath, kind, pages),
+      kind,
+      timestamp: Math.floor(stats.mtimeMs),
+      size: stats.size,
+    }
+  } catch {
+    return null
+  }
+}
+
+function getMediaReadState(context: ToolUseContext) {
+  if (!context.mediaReadState) {
+    context.mediaReadState = new Map()
+  }
+  return context.mediaReadState
+}
+
+function recordMediaRead(
+  context: ToolUseContext,
+  snapshot: MediaReadSnapshot | null,
+): void {
+  if (!snapshot) return
+  const state = getMediaReadState(context)
+  if (state.size >= MEDIA_READ_STATE_LIMIT && !state.has(snapshot.key)) {
+    const oldestKey = state.keys().next().value
+    if (oldestKey !== undefined) state.delete(oldestKey)
+  }
+  state.set(snapshot.key, {
+    timestamp: snapshot.timestamp,
+    size: snapshot.size,
+    lastMessageUuid: context.messages.at(-1)?.uuid,
+  })
+}
+
 function memoryFileFreshnessPrefix(data: object): string {
   const mtimeMs = memoryFileMtimes.get(data)
   if (mtimeMs === undefined) return ''
@@ -818,6 +915,33 @@ async function callInner(
   data: Output
   newMessages?: ReturnType<typeof createUserMessage>[]
 }> {
+  const mediaReadSnapshot = getFeatureValue_CACHED_MAY_BE_STALE(
+    'tengu_read_dedup_killswitch',
+    false,
+  )
+    ? null
+    : await getMediaReadSnapshot(fullFilePath, resolvedFilePath, ext, pages)
+  const previousMediaRead = mediaReadSnapshot
+    ? getMediaReadState(context).get(mediaReadSnapshot.key)
+    : undefined
+  if (
+    mediaReadSnapshot &&
+    isMediaReadUnchanged(previousMediaRead, mediaReadSnapshot) &&
+    isMediaReadRecordVisible(previousMediaRead, context.messages)
+  ) {
+    const analyticsExt = getFileExtensionForAnalytics(fullFilePath)
+    logEvent('tengu_file_read_media_dedup', {
+      kind: mediaReadSnapshot.kind,
+      ...(analyticsExt !== undefined && { ext: analyticsExt }),
+    })
+    return {
+      data: {
+        type: 'file_unchanged' as const,
+        file: { filePath: file_path },
+      },
+    }
+  }
+
   // --- Notebook ---
   if (ext === 'ipynb') {
     const cells = await readNotebook(resolvedFilePath)
@@ -880,6 +1004,8 @@ async function callInner(
       ? createImageMetadataText(data.file.dimensions)
       : null
 
+    recordMediaRead(context, mediaReadSnapshot)
+
     return {
       data,
       ...(metadataText && {
@@ -935,6 +1061,7 @@ async function callInner(
           }
         }),
       )
+      recordMediaRead(context, mediaReadSnapshot)
       return {
         data: extractResult.data,
         ...(imageBlocks.length > 0 && {
@@ -962,9 +1089,8 @@ async function callInner(
       )
     }
 
-    const fs = getFsImplementation()
-    const stats = await fs.stat(resolvedFilePath)
-    const shouldExtractPages = stats.size > PDF_EXTRACT_SIZE_THRESHOLD
+    const statsSize = mediaReadSnapshot?.size ?? (await getFsImplementation().stat(resolvedFilePath)).size
+    const shouldExtractPages = statsSize > PDF_EXTRACT_SIZE_THRESHOLD
 
     if (shouldExtractPages) {
       const extractResult = await extractPDFPages(resolvedFilePath)
@@ -978,7 +1104,7 @@ async function callInner(
         logEvent('tengu_pdf_page_extraction', {
           success: false,
           available: extractResult.error.reason !== 'unavailable',
-          fileSize: stats.size,
+          fileSize: statsSize,
         })
       }
     }
@@ -994,6 +1120,7 @@ async function callInner(
       filePath: fullFilePath,
       content: pdfData.file.base64,
     })
+    recordMediaRead(context, mediaReadSnapshot)
 
     return {
       data: pdfData,

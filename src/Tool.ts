@@ -179,6 +179,18 @@ export type ToolUseContext = {
   }
   abortController: AbortController
   readFileState: FileStateCache
+  /**
+   * Media read dedup state, separate from readFileState because readFileState
+   * is also the write-safety proof that a file's text contents were read.
+   */
+  mediaReadState?: Map<
+    string,
+    {
+      timestamp: number
+      size: number
+      lastMessageUuid?: string
+    }
+  >
   getAppState(): AppState
   setAppState(f: (prev: AppState) => AppState): void
   /**

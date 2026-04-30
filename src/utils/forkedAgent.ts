@@ -268,6 +268,8 @@ export type SubagentContextOverrides = {
   messages?: Message[]
   /** Override the readFileState (e.g., fresh cache instead of clone) */
   readFileState?: ToolUseContext['readFileState']
+  /** Override media read dedup state (e.g., fresh cache instead of clone) */
+  mediaReadState?: ToolUseContext['mediaReadState']
   /** Override the abortController */
   abortController?: AbortController
   /** Override the getAppState function */
@@ -378,6 +380,10 @@ export function createSubagentContext(
     // Clone overrides.readFileState if provided, otherwise clone from parent
     readFileState: cloneFileStateCache(
       overrides?.readFileState ?? parentContext.readFileState,
+    ),
+    mediaReadState: new Map(
+      overrides?.mediaReadState ??
+        (overrides?.messages === undefined ? parentContext.mediaReadState : []),
     ),
     nestedMemoryAttachmentTriggers: new Set<string>(),
     loadedNestedMemoryPaths: new Set<string>(),

@@ -189,6 +189,7 @@ export class QueryEngine {
   private totalUsage: NonNullableUsage
   private hasHandledOrphanedPermission = false
   private readFileState: FileStateCache
+  private mediaReadState = new Map<string, { timestamp: number; size: number; lastMessageUuid?: string }>()
   // Turn-scoped skill discovery tracking (feeds was_discovered on
   // tengu_skill_tool_invocation). Must persist across the two
   // processUserInputContext rebuilds inside submitMessage, but is cleared
@@ -367,6 +368,7 @@ export class QueryEngine {
       setAppState,
       abortController: this.abortController,
       readFileState: this.readFileState,
+      mediaReadState: this.mediaReadState,
       nestedMemoryAttachmentTriggers: new Set<string>(),
       loadedNestedMemoryPaths: this.loadedNestedMemoryPaths,
       dynamicSkillDirTriggers: new Set<string>(),
@@ -515,6 +517,7 @@ export class QueryEngine {
       setAppState,
       abortController: this.abortController,
       readFileState: this.readFileState,
+      mediaReadState: this.mediaReadState,
       nestedMemoryAttachmentTriggers: new Set<string>(),
       loadedNestedMemoryPaths: this.loadedNestedMemoryPaths,
       dynamicSkillDirTriggers: new Set<string>(),

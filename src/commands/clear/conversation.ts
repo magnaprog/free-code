@@ -49,6 +49,7 @@ import { clearSessionCaches } from './caches.js'
 export async function clearConversation({
   setMessages,
   readFileState,
+  mediaReadState,
   discoveredSkillNames,
   loadedNestedMemoryPaths,
   getAppState,
@@ -57,6 +58,7 @@ export async function clearConversation({
 }: {
   setMessages: (updater: (prev: Message[]) => Message[]) => void
   readFileState: FileStateCache
+  mediaReadState?: Map<string, unknown>
   discoveredSkillNames?: Set<string>
   loadedNestedMemoryPaths?: Set<string>
   getAppState?: () => AppState
@@ -128,6 +130,7 @@ export async function clearConversation({
 
   setCwd(getOriginalCwd())
   readFileState.clear()
+  mediaReadState?.clear()
   discoveredSkillNames?.clear()
   loadedNestedMemoryPaths?.clear()
 
