@@ -1,9 +1,14 @@
 import { describe, expect, test } from 'bun:test'
+import { getDefaultAppState } from '../../state/AppStateStore.js'
+import type { ToolUseContext } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
+import { createFileStateCacheWithSizeLimit } from '../../utils/fileStateCache.js'
+import { createAssistantMessage } from '../../utils/messages.js'
 import {
   addRepeatedToolErrorGuidance,
   countMatchingToolUseErrors,
   normalizeToolUseErrorContent,
+  runToolUse,
 } from './toolExecution.js'
 
 function toolError(content: string): Message {
@@ -22,6 +27,33 @@ function toolError(content: string): Message {
       ],
     },
   } as Message
+}
+
+function createToolUseContext(messages: Message[] = []): ToolUseContext {
+  const appState = getDefaultAppState()
+  return {
+    abortController: new AbortController(),
+    options: {
+      commands: [],
+      debug: false,
+      mainLoopModel: 'claude-sonnet-4-6',
+      tools: [],
+      verbose: false,
+      thinkingConfig: { type: 'disabled' },
+      mcpClients: [],
+      mcpResources: {},
+      isNonInteractiveSession: true,
+      agentDefinitions: { activeAgents: [], allAgents: [] },
+    },
+    getAppState: () => appState,
+    setAppState: () => {},
+    messages,
+    readFileState: createFileStateCacheWithSizeLimit(10),
+    setInProgressToolUseIDs: () => {},
+    setResponseLength: () => {},
+    updateFileHistoryState: () => {},
+    updateAttributionState: () => {},
+  } as ToolUseContext
 }
 
 describe('repeated tool error guidance', () => {
@@ -65,5 +97,32 @@ describe('repeated tool error guidance', () => {
     const error = 'InputValidationError: ' + 'x '.repeat(10_000)
 
     expect(countMatchingToolUseErrors([toolError(error)], error)).toBe(1)
+  })
+
+  test('adds guidance through the unknown tool execution path at threshold', async () => {
+    const error = 'Error: No such tool available: MissingTool'
+    const context = createToolUseContext([toolError(error), toolError(error)])
+    const assistantMessage = createAssistantMessage({ content: [] })
+    const updates = []
+
+    for await (const update of runToolUse(
+      { type: 'tool_use', id: 'toolu_missing', name: 'MissingTool', input: {} },
+      assistantMessage,
+      (() => {
+        throw new Error('permission check should not run for unknown tools')
+      }) as never,
+      context,
+    )) {
+      updates.push(update)
+    }
+
+    expect(updates).toHaveLength(1)
+    const result = updates[0]!.message
+    expect(result.toolUseResult).toContain(
+      'This is the same invalid tool call again.',
+    )
+    expect(JSON.stringify(result.message.content)).toContain(
+      'This is the same invalid tool call again.',
+    )
   })
 })
