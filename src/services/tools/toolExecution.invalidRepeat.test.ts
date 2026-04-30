@@ -51,4 +51,12 @@ describe('repeated tool error guidance', () => {
 
     expect(countMatchingToolUseErrors([toolError(error), toolError(other)], error)).toBe(1)
   })
+
+  test('bounds normalization of huge tool errors', () => {
+    const normalized = normalizeToolUseErrorContent(
+      `<tool_use_error>${'x '.repeat(10_000)}</tool_use_error>`,
+    )
+
+    expect(normalized.length).toBe(2_000)
+  })
 })

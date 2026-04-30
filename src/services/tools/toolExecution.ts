@@ -588,13 +588,19 @@ const MAX_REPEATED_TOOL_ERROR_SCAN = 100
 const MAX_NORMALIZED_TOOL_ERROR_CHARS = 2_000
 const REPEATED_TOOL_ERROR_GUIDANCE =
   'This is the same invalid tool call again. Change the arguments, use a different tool, or ask the user before retrying.'
+const MAX_TOOL_ERROR_NORMALIZATION_INPUT_CHARS =
+  MAX_NORMALIZED_TOOL_ERROR_CHARS * 2 + REPEATED_TOOL_ERROR_GUIDANCE.length
 
 export function stripRepeatedToolErrorGuidance(content: string): string {
   return content.replace(REPEATED_TOOL_ERROR_GUIDANCE, '').trim()
 }
 
 export function normalizeToolUseErrorContent(content: string): string {
-  const normalized = stripRepeatedToolErrorGuidance(content)
+  const bounded =
+    content.length > MAX_TOOL_ERROR_NORMALIZATION_INPUT_CHARS
+      ? content.slice(0, MAX_TOOL_ERROR_NORMALIZATION_INPUT_CHARS)
+      : content
+  const normalized = stripRepeatedToolErrorGuidance(bounded)
     .replace(/<\/?tool_use_error>/g, '')
     .replace(/\s+/g, ' ')
     .trim()
