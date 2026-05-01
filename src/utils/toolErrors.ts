@@ -56,6 +56,13 @@ function formatValidationPath(path: PropertyKey[]): string {
   }, '') as string
 }
 
+const MISSING_REQUIRED_PARAMETER_PATTERN =
+  /required parameter [`'"]?([A-Za-z0-9_.-]+)[`'"]? is missing/gi
+
+export function extractMissingRequiredParameters(error: string): string[] {
+  return Array.from(error.matchAll(MISSING_REQUIRED_PARAMETER_PATTERN), match => match[1]!)
+}
+
 /**
  * Converts Zod validation errors into a human-readable and LLM friendly error message
  *

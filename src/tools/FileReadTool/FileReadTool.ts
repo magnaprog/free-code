@@ -4,6 +4,7 @@ import * as path from 'path'
 import { posix, win32 } from 'path'
 import { z } from 'zod/v4'
 import {
+  API_MAX_MEDIA_PER_REQUEST,
   PDF_AT_MENTION_INLINE_THRESHOLD,
   PDF_EXTRACT_SIZE_THRESHOLD,
   PDF_MAX_PAGES_PER_READ,
@@ -25,8 +26,9 @@ import {
   addSkillDirectories,
   discoverSkillDirsForPaths,
 } from '../../skills/loadSkillsDir.js'
-import type { ToolUseContext } from '../../Tool.js'
+import type { MediaReadRecord, ToolUseContext } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
+import type { Message } from '../../types/message.js'
 import { getCwd } from '../../utils/cwd.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from '../../utils/envUtils.js'
 import { getErrnoCode, isENOENT } from '../../utils/errors.js'
@@ -604,6 +606,7 @@ export const FileReadTool = buildTool({
         readFileState,
         context,
         parentMessage?.message.id,
+        parentMessage?.uuid,
       )
     } catch (error) {
       // Handle file-not-found: suggest similar files
@@ -627,6 +630,7 @@ export const FileReadTool = buildTool({
               readFileState,
               context,
               parentMessage?.message.id,
+              parentMessage?.uuid,
             )
           } catch (altError) {
             if (!isENOENT(altError)) {
@@ -746,6 +750,154 @@ function shouldIncludeFileReadMitigation(): boolean {
  */
 const memoryFileMtimes = new WeakMap<object, number>()
 
+const MEDIA_READ_STATE_LIMIT = 100
+
+type MediaReadKind = 'image' | 'pdf' | 'pdf_pages'
+type MediaReadSnapshot = {
+  key: string
+  kind: MediaReadKind
+  timestamp: number
+  size: number
+}
+
+export function getMediaReadKind(
+  ext: string,
+  pages?: string,
+): MediaReadKind | undefined {
+  if (IMAGE_EXTENSIONS.has(ext)) return 'image'
+  if (isPDFExtension(ext)) return pages ? 'pdf_pages' : 'pdf'
+  return undefined
+}
+
+export function getMediaReadKey(
+  fullFilePath: string,
+  kind: MediaReadKind,
+  pages?: string,
+): string {
+  return pages ? `${kind}:${fullFilePath}:${pages}` : `${kind}:${fullFilePath}`
+}
+
+export function isMediaReadUnchanged(
+  previous: { timestamp: number; size: number } | undefined,
+  current: { timestamp: number; size: number },
+): boolean {
+  return (
+    previous !== undefined &&
+    previous.timestamp === current.timestamp &&
+    previous.size === current.size
+  )
+}
+
+function isMediaContentBlock(block: unknown): boolean {
+  if (typeof block !== 'object' || block === null || !('type' in block)) {
+    return false
+  }
+  const type = (block as { type?: unknown }).type
+  return type === 'image' || type === 'document'
+}
+
+function getNestedToolResultContent(block: unknown): unknown {
+  if (typeof block !== 'object' || block === null || !('type' in block)) {
+    return undefined
+  }
+  const typedBlock = block as { type?: unknown; content?: unknown }
+  return typedBlock.type === 'tool_result' ? typedBlock.content : undefined
+}
+
+function countMediaContentBlocks(content: unknown): number {
+  if (!Array.isArray(content)) return 0
+  let count = 0
+  for (const block of content) {
+    if (isMediaContentBlock(block)) count++
+    count += countMediaContentBlocks(getNestedToolResultContent(block))
+  }
+  return count
+}
+
+function getMessageContent(message: Message): unknown {
+  return 'message' in message ? message.message.content : undefined
+}
+
+function isApiErrorMessage(message: Message): boolean {
+  return 'isApiErrorMessage' in message && message.isApiErrorMessage === true
+}
+
+function getSourceToolAssistantUuid(message: Message): string | undefined {
+  return 'sourceToolAssistantUUID' in message
+    ? message.sourceToolAssistantUUID
+    : undefined
+}
+
+export function isMediaReadRecordVisible(
+  previous: MediaReadRecord | undefined,
+  messages: readonly Message[],
+): boolean {
+  if (!previous?.lastMessageUuid) return false
+  let mediaSourceIndex = -1
+  let mediaItemCount = 0
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i]!
+    const messageMediaCount = countMediaContentBlocks(getMessageContent(message))
+    mediaItemCount += messageMediaCount
+    if (mediaItemCount > API_MAX_MEDIA_PER_REQUEST) return false
+    if (
+      messageMediaCount > 0 &&
+      (message.uuid === previous.lastMessageUuid ||
+        getSourceToolAssistantUuid(message) === previous.lastMessageUuid)
+    ) {
+      mediaSourceIndex = i
+    }
+  }
+  if (mediaSourceIndex === -1) return false
+  return !messages.slice(mediaSourceIndex + 1).some(isApiErrorMessage)
+}
+
+async function getMediaReadSnapshot(
+  fullFilePath: string,
+  resolvedFilePath: string,
+  ext: string,
+  pages?: string,
+): Promise<MediaReadSnapshot | null> {
+  const kind = getMediaReadKind(ext, pages)
+  if (!kind) return null
+  try {
+    const stats = await getFsImplementation().stat(resolvedFilePath)
+    return {
+      key: getMediaReadKey(fullFilePath, kind, pages),
+      kind,
+      timestamp: stats.mtimeMs,
+      size: stats.size,
+    }
+  } catch {
+    return null
+  }
+}
+
+function getMediaReadState(context: ToolUseContext) {
+  if (!context.mediaReadState) {
+    context.mediaReadState = new Map()
+  }
+  return context.mediaReadState
+}
+
+function recordMediaRead(
+  context: ToolUseContext,
+  snapshot: MediaReadSnapshot | null,
+  sourceAssistantUuid: string | undefined,
+): void {
+  if (!snapshot) return
+  const state = getMediaReadState(context)
+  if (state.size >= MEDIA_READ_STATE_LIMIT && !state.has(snapshot.key)) {
+    const oldestKey = state.keys().next().value
+    if (oldestKey !== undefined) state.delete(oldestKey)
+  }
+  state.set(snapshot.key, {
+    timestamp: snapshot.timestamp,
+    size: snapshot.size,
+    lastMessageUuid: sourceAssistantUuid,
+  })
+}
+
 function memoryFileFreshnessPrefix(data: object): string {
   const mtimeMs = memoryFileMtimes.get(data)
   if (mtimeMs === undefined) return ''
@@ -814,10 +966,38 @@ async function callInner(
   readFileState: ToolUseContext['readFileState'],
   context: ToolUseContext,
   messageId: string | undefined,
+  sourceAssistantUuid: string | undefined,
 ): Promise<{
   data: Output
   newMessages?: ReturnType<typeof createUserMessage>[]
 }> {
+  const mediaReadSnapshot = getFeatureValue_CACHED_MAY_BE_STALE(
+    'tengu_read_dedup_killswitch',
+    false,
+  )
+    ? null
+    : await getMediaReadSnapshot(fullFilePath, resolvedFilePath, ext, pages)
+  const previousMediaRead = mediaReadSnapshot
+    ? getMediaReadState(context).get(mediaReadSnapshot.key)
+    : undefined
+  if (
+    mediaReadSnapshot &&
+    isMediaReadUnchanged(previousMediaRead, mediaReadSnapshot) &&
+    isMediaReadRecordVisible(previousMediaRead, context.messages)
+  ) {
+    const analyticsExt = getFileExtensionForAnalytics(fullFilePath)
+    logEvent('tengu_file_read_media_dedup', {
+      kind: mediaReadSnapshot.kind,
+      ...(analyticsExt !== undefined && { ext: analyticsExt }),
+    })
+    return {
+      data: {
+        type: 'file_unchanged' as const,
+        file: { filePath: file_path },
+      },
+    }
+  }
+
   // --- Notebook ---
   if (ext === 'ipynb') {
     const cells = await readNotebook(resolvedFilePath)
@@ -880,6 +1060,8 @@ async function callInner(
       ? createImageMetadataText(data.file.dimensions)
       : null
 
+    recordMediaRead(context, mediaReadSnapshot, sourceAssistantUuid)
+
     return {
       data,
       ...(metadataText && {
@@ -935,12 +1117,15 @@ async function callInner(
           }
         }),
       )
+      const mediaMessage =
+        imageBlocks.length > 0
+          ? createUserMessage({ content: imageBlocks, isMeta: true })
+          : undefined
+      recordMediaRead(context, mediaReadSnapshot, mediaMessage?.uuid)
       return {
         data: extractResult.data,
-        ...(imageBlocks.length > 0 && {
-          newMessages: [
-            createUserMessage({ content: imageBlocks, isMeta: true }),
-          ],
+        ...(mediaMessage && {
+          newMessages: [mediaMessage],
         }),
       }
     }
@@ -962,9 +1147,8 @@ async function callInner(
       )
     }
 
-    const fs = getFsImplementation()
-    const stats = await fs.stat(resolvedFilePath)
-    const shouldExtractPages = stats.size > PDF_EXTRACT_SIZE_THRESHOLD
+    const statsSize = mediaReadSnapshot?.size ?? (await getFsImplementation().stat(resolvedFilePath)).size
+    const shouldExtractPages = statsSize > PDF_EXTRACT_SIZE_THRESHOLD
 
     if (shouldExtractPages) {
       const extractResult = await extractPDFPages(resolvedFilePath)
@@ -978,7 +1162,7 @@ async function callInner(
         logEvent('tengu_pdf_page_extraction', {
           success: false,
           available: extractResult.error.reason !== 'unavailable',
-          fileSize: stats.size,
+          fileSize: statsSize,
         })
       }
     }
@@ -994,24 +1178,24 @@ async function callInner(
       filePath: fullFilePath,
       content: pdfData.file.base64,
     })
+    const mediaMessage = createUserMessage({
+      content: [
+        {
+          type: 'document',
+          source: {
+            type: 'base64',
+            media_type: 'application/pdf',
+            data: pdfData.file.base64,
+          },
+        },
+      ],
+      isMeta: true,
+    })
+    recordMediaRead(context, mediaReadSnapshot, mediaMessage.uuid)
 
     return {
       data: pdfData,
-      newMessages: [
-        createUserMessage({
-          content: [
-            {
-              type: 'document',
-              source: {
-                type: 'base64',
-                media_type: 'application/pdf',
-                data: pdfData.file.base64,
-              },
-            },
-          ],
-          isMeta: true,
-        }),
-      ],
+      newMessages: [mediaMessage],
     }
   }
 

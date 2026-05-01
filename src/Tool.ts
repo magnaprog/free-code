@@ -155,6 +155,14 @@ export type CompactProgressEvent =
   | { type: 'compact_start' }
   | { type: 'compact_end' }
 
+export type MediaReadRecord = {
+  timestamp: number
+  size: number
+  lastMessageUuid?: string
+}
+
+export type MediaReadState = Map<string, MediaReadRecord>
+
 export type ToolUseContext = {
   options: {
     commands: Command[]
@@ -179,6 +187,11 @@ export type ToolUseContext = {
   }
   abortController: AbortController
   readFileState: FileStateCache
+  /**
+   * Media read dedup state, separate from readFileState because readFileState
+   * is also the write-safety proof that a file's text contents were read.
+   */
+  mediaReadState?: MediaReadState
   getAppState(): AppState
   setAppState(f: (prev: AppState) => AppState): void
   /**

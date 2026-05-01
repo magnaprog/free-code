@@ -519,6 +519,7 @@ export async function compactConversation(
 
     // Clear the cache
     context.readFileState.clear()
+    context.mediaReadState?.clear()
     context.loadedNestedMemoryPaths?.clear()
 
     // Intentionally NOT resetting sentSkillNames: re-injecting the full
@@ -918,6 +919,7 @@ export async function partialCompactConversation(
     // Store the current file state before clearing
     const preCompactReadFileState = cacheToObject(context.readFileState)
     context.readFileState.clear()
+    context.mediaReadState?.clear()
     context.loadedNestedMemoryPaths?.clear()
     // Intentionally NOT resetting sentSkillNames — see compactConversation()
     // for rationale (~4K tokens saved per compact event).

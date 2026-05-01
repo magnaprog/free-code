@@ -5,7 +5,6 @@ import { isAbsolute, relative, resolve } from 'path';
 import * as React from 'react';
 import { Suspense, use, useState } from 'react';
 import { MessageResponse } from 'src/components/MessageResponse.js';
-import { extractTag } from 'src/utils/messages.js';
 import { CtrlOToExpand } from '../../components/CtrlOToExpand.js';
 import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErrorMessage.js';
 import { FileEditToolUpdatedMessage } from '../../components/FileEditToolUpdatedMessage.js';
@@ -352,11 +351,6 @@ export function renderToolUseErrorMessage(result: ToolResultBlockParam['content'
 }: {
   verbose: boolean;
 }): React.ReactNode {
-  if (!verbose && typeof result === 'string' && extractTag(result, 'tool_use_error')) {
-    return <MessageResponse>
-        <Text color="error">Error writing file</Text>
-      </MessageResponse>;
-  }
   return <FallbackToolUseErrorMessage result={result} verbose={verbose} />;
 }
 export function renderToolResultMessage({

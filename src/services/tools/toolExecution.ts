@@ -75,6 +75,7 @@ import {
   createStopHookSummaryMessage,
   createToolResultStopMessage,
   createUserMessage,
+  extractTag,
   withMemoryCorrectionHint,
 } from '../../utils/messages.js'
 import type {
@@ -369,9 +370,16 @@ export async function* runToolUse(
   if (!tool) {
     const sanitizedToolName = sanitizeToolNameForAnalytics(toolName)
     logForDebugging(`Unknown tool ${toolName}: ${toolUse.id}`)
+    const rawErrorContent = `Error: No such tool available: ${toolName}`
+    const repeated = addRepeatedToolErrorGuidance(
+      toolUseContext.messages,
+      rawErrorContent,
+    )
     logEvent('tengu_tool_use_error', {
       error:
         `No such tool available: ${sanitizedToolName}` as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      repeatedToolErrorCount: repeated.repeatCount,
+      repeatedToolErrorGuidanceAdded: repeated.isRepeated,
       toolName: sanitizedToolName,
       toolUseID:
         toolUse.id as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -398,12 +406,12 @@ export async function* runToolUse(
         content: [
           {
             type: 'tool_result',
-            content: `<tool_use_error>Error: No such tool available: ${toolName}</tool_use_error>`,
+            content: `<tool_use_error>${repeated.content}</tool_use_error>`,
             is_error: true,
             tool_use_id: toolUse.id,
           },
         ],
-        toolUseResult: `Error: No such tool available: ${toolName}`,
+        toolUseResult: repeated.content,
         sourceToolAssistantUUID: assistantMessage.uuid,
       }),
     }
@@ -569,6 +577,93 @@ function streamedCheckPermissionsAndCallTool(
   return stream
 }
 
+const REPEATED_TOOL_ERROR_THRESHOLD = 3
+const MAX_REPEATED_TOOL_ERROR_SCAN = 100
+const MAX_REPEATED_TOOL_ERROR_MESSAGE_SCAN = 200
+const MAX_NORMALIZED_TOOL_ERROR_CHARS = 2_000
+const REPEATED_TOOL_ERROR_GUIDANCE =
+  'This is the same invalid tool call again. Change the arguments, use a different tool, or ask the user before retrying.'
+const MAX_TOOL_ERROR_NORMALIZATION_INPUT_CHARS =
+  MAX_NORMALIZED_TOOL_ERROR_CHARS * 2 + REPEATED_TOOL_ERROR_GUIDANCE.length
+
+export function stripRepeatedToolErrorGuidance(content: string): string {
+  return content.replace(REPEATED_TOOL_ERROR_GUIDANCE, '').trim()
+}
+
+export function normalizeToolUseErrorContent(content: string): string {
+  const bounded =
+    content.length > MAX_TOOL_ERROR_NORMALIZATION_INPUT_CHARS
+      ? content.slice(0, MAX_TOOL_ERROR_NORMALIZATION_INPUT_CHARS)
+      : content
+  const taggedContent =
+    extractTag(bounded, 'tool_use_error') ??
+    bounded.replace(/<\/?tool_use_error>/g, '')
+  const normalized = stripRepeatedToolErrorGuidance(taggedContent)
+    .replace(/\s+/g, ' ')
+    .trim()
+  return normalized.length > MAX_NORMALIZED_TOOL_ERROR_CHARS
+    ? normalized.slice(0, MAX_NORMALIZED_TOOL_ERROR_CHARS)
+    : normalized
+}
+
+function* iterateToolUseErrorContentReverse(
+  message: Message,
+): Generator<string> {
+  if (message.type !== 'user' || !Array.isArray(message.message.content)) return
+  for (let i = message.message.content.length - 1; i >= 0; i--) {
+    const block = message.message.content[i]
+    if (
+      block?.type === 'tool_result' &&
+      block.is_error === true &&
+      typeof block.content === 'string'
+    ) {
+      yield block.content
+    }
+  }
+}
+
+export function countMatchingToolUseErrors(
+  messages: readonly Message[],
+  errorContent: string,
+): number {
+  const target = normalizeToolUseErrorContent(errorContent)
+  if (!target) return 0
+  let matches = 0
+  let scannedErrors = 0
+  let scannedMessages = 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    scannedMessages++
+    for (const prior of iterateToolUseErrorContentReverse(messages[i]!)) {
+      scannedErrors++
+      if (normalizeToolUseErrorContent(prior) === target) matches++
+      if (
+        matches >= REPEATED_TOOL_ERROR_THRESHOLD - 1 ||
+        scannedErrors >= MAX_REPEATED_TOOL_ERROR_SCAN
+      ) {
+        return matches
+      }
+    }
+    if (scannedMessages >= MAX_REPEATED_TOOL_ERROR_MESSAGE_SCAN) return matches
+  }
+  return matches
+}
+
+export function addRepeatedToolErrorGuidance(
+  messages: readonly Message[],
+  errorContent: string,
+): { content: string; repeatCount: number; isRepeated: boolean } {
+  const repeatCount = countMatchingToolUseErrors(messages, errorContent) + 1
+  if (repeatCount < REPEATED_TOOL_ERROR_THRESHOLD) {
+    return { content: errorContent, repeatCount, isRepeated: false }
+  }
+  const stripped = stripRepeatedToolErrorGuidance(errorContent)
+  return {
+    content: `${stripped}\n\n${REPEATED_TOOL_ERROR_GUIDANCE}`,
+    repeatCount,
+    isRepeated: true,
+  }
+}
+
 /**
  * Appended to Zod errors when a deferred tool wasn't in the discovered-tool
  * set — re-runs the claude.ts schema-filter scan dispatch-time to detect the
@@ -629,16 +724,22 @@ async function checkPermissionsAndCallTool(
       errorContent += schemaHint
     }
 
+    const repeated = addRepeatedToolErrorGuidance(
+      toolUseContext.messages,
+      `InputValidationError: ${errorContent}`,
+    )
     logForDebugging(
-      `${tool.name} tool input error: ${errorContent.slice(0, 200)}`,
+      `${tool.name} tool input error: ${repeated.content.slice(0, 200)}`,
     )
     logEvent('tengu_tool_use_error', {
       error:
         'InputValidationError' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      errorDetails: errorContent.slice(
+      errorDetails: repeated.content.slice(
         0,
         2000,
       ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      repeatedToolErrorCount: repeated.repeatCount,
+      repeatedToolErrorGuidanceAdded: repeated.isRepeated,
       messageID:
         messageId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       toolName: sanitizeToolNameForAnalytics(tool.name),
@@ -667,12 +768,12 @@ async function checkPermissionsAndCallTool(
           content: [
             {
               type: 'tool_result',
-              content: `<tool_use_error>InputValidationError: ${errorContent}</tool_use_error>`,
+              content: `<tool_use_error>${repeated.content}</tool_use_error>`,
               is_error: true,
               tool_use_id: toolUseID,
             },
           ],
-          toolUseResult: `InputValidationError: ${parsedInput.error.message}`,
+          toolUseResult: repeated.content,
           sourceToolAssistantUUID: assistantMessage.uuid,
         }),
       },
@@ -685,16 +786,23 @@ async function checkPermissionsAndCallTool(
     toolUseContext,
   )
   if (isValidCall?.result === false) {
+    const rawErrorContent = isValidCall.message ?? 'Tool validation failed'
+    const repeated = addRepeatedToolErrorGuidance(
+      toolUseContext.messages,
+      rawErrorContent,
+    )
     logForDebugging(
-      `${tool.name} tool validation error: ${isValidCall.message?.slice(0, 200)}`,
+      `${tool.name} tool validation error: ${repeated.content.slice(0, 200)}`,
     )
     logEvent('tengu_tool_use_error', {
       messageID:
         messageId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       toolName: sanitizeToolNameForAnalytics(tool.name),
       error:
-        isValidCall.message as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        repeated.content as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       errorCode: isValidCall.errorCode,
+      repeatedToolErrorCount: repeated.repeatCount,
+      repeatedToolErrorGuidanceAdded: repeated.isRepeated,
       isMcp: tool.isMcp ?? false,
 
       queryChainId: toolUseContext.queryTracking
@@ -720,12 +828,12 @@ async function checkPermissionsAndCallTool(
           content: [
             {
               type: 'tool_result',
-              content: `<tool_use_error>${isValidCall.message}</tool_use_error>`,
+              content: `<tool_use_error>${repeated.content}</tool_use_error>`,
               is_error: true,
               tool_use_id: toolUseID,
             },
           ],
-          toolUseResult: `Error: ${isValidCall.message}`,
+          toolUseResult: `Error: ${repeated.content}`,
           sourceToolAssistantUUID: assistantMessage.uuid,
         }),
       },

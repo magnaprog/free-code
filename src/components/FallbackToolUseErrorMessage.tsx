@@ -3,16 +3,30 @@ import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/messages/
 import * as React from 'react';
 import { stripUnderlineAnsi } from 'src/components/shell/OutputLine.js';
 import { extractTag } from 'src/utils/messages.js';
+import { extractMissingRequiredParameters } from 'src/utils/toolErrors.js';
 import { removeSandboxViolationTags } from 'src/utils/sandbox/sandbox-ui-utils.js';
 import { Box, Text } from '../ink.js';
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
 import { countCharInString } from '../utils/stringUtils.js';
 import { MessageResponse } from './MessageResponse.js';
 const MAX_RENDERED_LINES = 10;
+const MAX_COMPACT_ERROR_CHARS = 220;
 type Props = {
   result: ToolResultBlockParam['content'];
   verbose: boolean;
 };
+
+export function summarizeToolUseErrorForDisplay(error: string): string {
+  const withoutValidationPrefix = error.replace(/^InputValidationError:\s*/i, '').trim();
+  const missingParams = extractMissingRequiredParameters(withoutValidationPrefix);
+  if (missingParams.length > 0) {
+    return `Invalid tool parameters: missing ${missingParams.join(', ')}`;
+  }
+  const compact = withoutValidationPrefix.replace(/\s+/g, ' ').trim();
+  const prefixed = /^InputValidationError:/i.test(error) ? `Invalid tool parameters: ${compact}` : compact;
+  return prefixed.length > MAX_COMPACT_ERROR_CHARS ? `${prefixed.slice(0, MAX_COMPACT_ERROR_CHARS - 1)}…` : prefixed;
+}
+
 export function FallbackToolUseErrorMessage(t0) {
   const $ = _c(25);
   const {
@@ -36,8 +50,8 @@ export function FallbackToolUseErrorMessage(t0) {
       const withoutSandboxViolations = removeSandboxViolationTags(extractedError);
       const withoutErrorTags = withoutSandboxViolations.replace(/<\/?error>/g, "");
       const trimmed = withoutErrorTags.trim();
-      if (!verbose && trimmed.includes("InputValidationError: ")) {
-        error = "Invalid tool parameters";
+      if (!verbose && trimmed.includes("InputValidationError:")) {
+        error = summarizeToolUseErrorForDisplay(trimmed);
       } else {
         if (trimmed.startsWith("Error: ") || trimmed.startsWith("Cancelled: ")) {
           error = trimmed;
