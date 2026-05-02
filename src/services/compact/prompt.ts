@@ -39,6 +39,7 @@ const DETAILED_ANALYSIS_INSTRUCTION_BASE = `Before providing your final summary,
      - full code snippets
      - function signatures
      - file edits
+     - project-specific development environment setup, including required runtimes/toolchains, package managers, shell configuration, PATH changes, and environment variables
    - Errors that you ran into and how you fixed them
    - Pay special attention to specific user feedback that you received, especially if the user told you to do something differently.
 2. Double-check for technical accuracy and completeness, addressing each required element thoroughly.`
@@ -54,6 +55,7 @@ const DETAILED_ANALYSIS_INSTRUCTION_PARTIAL = `Before providing your final summa
      - full code snippets
      - function signatures
      - file edits
+     - project-specific development environment setup, including required runtimes/toolchains, package managers, shell configuration, PATH changes, and environment variables
    - Errors that you ran into and how you fixed them
    - Pay special attention to specific user feedback that you received, especially if the user told you to do something differently.
 2. Double-check for technical accuracy and completeness, addressing each required element thoroughly.`
@@ -69,11 +71,12 @@ Your summary should include the following sections:
 2. Key Technical Concepts: List all important technical concepts, technologies, and frameworks discussed.
 3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. Pay special attention to the most recent messages and include full code snippets where applicable and include a summary of why this file read or edit is important.
 4. Errors and fixes: List all errors that you ran into, and how you fixed them. Pay special attention to specific user feedback that you received, especially if the user told you to do something differently.
-5. Problem Solving: Document problems solved and any ongoing troubleshooting efforts.
-6. All user messages: List ALL user messages that are not tool results. These are critical for understanding the users' feedback and changing intent.
-7. Pending Tasks: Outline any pending tasks that you have explicitly been asked to work on.
-8. Current Work: Describe in detail precisely what was being worked on immediately before this summary request, paying special attention to the most recent messages from both user and assistant. Include file names and code snippets where applicable.
-9. Optional Next Step: List the next step that you will take that is related to the most recent work you were doing. IMPORTANT: ensure that this step is DIRECTLY in line with the user's most recent explicit requests, and the task you were working on immediately before this summary request. If your last task was concluded, then only list next steps if they are explicitly in line with the users request. Do not start on tangential requests or really old requests that were already completed without confirming with the user first.
+5. Environment and workflow setup: Preserve exact project-specific setup needed to continue, including runtimes/toolchains, package managers, shell configuration, PATH or tool availability, and required environment variables.
+6. Problem Solving: Document problems solved and any ongoing troubleshooting efforts.
+7. All user messages: List ALL user messages that are not tool results. These are critical for understanding the users' feedback and changing intent.
+8. Pending Tasks: Outline any pending tasks that you have explicitly been asked to work on.
+9. Current Work: Describe in detail precisely what was being worked on immediately before this summary request, paying special attention to the most recent messages from both user and assistant. Include file names and code snippets where applicable.
+10. Optional Next Step: List the next step that you will take that is related to the most recent work you were doing. IMPORTANT: ensure that this step is DIRECTLY in line with the user's most recent explicit requests, and the task you were working on immediately before this summary request. If your last task was concluded, then only list next steps if they are explicitly in line with the users request. Do not start on tangential requests or really old requests that were already completed without confirming with the user first.
                        If there is a next step, include direct quotes from the most recent conversation showing exactly what task you were working on and where you left off. This should be verbatim to ensure there's no drift in task interpretation.
 
 Here's an example of how your output should be structured:
@@ -107,22 +110,25 @@ Here's an example of how your output should be structured:
       - [User feedback on the error if any]
     - [...]
 
-5. Problem Solving:
+5. Environment and workflow setup:
+   [Exact development environment setup, successful commands, environment variables, and PATH/tool availability notes]
+
+6. Problem Solving:
    [Description of solved problems and ongoing troubleshooting]
 
-6. All user messages: 
+7. All user messages:
     - [Detailed non tool use user message]
     - [...]
 
-7. Pending Tasks:
+8. Pending Tasks:
    - [Task 1]
    - [Task 2]
    - [...]
 
-8. Current Work:
+9. Current Work:
    [Precise description of current work]
 
-9. Optional Next Step:
+10. Optional Next Step:
    [Optional Next step to take]
 
 </summary>
@@ -152,11 +158,12 @@ Your summary should include the following sections:
 2. Key Technical Concepts: List important technical concepts, technologies, and frameworks discussed recently.
 3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. Include full code snippets where applicable and include a summary of why this file read or edit is important.
 4. Errors and fixes: List errors encountered and how they were fixed.
-5. Problem Solving: Document problems solved and any ongoing troubleshooting efforts.
-6. All user messages: List ALL user messages from the recent portion that are not tool results.
-7. Pending Tasks: Outline any pending tasks from the recent messages.
-8. Current Work: Describe precisely what was being worked on immediately before this summary request.
-9. Optional Next Step: List the next step related to the most recent work. Include direct quotes from the most recent conversation.
+5. Environment and workflow setup: Preserve exact project-specific setup needed to continue, including runtimes/toolchains, package managers, shell configuration, PATH or tool availability, and required environment variables.
+6. Problem Solving: Document problems solved and any ongoing troubleshooting efforts.
+7. All user messages: List ALL user messages from the recent portion that are not tool results.
+8. Pending Tasks: Outline any pending tasks from the recent messages.
+9. Current Work: Describe precisely what was being worked on immediately before this summary request.
+10. Optional Next Step: List the next step related to the most recent work. Include direct quotes from the most recent conversation.
 
 Here's an example of how your output should be structured:
 
@@ -182,19 +189,22 @@ Here's an example of how your output should be structured:
     - [Error description]:
       - [How you fixed it]
 
-5. Problem Solving:
+5. Environment and workflow setup:
+   [Exact development environment setup, successful commands, environment variables, and PATH/tool availability notes]
+
+6. Problem Solving:
    [Description]
 
-6. All user messages:
+7. All user messages:
     - [Detailed non tool use user message]
 
-7. Pending Tasks:
+8. Pending Tasks:
    - [Task 1]
 
-8. Current Work:
+9. Current Work:
    [Precise description of current work]
 
-9. Optional Next Step:
+10. Optional Next Step:
    [Optional Next step to take]
 
 </summary>
@@ -215,11 +225,12 @@ Your summary should include the following sections:
 2. Key Technical Concepts: List important technical concepts, technologies, and frameworks discussed.
 3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. Include full code snippets where applicable and include a summary of why this file read or edit is important.
 4. Errors and fixes: List errors encountered and how they were fixed.
-5. Problem Solving: Document problems solved and any ongoing troubleshooting efforts.
-6. All user messages: List ALL user messages that are not tool results.
-7. Pending Tasks: Outline any pending tasks.
-8. Work Completed: Describe what was accomplished by the end of this portion.
-9. Context for Continuing Work: Summarize any context, decisions, or state that would be needed to understand and continue the work in subsequent messages.
+5. Environment and workflow setup: Preserve exact project-specific setup needed to continue, including runtimes/toolchains, package managers, shell configuration, PATH or tool availability, and required environment variables.
+6. Problem Solving: Document problems solved and any ongoing troubleshooting efforts.
+7. All user messages: List ALL user messages that are not tool results.
+8. Pending Tasks: Outline any pending tasks.
+9. Work Completed: Describe what was accomplished by the end of this portion.
+10. Context for Continuing Work: Summarize any context, decisions, or state that would be needed to understand and continue the work in subsequent messages.
 
 Here's an example of how your output should be structured:
 
@@ -245,19 +256,22 @@ Here's an example of how your output should be structured:
     - [Error description]:
       - [How you fixed it]
 
-5. Problem Solving:
+5. Environment and workflow setup:
+   [Exact development environment setup, successful commands, environment variables, and PATH/tool availability notes]
+
+6. Problem Solving:
    [Description]
 
-6. All user messages:
+7. All user messages:
     - [Detailed non tool use user message]
 
-7. Pending Tasks:
+8. Pending Tasks:
    - [Task 1]
 
-8. Work Completed:
+9. Work Completed:
    [Description of what was accomplished]
 
-9. Context for Continuing Work:
+10. Context for Continuing Work:
    [Key context, decisions, or state needed to continue the work]
 
 </summary>

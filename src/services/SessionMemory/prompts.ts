@@ -24,6 +24,9 @@ _What are the important files? In short, what do they contain and why are they r
 # Workflow
 _What bash commands are usually run and in what order? How to interpret their output if not obvious?_
 
+# Environment and Runtime Setup
+_What project-specific development environment setup is needed to continue without rediscovery? Include runtimes/toolchains, package managers, shell configuration, PATH/tool availability, and env vars._
+
 # Errors & Corrections
 _Errors encountered and how they were fixed. What did the user correct? What approaches failed and should not be tried again?_
 
