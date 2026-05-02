@@ -130,33 +130,35 @@ export async function processSessionStartHooks(
   // Execute SessionStart hooks, ignoring blocking errors
   // Use the provided agentType or fall back to the one stored in bootstrap state
   const resolvedAgentType = agentType ?? getMainThreadAgentType()
-  for await (const hookResult of executeSessionStartHooks(
-    source,
-    sessionId,
-    resolvedAgentType,
-    model,
-    undefined,
-    undefined,
-    forceSyncExecution,
-  )) {
-    if (hookResult.message) {
-      hookMessages.push(hookResult.message)
+  try {
+    for await (const hookResult of executeSessionStartHooks(
+      source,
+      sessionId,
+      resolvedAgentType,
+      model,
+      undefined,
+      undefined,
+      forceSyncExecution,
+    )) {
+      if (hookResult.message) {
+        hookMessages.push(hookResult.message)
+      }
+      if (
+        hookResult.additionalContexts &&
+        hookResult.additionalContexts.length > 0
+      ) {
+        additionalContexts.push(...hookResult.additionalContexts)
+      }
+      if (hookResult.initialUserMessage) {
+        pendingInitialUserMessage = hookResult.initialUserMessage
+      }
+      if (hookResult.watchPaths && hookResult.watchPaths.length > 0) {
+        allWatchPaths.push(...hookResult.watchPaths)
+      }
     }
-    if (
-      hookResult.additionalContexts &&
-      hookResult.additionalContexts.length > 0
-    ) {
-      additionalContexts.push(...hookResult.additionalContexts)
-    }
-    if (hookResult.initialUserMessage) {
-      pendingInitialUserMessage = hookResult.initialUserMessage
-    }
-    if (hookResult.watchPaths && hookResult.watchPaths.length > 0) {
-      allWatchPaths.push(...hookResult.watchPaths)
-    }
+  } finally {
+    invalidateSessionEnvCache()
   }
-
-  invalidateSessionEnvCache()
 
   if (allWatchPaths.length > 0) {
     updateWatchPaths(allWatchPaths)
@@ -203,24 +205,26 @@ export async function processSetupHooks(
     }
   }
 
-  for await (const hookResult of executeSetupHooks(
-    trigger,
-    undefined,
-    undefined,
-    forceSyncExecution,
-  )) {
-    if (hookResult.message) {
-      hookMessages.push(hookResult.message)
+  try {
+    for await (const hookResult of executeSetupHooks(
+      trigger,
+      undefined,
+      undefined,
+      forceSyncExecution,
+    )) {
+      if (hookResult.message) {
+        hookMessages.push(hookResult.message)
+      }
+      if (
+        hookResult.additionalContexts &&
+        hookResult.additionalContexts.length > 0
+      ) {
+        additionalContexts.push(...hookResult.additionalContexts)
+      }
     }
-    if (
-      hookResult.additionalContexts &&
-      hookResult.additionalContexts.length > 0
-    ) {
-      additionalContexts.push(...hookResult.additionalContexts)
-    }
+  } finally {
+    invalidateSessionEnvCache()
   }
-
-  invalidateSessionEnvCache()
 
   if (additionalContexts.length > 0) {
     const contextMessage = createAttachmentMessage({

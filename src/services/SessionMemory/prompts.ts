@@ -216,14 +216,30 @@ function substituteVariables(
 }
 
 /**
- * Check if the session memory content is essentially empty (matches the template).
+ * Check if the session memory content is essentially empty.
  * This is used to detect if no actual content has been extracted yet,
  * which means we should fall back to legacy compact behavior.
  */
 export async function isSessionMemoryEmpty(content: string): Promise<boolean> {
   const template = await loadSessionMemoryTemplate()
-  // Compare trimmed content to detect if it's just the template
-  return content.trim() === template.trim()
+  if (content.trim() === template.trim()) {
+    return true
+  }
+  return hasOnlyBuiltInTemplateLines(content)
+}
+
+const DEFAULT_SESSION_MEMORY_TEMPLATE_LINES = new Set(
+  DEFAULT_SESSION_MEMORY_TEMPLATE.split('\n')
+    .map(line => line.trim())
+    .filter(Boolean),
+)
+
+function hasOnlyBuiltInTemplateLines(content: string): boolean {
+  return content
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .every(line => DEFAULT_SESSION_MEMORY_TEMPLATE_LINES.has(line))
 }
 
 export async function buildSessionMemoryUpdatePrompt(

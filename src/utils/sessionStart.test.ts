@@ -12,9 +12,11 @@ mock.module('./hooks/hooksConfigSnapshot.js', () => ({
   updateHooksConfigSnapshot: () => {},
 }))
 
-const { getSessionEnvironmentScript, invalidateSessionEnvCache } = await import(
-  './sessionEnvironment.js'
-)
+const {
+  getHookEnvFilePath,
+  getSessionEnvironmentScript,
+  invalidateSessionEnvCache,
+} = await import('./sessionEnvironment.js')
 const { processSessionStartHooks, processSetupHooks } = await import(
   './sessionStart.js'
 )
@@ -44,11 +46,16 @@ afterEach(async () => {
   }
 })
 
-async function seedCachedEnvScript(): Promise<void> {
+async function setTempConfigDir(): Promise<string> {
   tempDir = await mkdtemp(join(tmpdir(), 'free-code-session-start-'))
   process.env.CLAUDE_CONFIG_DIR = join(tempDir, 'config')
+  return tempDir
+}
 
-  const envFile = join(tempDir, 'env.sh')
+async function seedCachedEnvScript(): Promise<void> {
+  const dir = await setTempConfigDir()
+
+  const envFile = join(dir, 'env.sh')
   process.env.CLAUDE_ENV_FILE = envFile
 
   invalidateSessionEnvCache()
@@ -56,6 +63,14 @@ async function seedCachedEnvScript(): Promise<void> {
   expect(await getSessionEnvironmentScript()).toBe('export TEST_ENV=old')
 
   await writeFile(envFile, 'export TEST_ENV=new')
+}
+
+async function seedCachedEmptySessionEnv(): Promise<void> {
+  await setTempConfigDir()
+  delete process.env.CLAUDE_ENV_FILE
+
+  invalidateSessionEnvCache()
+  expect(await getSessionEnvironmentScript()).toBeNull()
 }
 
 describe('startup hook environment cache', () => {
@@ -67,11 +82,37 @@ describe('startup hook environment cache', () => {
     expect(await getSessionEnvironmentScript()).toBe('export TEST_ENV=new')
   })
 
+  test('SessionStart processing reloads newly written hook environment files', async () => {
+    await seedCachedEmptySessionEnv()
+
+    await writeFile(
+      await getHookEnvFilePath('SessionStart', 0),
+      'export TEST_ENV=session-start',
+    )
+    await processSessionStartHooks('compact', { forceSyncExecution: true })
+
+    expect(await getSessionEnvironmentScript()).toBe(
+      'export TEST_ENV=session-start',
+    )
+  })
+
   test('Setup processing invalidates cached environment scripts', async () => {
     await seedCachedEnvScript()
 
     await processSetupHooks('init', { forceSyncExecution: true })
 
     expect(await getSessionEnvironmentScript()).toBe('export TEST_ENV=new')
+  })
+
+  test('Setup processing reloads newly written hook environment files', async () => {
+    await seedCachedEmptySessionEnv()
+
+    await writeFile(
+      await getHookEnvFilePath('Setup', 0),
+      'export TEST_ENV=setup',
+    )
+    await processSetupHooks('init', { forceSyncExecution: true })
+
+    expect(await getSessionEnvironmentScript()).toBe('export TEST_ENV=setup')
   })
 })
