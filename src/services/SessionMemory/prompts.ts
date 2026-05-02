@@ -25,7 +25,7 @@ _What are the important files? In short, what do they contain and why are they r
 _What bash commands are usually run and in what order? How to interpret their output if not obvious?_
 
 # Environment and Runtime Setup
-_What project-specific development environment setup is needed to continue without rediscovery? Include runtimes/toolchains, package managers, shell configuration, PATH/tool availability, and env vars._
+_What project-specific development environment setup is needed to continue without investigating it again? Include runtimes/toolchains, package managers, shell configuration, PATH/tool availability, and env vars._
 
 # Errors & Corrections
 _Errors encountered and how they were fixed. What did the user correct? What approaches failed and should not be tried again?_
@@ -221,13 +221,16 @@ function substituteVariables(
  * which means we should fall back to legacy compact behavior.
  */
 export async function isSessionMemoryEmpty(content: string): Promise<boolean> {
-  const template = await loadSessionMemoryTemplate()
-  if (content.trim() === template.trim()) {
+  if (hasOnlyBuiltInTemplateLines(content)) {
     return true
   }
-  return hasOnlyBuiltInTemplateLines(content)
+
+  const template = await loadSessionMemoryTemplate()
+  return content.trim() === template.trim()
 }
 
+// Keep this line set compatible with older built-in templates. If existing
+// template text changes, update the old-template regression tests as needed.
 const DEFAULT_SESSION_MEMORY_TEMPLATE_LINES = new Set(
   DEFAULT_SESSION_MEMORY_TEMPLATE.split('\n')
     .map(line => line.trim())

@@ -71,7 +71,7 @@ Your summary should include the following sections:
 2. Key Technical Concepts: List all important technical concepts, technologies, and frameworks discussed.
 3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. Pay special attention to the most recent messages and include full code snippets where applicable and include a summary of why this file read or edit is important.
 4. Errors and fixes: List all errors that you ran into, and how you fixed them. Pay special attention to specific user feedback that you received, especially if the user told you to do something differently.
-5. Environment and workflow setup: Preserve exact project-specific setup needed to continue, including runtimes/toolchains, package managers, shell configuration, PATH or tool availability, and required environment variables.
+5. Environment and workflow setup: Preserve the exact setup needed to continue work in this project, including runtimes, toolchains, package managers, shell configuration, PATH or tool availability, and required environment variables.
 6. Problem Solving: Document problems solved and any ongoing troubleshooting efforts.
 7. All user messages: List ALL user messages that are not tool results. These are critical for understanding the users' feedback and changing intent.
 8. Pending Tasks: Outline any pending tasks that you have explicitly been asked to work on.
@@ -158,7 +158,7 @@ Your summary should include the following sections:
 2. Key Technical Concepts: List important technical concepts, technologies, and frameworks discussed recently.
 3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. Include full code snippets where applicable and include a summary of why this file read or edit is important.
 4. Errors and fixes: List errors encountered and how they were fixed.
-5. Environment and workflow setup: Preserve exact project-specific setup needed to continue, including runtimes/toolchains, package managers, shell configuration, PATH or tool availability, and required environment variables.
+5. Environment and workflow setup: Preserve the exact setup needed to continue work in this project, including runtimes, toolchains, package managers, shell configuration, PATH or tool availability, and required environment variables.
 6. Problem Solving: Document problems solved and any ongoing troubleshooting efforts.
 7. All user messages: List ALL user messages from the recent portion that are not tool results.
 8. Pending Tasks: Outline any pending tasks from the recent messages.
@@ -225,7 +225,7 @@ Your summary should include the following sections:
 2. Key Technical Concepts: List important technical concepts, technologies, and frameworks discussed.
 3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. Include full code snippets where applicable and include a summary of why this file read or edit is important.
 4. Errors and fixes: List errors encountered and how they were fixed.
-5. Environment and workflow setup: Preserve exact project-specific setup needed to continue, including runtimes/toolchains, package managers, shell configuration, PATH or tool availability, and required environment variables.
+5. Environment and workflow setup: Preserve the exact setup needed to continue work in this project, including runtimes, toolchains, package managers, shell configuration, PATH or tool availability, and required environment variables.
 6. Problem Solving: Document problems solved and any ongoing troubleshooting efforts.
 7. All user messages: List ALL user messages that are not tool results.
 8. Pending Tasks: Outline any pending tasks.

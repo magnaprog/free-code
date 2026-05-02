@@ -88,6 +88,17 @@ export function getPendingAsyncHooks(): PendingAsyncHook[] {
   )
 }
 
+function canHookAffectSessionEnv(
+  hookEvent: PendingAsyncHook['hookEvent'],
+): boolean {
+  return (
+    hookEvent === 'SessionStart' ||
+    hookEvent === 'Setup' ||
+    hookEvent === 'CwdChanged' ||
+    hookEvent === 'FileChanged'
+  )
+}
+
 async function finalizeHook(
   hook: PendingAsyncHook,
   exitCode: number,
@@ -217,7 +228,7 @@ export async function checkForAsyncHookResponses(): Promise<
       return {
         type: 'response' as const,
         processId: hook.processId,
-        isSessionStart: hook.hookEvent === 'SessionStart',
+        affectsSessionEnv: canHookAffectSessionEnv(hook.hookEvent),
         payload: {
           processId: hook.processId,
           response,
@@ -235,7 +246,7 @@ export async function checkForAsyncHookResponses(): Promise<
 
   // allSettled — isolate failures so one throwing callback doesn't orphan
   // already-applied side effects (responseAttachmentSent, finalizeHook) from others.
-  let sessionStartCompleted = false
+  let sessionEnvHookCompleted = false
   for (const s of settled) {
     if (s.status !== 'fulfilled') {
       logForDebugging(
@@ -250,14 +261,12 @@ export async function checkForAsyncHookResponses(): Promise<
     } else if (r.type === 'response') {
       responses.push(r.payload)
       pendingHooks.delete(r.processId)
-      if (r.isSessionStart) sessionStartCompleted = true
+      if (r.affectsSessionEnv) sessionEnvHookCompleted = true
     }
   }
 
-  if (sessionStartCompleted) {
-    logForDebugging(
-      `Invalidating session env cache after SessionStart hook completed`,
-    )
+  if (sessionEnvHookCompleted) {
+    logForDebugging('Invalidating session env cache after env hook completed')
     invalidateSessionEnvCache()
   }
 
