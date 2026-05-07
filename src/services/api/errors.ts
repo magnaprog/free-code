@@ -61,6 +61,45 @@ export function startsWithApiErrorPrefix(text: string): boolean {
 }
 export const PROMPT_TOO_LONG_ERROR_MESSAGE = 'Prompt is too long'
 
+export function isContextLimitErrorText(text: string): boolean {
+  const lower = text.toLowerCase()
+  return (
+    lower.includes('prompt is too long') ||
+    lower.includes('context_length_exceeded') ||
+    lower.includes('maximum context length') ||
+    lower.includes('maximum context window') ||
+    lower.includes('context window limit') ||
+    lower.includes('too many input tokens') ||
+    lower.includes('input tokens exceed') ||
+    (lower.includes('context limit') && lower.includes('exceed')) ||
+    (lower.includes('context window') && lower.includes('exceed'))
+  )
+}
+
+export function isContextLimitError(error: unknown): boolean {
+  if (error instanceof Error) {
+    return (
+      isContextLimitErrorText(error.message) ||
+      isContextLimitError((error as { error?: unknown }).error)
+    )
+  }
+  if (typeof error === 'string') {
+    return isContextLimitErrorText(error)
+  }
+  if (!error || typeof error !== 'object') {
+    return false
+  }
+  const record = error as Record<string, unknown>
+  return (
+    ['message', 'code', 'type'].some(key => {
+      const value = record[key]
+      return typeof value === 'string' && isContextLimitErrorText(value)
+    }) ||
+    isContextLimitError(record.error) ||
+    isContextLimitError(record.response)
+  )
+}
+
 export function isPromptTooLongMessage(msg: AssistantMessage): boolean {
   if (!msg.isApiErrorMessage) {
     return false
@@ -557,12 +596,9 @@ export function getAssistantMessageFromError(
     })
   }
 
-  // Handle prompt too long errors (Vertex returns 413, direct API returns 400)
-  // Use case-insensitive check since Vertex returns "Prompt is too long" (capitalized)
-  if (
-    error instanceof Error &&
-    error.message.toLowerCase().includes('prompt is too long')
-  ) {
+  // Handle context-limit errors (Vertex/Claude use "prompt is too long";
+  // OpenAI/Codex use context_length_exceeded / maximum context wording).
+  if (isContextLimitError(error)) {
     // Content stays generic (UI matches on exact string). The raw error with
     // token counts goes into errorDetails — reactive compact's retry loop
     // parses the gap from there via getPromptTooLongTokenGap.
@@ -1008,12 +1044,7 @@ export function classifyAPIError(error: unknown): string {
   }
 
   // Prompt/content size errors
-  if (
-    error instanceof Error &&
-    error.message
-      .toLowerCase()
-      .includes(PROMPT_TOO_LONG_ERROR_MESSAGE.toLowerCase())
-  ) {
+  if (isContextLimitError(error)) {
     return 'prompt_too_long'
   }
 

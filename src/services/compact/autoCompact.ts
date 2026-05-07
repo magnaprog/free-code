@@ -238,44 +238,18 @@ export async function shouldAutoCompact(
   return isAboveAutoCompactThreshold
 }
 
-export async function autoCompactIfNeeded(
+async function runAutoCompact(
   messages: Message[],
   toolUseContext: ToolUseContext,
   cacheSafeParams: CacheSafeParams,
-  querySource?: QuerySource,
-  tracking?: AutoCompactTrackingState,
-  snipTokensFreed?: number,
+  querySource: QuerySource | undefined,
+  tracking: AutoCompactTrackingState | undefined,
 ): Promise<{
   wasCompacted: boolean
   compactionResult?: CompactionResult
   consecutiveFailures?: number
 }> {
-  if (isEnvTruthy(process.env.DISABLE_COMPACT)) {
-    return { wasCompacted: false }
-  }
-
-  // Circuit breaker: stop retrying after N consecutive failures.
-  // Without this, sessions where context is irrecoverably over the limit
-  // hammer the API with doomed compaction attempts on every turn.
-  if (
-    tracking?.consecutiveFailures !== undefined &&
-    tracking.consecutiveFailures >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES
-  ) {
-    return { wasCompacted: false }
-  }
-
   const model = toolUseContext.options.mainLoopModel
-  const shouldCompact = await shouldAutoCompact(
-    messages,
-    model,
-    querySource,
-    snipTokensFreed,
-  )
-
-  if (!shouldCompact) {
-    return { wasCompacted: false }
-  }
-
   const recompactionInfo: RecompactionInfo = {
     isRecompactionInChain: tracking?.compacted === true,
     turnsSincePreviousCompact: tracking?.turnCounter ?? -1,
@@ -348,4 +322,86 @@ export async function autoCompactIfNeeded(
     }
     return { wasCompacted: false, consecutiveFailures: nextFailures }
   }
+}
+
+function shouldSkipAutoCompactAttempt(
+  querySource: QuerySource | undefined,
+  tracking: AutoCompactTrackingState | undefined,
+): boolean {
+  if (isEnvTruthy(process.env.DISABLE_COMPACT)) {
+    return true
+  }
+  if (querySource === 'session_memory' || querySource === 'compact') {
+    return true
+  }
+  // Circuit breaker: stop retrying after N consecutive failures.
+  // Without this, sessions where context is irrecoverably over the limit
+  // hammer the API with doomed compaction attempts on every turn.
+  return (
+    tracking?.consecutiveFailures !== undefined &&
+    tracking.consecutiveFailures >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES
+  )
+}
+
+export async function forceAutoCompact(
+  messages: Message[],
+  toolUseContext: ToolUseContext,
+  cacheSafeParams: CacheSafeParams,
+  querySource?: QuerySource,
+  tracking?: AutoCompactTrackingState,
+): Promise<{
+  wasCompacted: boolean
+  compactionResult?: CompactionResult
+  consecutiveFailures?: number
+}> {
+  if (shouldSkipAutoCompactAttempt(querySource, tracking)) {
+    return { wasCompacted: false }
+  }
+  if (!isAutoCompactEnabled()) {
+    return { wasCompacted: false }
+  }
+  return runAutoCompact(
+    messages,
+    toolUseContext,
+    cacheSafeParams,
+    querySource,
+    tracking,
+  )
+}
+
+export async function autoCompactIfNeeded(
+  messages: Message[],
+  toolUseContext: ToolUseContext,
+  cacheSafeParams: CacheSafeParams,
+  querySource?: QuerySource,
+  tracking?: AutoCompactTrackingState,
+  snipTokensFreed?: number,
+): Promise<{
+  wasCompacted: boolean
+  compactionResult?: CompactionResult
+  consecutiveFailures?: number
+}> {
+  if (shouldSkipAutoCompactAttempt(querySource, tracking)) {
+    return { wasCompacted: false }
+  }
+
+  const model = toolUseContext.options.mainLoopModel
+  const shouldCompact = await shouldAutoCompact(
+    messages,
+    model,
+    querySource,
+    snipTokensFreed,
+  )
+
+  if (!shouldCompact) {
+    return { wasCompacted: false }
+  }
+
+  return runAutoCompact(
+    messages,
+    toolUseContext,
+    cacheSafeParams,
+    querySource,
+    tracking,
+  )
 }
