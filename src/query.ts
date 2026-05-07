@@ -292,6 +292,30 @@ async function* queryLoop(
   // sites.
   let taskBudgetRemaining: number | undefined = undefined
 
+  function updateTaskBudgetRemainingAfterCompact(
+    preCompactMessages: Message[],
+  ): void {
+    if (!params.taskBudget) {
+      return
+    }
+
+    const preCompactContext =
+      finalContextTokensFromLastResponse(preCompactMessages)
+    taskBudgetRemaining = Math.max(
+      0,
+      (taskBudgetRemaining ?? params.taskBudget.total) - preCompactContext,
+    )
+  }
+
+  function createPostAutoCompactTracking(): AutoCompactTrackingState {
+    return {
+      compacted: true,
+      turnId: deps.uuid(),
+      turnCounter: 0,
+      consecutiveFailures: 0,
+    }
+  }
+
   // Snapshot immutable env/statsig/session state once at entry. See QueryConfig
   // for what's included and why feature() gates are intentionally excluded.
   const config = buildQueryConfig()
@@ -512,25 +536,13 @@ async function* queryLoop(
       // messagesForQuery is replaced with postCompactMessages below.
       // iterations[-1] is the authoritative final window (post server tool
       // loops); see #304930.
-      if (params.taskBudget) {
-        const preCompactContext =
-          finalContextTokensFromLastResponse(messagesForQuery)
-        taskBudgetRemaining = Math.max(
-          0,
-          (taskBudgetRemaining ?? params.taskBudget.total) - preCompactContext,
-        )
-      }
+      updateTaskBudgetRemainingAfterCompact(messagesForQuery)
 
       // Reset on every compact so turnCounter/turnId reflect the MOST RECENT
       // compact. recompactionInfo (autoCompact.ts:190) already captured the
       // old values for turnsSincePreviousCompact/previousCompactTurnId before
       // the call, so this reset doesn't lose those.
-      tracking = {
-        compacted: true,
-        turnId: deps.uuid(),
-        turnCounter: 0,
-        consecutiveFailures: 0,
-      }
+      tracking = createPostAutoCompactTracking()
 
       const postCompactMessages = buildPostCompactMessages(compactionResult)
 
@@ -1153,15 +1165,7 @@ async function* queryLoop(
           // task_budget: same carryover as the proactive path above.
           // messagesForQuery still holds the pre-compact array here (the
           // 413-failed attempt's input).
-          if (params.taskBudget) {
-            const preCompactContext =
-              finalContextTokensFromLastResponse(messagesForQuery)
-            taskBudgetRemaining = Math.max(
-              0,
-              (taskBudgetRemaining ?? params.taskBudget.total) -
-                preCompactContext,
-            )
-          }
+          updateTaskBudgetRemainingAfterCompact(messagesForQuery)
 
           const postCompactMessages = buildPostCompactMessages(compacted)
           for (const msg of postCompactMessages) {
@@ -1217,22 +1221,9 @@ async function* queryLoop(
         )
 
         if (forcedCompact.compactionResult) {
-          if (params.taskBudget) {
-            const preCompactContext =
-              finalContextTokensFromLastResponse(messagesForQuery)
-            taskBudgetRemaining = Math.max(
-              0,
-              (taskBudgetRemaining ?? params.taskBudget.total) -
-                preCompactContext,
-            )
-          }
+          updateTaskBudgetRemainingAfterCompact(messagesForQuery)
 
-          tracking = {
-            compacted: true,
-            turnId: deps.uuid(),
-            turnCounter: 0,
-            consecutiveFailures: 0,
-          }
+          tracking = createPostAutoCompactTracking()
 
           const postCompactMessages = buildPostCompactMessages(
             forcedCompact.compactionResult,
