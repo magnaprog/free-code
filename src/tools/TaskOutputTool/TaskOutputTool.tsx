@@ -62,7 +62,9 @@ async function getTaskOutputData(task: TaskState): Promise<TaskOutput> {
   if (task.type === 'local_bash') {
     const bashTask = task as LocalShellTaskState;
     const taskOutputObj = bashTask.shellCommand?.taskOutput;
-    if (taskOutputObj) {
+    if (taskOutputObj?.stdoutToFile) {
+      output = await getTaskOutput(taskOutputObj.taskId);
+    } else if (taskOutputObj) {
       const stdout = await taskOutputObj.getStdout();
       const stderr = taskOutputObj.getStderr();
       output = [stdout, stderr].filter(Boolean).join('\n');

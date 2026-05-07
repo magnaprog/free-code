@@ -1,6 +1,5 @@
 import { feature } from 'bun:bundle';
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
-import { copyFile, stat as fsStat, truncate as fsTruncate, link } from 'fs/promises';
 import * as React from 'react';
 import type { CanUseToolFn } from 'src/hooks/useCanUseTool.js';
 import type { AppState } from 'src/state/AppState.js';
@@ -28,11 +27,12 @@ import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js';
 import { semanticBoolean } from '../../utils/semanticBoolean.js';
 import { semanticNumber } from '../../utils/semanticNumber.js';
 import { getCachedPowerShellPath } from '../../utils/shell/powershellDetection.js';
+import { buildShellOutputPreview, getShellModelOutputPreview, persistShellOutput, setShellModelOutputPreview } from '../../utils/shell/outputPreview.js';
 import { EndTruncatingAccumulator } from '../../utils/stringUtils.js';
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js';
 import { TaskOutput } from '../../utils/task/TaskOutput.js';
 import { isOutputLineTruncated } from '../../utils/terminal.js';
-import { buildLargeToolResultMessage, ensureToolResultsDir, generatePreview, getToolResultPath, PREVIEW_SIZE_BYTES } from '../../utils/toolResultStorage.js';
+import { buildLargeToolResultMessage, generatePreview, PREVIEW_SIZE_BYTES } from '../../utils/toolResultStorage.js';
 import { shouldUseSandbox } from '../BashTool/shouldUseSandbox.js';
 import { BackgroundHint } from '../BashTool/UI.js';
 import { buildImageToolResult, isImageOutput, resetCwdIfOutsideProject, resizeShellImageOutput, stdErrAppendShellResetMessage, stripEmptyLines } from '../BashTool/utils.js';
@@ -380,24 +380,28 @@ export const PowerShellTool = buildTool({
   renderToolUseQueuedMessage,
   renderToolResultMessage,
   renderToolUseErrorMessage,
-  mapToolResultToToolResultBlockParam({
-    interrupted,
-    stdout,
-    stderr,
-    isImage,
-    persistedOutputPath,
-    persistedOutputSize,
-    backgroundTaskId,
-    backgroundedByUser,
-    assistantAutoBackgrounded
-  }: Out, toolUseID: string): ToolResultBlockParam {
+  mapToolResultToToolResultBlockParam(data: Out, toolUseID: string): ToolResultBlockParam {
+    const {
+      interrupted,
+      stdout,
+      stderr,
+      isImage,
+      persistedOutputPath,
+      persistedOutputSize,
+      backgroundTaskId,
+      backgroundedByUser,
+      assistantAutoBackgrounded
+    } = data;
     // For image data, format as image content block for Claude
     if (isImage) {
       const block = buildImageToolResult(stdout, toolUseID);
       if (block) return block;
     }
     let processedStdout = stdout;
-    if (persistedOutputPath) {
+    const modelPreview = getShellModelOutputPreview(data);
+    if (modelPreview) {
+      processedStdout = modelPreview;
+    } else if (persistedOutputPath) {
       const trimmed = stdout ? stdout.replace(/^(\s*\n)+/, '').trimEnd() : '';
       const preview = generatePreview(trimmed, PREVIEW_SIZE_BYTES);
       processedStdout = buildLargeToolResultMessage({
@@ -581,40 +585,41 @@ export const PowerShellTool = buildTool({
         throw new Error(result.preSpawnError);
       }
       if (interpretation.isError && !isInterrupt) {
-        throw new ShellError(stdout, result.stderr || '', result.code, result.interrupted);
+        const persistedErrorOutput = await persistShellOutput(result.outputFilePath, result.outputTaskId);
+        const compactErrorOutput = persistedErrorOutput
+          ? await buildShellOutputPreview({
+            persistedOutputPath: persistedErrorOutput.filepath,
+            originalSizeBytes: persistedErrorOutput.originalSize,
+            persistedSizeBytes: persistedErrorOutput.persistedSize,
+            persistedWasTruncated: persistedErrorOutput.truncated,
+            stderr: result.stderr || '',
+            headBytes: 3 * 1024,
+            tailBytes: 4 * 1024,
+            stderrBytes: 1024,
+            includeWrapper: false,
+          })
+          : result.outputFilePath
+            ? await buildShellOutputPreview({
+              outputFilePath: result.outputFilePath,
+              originalSizeBytes: result.outputFileSize,
+              stderr: result.stderr || '',
+              headBytes: 3 * 1024,
+              tailBytes: 4 * 1024,
+              stderrBytes: 1024,
+              includeWrapper: false,
+            })
+            : null;
+        throw compactErrorOutput
+          ? new ShellError(compactErrorOutput, '', result.code, result.interrupted)
+          : new ShellError(stdout, result.stderr || '', result.code, result.interrupted);
       }
 
       // Large output: file on disk has more than getMaxOutputLength() bytes.
       // stdout already contains the first chunk. Copy the output file to the
-      // tool-results dir so the model can read it via FileRead. If > 64 MB,
-      // truncate after copying. Matches BashTool.tsx:983-1005.
-      //
-      // Placed AFTER the preSpawnError/ShellError throws (matches BashTool's
-      // ordering, where persistence is post-try/finally): a failing command
-      // that also produced >maxOutputLength bytes would otherwise do 3-4 disk
-      // syscalls, store to tool-results/, then throw — orphaning the file.
-      const MAX_PERSISTED_SIZE = 64 * 1024 * 1024;
-      let persistedOutputPath: string | undefined;
-      let persistedOutputSize: number | undefined;
-      if (result.outputFilePath && result.outputTaskId) {
-        try {
-          const fileStat = await fsStat(result.outputFilePath);
-          persistedOutputSize = fileStat.size;
-          await ensureToolResultsDir();
-          const dest = getToolResultPath(result.outputTaskId, false);
-          if (fileStat.size > MAX_PERSISTED_SIZE) {
-            await fsTruncate(result.outputFilePath, MAX_PERSISTED_SIZE);
-          }
-          try {
-            await link(result.outputFilePath, dest);
-          } catch {
-            await copyFile(result.outputFilePath, dest);
-          }
-          persistedOutputPath = dest;
-        } catch {
-          // File may already be gone — stdout preview is sufficient
-        }
-      }
+      // tool-results dir so the model can read it via FileRead.
+      const persistedOutput = await persistShellOutput(result.outputFilePath, result.outputTaskId);
+      const persistedOutputPath = persistedOutput?.filepath;
+      const persistedOutputSize = persistedOutput?.originalSize;
 
       // Cap image dimensions + size if present (CC-304 — see
       // resizeShellImageOutput). Scope the decoded buffer so it can be
@@ -634,6 +639,19 @@ export const PowerShellTool = buildTool({
         }
       }
       const finalStderr = [result.stderr || '', stderrForShellReset].filter(Boolean).join('\n');
+      const modelOutputPreview = !isImage && persistedOutput
+        ? await buildShellOutputPreview({
+          persistedOutputPath: persistedOutput.filepath,
+          originalSizeBytes: persistedOutput.originalSize,
+          persistedSizeBytes: persistedOutput.persistedSize,
+          persistedWasTruncated: persistedOutput.truncated,
+        })
+        : !isImage && result.outputFilePath
+          ? await buildShellOutputPreview({
+            outputFilePath: result.outputFilePath,
+            originalSizeBytes: result.outputFileSize,
+          })
+          : null;
       logEvent('tengu_powershell_tool_command_executed', {
         command_type: getCommandTypeForLogging(input.command),
         stdout_length: compressedStdout.length,
@@ -641,16 +659,20 @@ export const PowerShellTool = buildTool({
         exit_code: result.code,
         interrupted: result.interrupted
       });
+      const data: Out = {
+        stdout: compressedStdout,
+        stderr: finalStderr,
+        interrupted: result.interrupted,
+        returnCodeInterpretation: interpretation.message,
+        isImage,
+        persistedOutputPath,
+        persistedOutputSize
+      };
+      if (modelOutputPreview) {
+        setShellModelOutputPreview(data, modelOutputPreview);
+      }
       return {
-        data: {
-          stdout: compressedStdout,
-          stderr: finalStderr,
-          interrupted: result.interrupted,
-          returnCodeInterpretation: interpretation.message,
-          isImage,
-          persistedOutputPath,
-          persistedOutputSize
-        }
+        data
       };
     } finally {
       if (setToolJSX) setToolJSX(null);

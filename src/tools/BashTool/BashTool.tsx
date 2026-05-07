@@ -1,6 +1,5 @@
 import { feature } from 'bun:bundle';
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
-import { copyFile, stat as fsStat, truncate as fsTruncate, link } from 'fs/promises';
 import * as React from 'react';
 import type { CanUseToolFn } from 'src/hooks/useCanUseTool.js';
 import type { AppState } from 'src/state/AppState.js';
@@ -33,11 +32,12 @@ import type { ExecResult } from '../../utils/ShellCommand.js';
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js';
 import { semanticBoolean } from '../../utils/semanticBoolean.js';
 import { semanticNumber } from '../../utils/semanticNumber.js';
+import { buildShellOutputPreview, getShellModelOutputPreview, persistShellOutput, setShellModelOutputPreview } from '../../utils/shell/outputPreview.js';
 import { EndTruncatingAccumulator } from '../../utils/stringUtils.js';
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js';
 import { TaskOutput } from '../../utils/task/TaskOutput.js';
 import { isOutputLineTruncated } from '../../utils/terminal.js';
-import { buildLargeToolResultMessage, ensureToolResultsDir, generatePreview, getToolResultPath, PREVIEW_SIZE_BYTES } from '../../utils/toolResultStorage.js';
+import { buildLargeToolResultMessage, generatePreview, PREVIEW_SIZE_BYTES } from '../../utils/toolResultStorage.js';
 import { userFacingName as fileEditUserFacingName } from '../FileEditTool/UI.js';
 import { trackGitOperations } from '../shared/gitOperationTracking.js';
 import { bashToolHasPermission, commandHasAnyCd, matchWildcardPattern, permissionRuleExtractPrefix } from './bashPermissions.js';
@@ -79,6 +79,18 @@ const BASH_SEMANTIC_NEUTRAL_COMMANDS = new Set(['echo', 'printf', 'true', 'false
 
 // Commands that typically produce no stdout on success
 const BASH_SILENT_COMMANDS = new Set(['mv', 'cp', 'rm', 'mkdir', 'rmdir', 'chmod', 'chown', 'chgrp', 'touch', 'ln', 'cd', 'export', 'unset', 'wait']);
+function getAppendedOutputAnnotation(annotated: string, original: string): string {
+  if (annotated === original) {
+    return '';
+  }
+  if (!original) {
+    return annotated.trim();
+  }
+  if (annotated.startsWith(original)) {
+    return annotated.slice(original.length).trim();
+  }
+  return annotated.trim();
+}
 
 /**
  * Checks if a bash command is a search or read operation.
@@ -552,18 +564,19 @@ export const BashTool = buildTool({
   }) {
     return stderr ? `${stdout}\n${stderr}` : stdout;
   },
-  mapToolResultToToolResultBlockParam({
-    interrupted,
-    stdout,
-    stderr,
-    isImage,
-    backgroundTaskId,
-    backgroundedByUser,
-    assistantAutoBackgrounded,
-    structuredContent,
-    persistedOutputPath,
-    persistedOutputSize
-  }, toolUseID): ToolResultBlockParam {
+  mapToolResultToToolResultBlockParam(data, toolUseID): ToolResultBlockParam {
+    const {
+      interrupted,
+      stdout,
+      stderr,
+      isImage,
+      backgroundTaskId,
+      backgroundedByUser,
+      assistantAutoBackgrounded,
+      structuredContent,
+      persistedOutputPath,
+      persistedOutputSize
+    } = data;
     // Handle structured content
     if (structuredContent && structuredContent.length > 0) {
       return {
@@ -586,9 +599,12 @@ export const BashTool = buildTool({
       processedStdout = processedStdout.trimEnd();
     }
 
-    // For large output that was persisted to disk, build <persisted-output>
-    // message for the model. The UI never sees this — it uses data.stdout.
-    if (persistedOutputPath) {
+    // For large output that was persisted to disk, build a model-only preview.
+    // The UI/hooks/SDK still see data.stdout.
+    const modelPreview = getShellModelOutputPreview(data);
+    if (modelPreview) {
+      processedStdout = modelPreview;
+    } else if (persistedOutputPath) {
       const preview = generatePreview(processedStdout, PREVIEW_SIZE_BYTES);
       processedStdout = buildLargeToolResultMessage({
         filepath: persistedOutputPath,
@@ -707,15 +723,43 @@ export const BashTool = buildTool({
       }
 
       // Annotate output with sandbox violations if any (stderr is in stdout)
-      const outputWithSbFailures = SandboxManager.annotateStderrWithSandboxFailures(input.command, result.stdout || '');
+      const rawFailureOutput = result.stdout || '';
+      const outputWithSbFailures = SandboxManager.annotateStderrWithSandboxFailures(input.command, rawFailureOutput);
+      const appendedOutputAnnotation = getAppendedOutputAnnotation(outputWithSbFailures, rawFailureOutput);
       if (result.preSpawnError) {
         throw new Error(result.preSpawnError);
       }
       if (interpretationResult.isError && !isInterrupt) {
+        const persistedErrorOutput = await persistShellOutput(result.outputFilePath, result.outputTaskId);
+        const compactErrorOutput = persistedErrorOutput
+          ? await buildShellOutputPreview({
+            persistedOutputPath: persistedErrorOutput.filepath,
+            originalSizeBytes: persistedErrorOutput.originalSize,
+            persistedSizeBytes: persistedErrorOutput.persistedSize,
+            persistedWasTruncated: persistedErrorOutput.truncated,
+            stderr: appendedOutputAnnotation,
+            stderrLabel: 'Additional diagnostics:',
+            headBytes: 3 * 1024,
+            tailBytes: 4 * 1024,
+            stderrBytes: 1024,
+            includeWrapper: false,
+          })
+          : result.outputFilePath
+            ? await buildShellOutputPreview({
+              outputFilePath: result.outputFilePath,
+              originalSizeBytes: result.outputFileSize,
+              stderr: appendedOutputAnnotation,
+              stderrLabel: 'Additional diagnostics:',
+              headBytes: 3 * 1024,
+              tailBytes: 4 * 1024,
+              stderrBytes: 1024,
+              includeWrapper: false,
+            })
+            : null;
         // stderr is merged into stdout (merged fd); outputWithSbFailures
         // already has the full output. Pass '' for stdout to avoid
         // duplication in getErrorParts() and processBashCommand.
-        throw new ShellError('', outputWithSbFailures, result.code, result.interrupted);
+        throw new ShellError('', compactErrorOutput ?? outputWithSbFailures, result.code, result.interrupted);
       }
       wasInterrupted = result.interrupted;
     } finally {
@@ -727,30 +771,10 @@ export const BashTool = buildTool({
 
     // Large output: the file on disk has more than getMaxOutputLength() bytes.
     // stdout already contains the first chunk (from getStdout()). Copy the
-    // output file to the tool-results dir so the model can read it via
-    // FileRead. If > 64 MB, truncate after copying.
-    const MAX_PERSISTED_SIZE = 64 * 1024 * 1024;
-    let persistedOutputPath: string | undefined;
-    let persistedOutputSize: number | undefined;
-    if (result.outputFilePath && result.outputTaskId) {
-      try {
-        const fileStat = await fsStat(result.outputFilePath);
-        persistedOutputSize = fileStat.size;
-        await ensureToolResultsDir();
-        const dest = getToolResultPath(result.outputTaskId, false);
-        if (fileStat.size > MAX_PERSISTED_SIZE) {
-          await fsTruncate(result.outputFilePath, MAX_PERSISTED_SIZE);
-        }
-        try {
-          await link(result.outputFilePath, dest);
-        } catch {
-          await copyFile(result.outputFilePath, dest);
-        }
-        persistedOutputPath = dest;
-      } catch {
-        // File may already be gone — stdout preview is sufficient
-      }
-    }
+    // output file to the tool-results dir so the model can read it via FileRead.
+    const persistedOutput = await persistShellOutput(result.outputFilePath, result.outputTaskId);
+    const persistedOutputPath = persistedOutput?.filepath;
+    const persistedOutputSize = persistedOutput?.originalSize;
     const commandType = input.command.split(' ')[0];
     logEvent('tengu_bash_tool_command_executed', {
       command_type: commandType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -800,6 +824,19 @@ export const BashTool = buildTool({
         isImage = false;
       }
     }
+    const modelOutputPreview = !isImage && persistedOutput
+      ? await buildShellOutputPreview({
+        persistedOutputPath: persistedOutput.filepath,
+        originalSizeBytes: persistedOutput.originalSize,
+        persistedSizeBytes: persistedOutput.persistedSize,
+        persistedWasTruncated: persistedOutput.truncated,
+      })
+      : !isImage && result.outputFilePath
+        ? await buildShellOutputPreview({
+          outputFilePath: result.outputFilePath,
+          originalSizeBytes: result.outputFileSize,
+        })
+        : null;
     const data: Out = {
       stdout: compressedStdout,
       stderr: stderrForShellReset,
@@ -814,6 +851,9 @@ export const BashTool = buildTool({
       persistedOutputPath,
       persistedOutputSize
     };
+    if (modelOutputPreview) {
+      setShellModelOutputPreview(data, modelOutputPreview);
+    }
     return {
       data
     };
