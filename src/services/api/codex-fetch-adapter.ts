@@ -517,7 +517,7 @@ function getOpenAIResponseErrorMessage(event: Record<string, unknown>): string {
       : typeof error?.type === 'string'
         ? error.type
         : undefined
-  return code ? `${code}: ${message}` : message
+  return redactSecrets(code ? `${code}: ${message}` : message)
 }
 
 /**

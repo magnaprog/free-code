@@ -39,6 +39,7 @@ import { isEnvTruthy } from '../../utils/envUtils.js'
 import { formatFileSize } from '../../utils/format.js'
 import { ImageResizeError } from '../../utils/imageResizer.js'
 import { ImageSizeError } from '../../utils/imageValidation.js'
+import { redactSecrets } from '../../utils/redaction.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -64,7 +65,7 @@ export const PROMPT_TOO_LONG_ERROR_MESSAGE = 'Prompt is too long'
 export function isContextLimitErrorText(text: string): boolean {
   const lower = text.toLowerCase()
   return (
-    lower.includes('prompt is too long') ||
+    lower.includes(PROMPT_TOO_LONG_ERROR_MESSAGE.toLowerCase()) ||
     lower.includes('context_length_exceeded') ||
     lower.includes('maximum context length') ||
     lower.includes('maximum context window') ||
@@ -76,28 +77,35 @@ export function isContextLimitErrorText(text: string): boolean {
   )
 }
 
-export function isContextLimitError(error: unknown): boolean {
+export function getContextLimitErrorDetails(error: unknown): string | undefined {
   if (error instanceof Error) {
-    return (
-      isContextLimitErrorText(error.message) ||
-      isContextLimitError((error as { error?: unknown }).error)
-    )
+    if (isContextLimitErrorText(error.message)) {
+      return redactSecrets(error.message)
+    }
+    return getContextLimitErrorDetails((error as { error?: unknown }).error)
   }
   if (typeof error === 'string') {
-    return isContextLimitErrorText(error)
+    return isContextLimitErrorText(error) ? redactSecrets(error) : undefined
   }
   if (!error || typeof error !== 'object') {
-    return false
+    return undefined
   }
   const record = error as Record<string, unknown>
+  const details = ['code', 'type', 'message']
+    .map(key => record[key])
+    .filter((value): value is string => typeof value === 'string')
+    .join(': ')
+  if (details && isContextLimitErrorText(details)) {
+    return redactSecrets(details)
+  }
   return (
-    ['message', 'code', 'type'].some(key => {
-      const value = record[key]
-      return typeof value === 'string' && isContextLimitErrorText(value)
-    }) ||
-    isContextLimitError(record.error) ||
-    isContextLimitError(record.response)
+    getContextLimitErrorDetails(record.error) ??
+    getContextLimitErrorDetails(record.response)
   )
+}
+
+export function isContextLimitError(error: unknown): boolean {
+  return getContextLimitErrorDetails(error) !== undefined
 }
 
 export function isPromptTooLongMessage(msg: AssistantMessage): boolean {
@@ -605,7 +613,7 @@ export function getAssistantMessageFromError(
     return createAssistantAPIErrorMessage({
       content: PROMPT_TOO_LONG_ERROR_MESSAGE,
       error: 'invalid_request',
-      errorDetails: error.message,
+      errorDetails: getContextLimitErrorDetails(error),
     })
   }
 

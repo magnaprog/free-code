@@ -453,21 +453,25 @@ async function* queryLoop(
       appendSystemContext(systemPrompt, systemContext),
     )
 
+    const skipContextLimitPreflight =
+      state.transition?.reason === 'context_limit_compact_retry'
     queryCheckpoint('query_autocompact_start')
-    const { compactionResult, consecutiveFailures } = await deps.autocompact(
-      messagesForQuery,
-      toolUseContext,
-      {
-        systemPrompt,
-        userContext,
-        systemContext,
-        toolUseContext,
-        forkContextMessages: messagesForQuery,
-      },
-      querySource,
-      tracking,
-      snipTokensFreed,
-    )
+    const { compactionResult, consecutiveFailures } = skipContextLimitPreflight
+      ? { wasCompacted: false }
+      : await deps.autocompact(
+          messagesForQuery,
+          toolUseContext,
+          {
+            systemPrompt,
+            userContext,
+            systemContext,
+            toolUseContext,
+            forkContextMessages: messagesForQuery,
+          },
+          querySource,
+          tracking,
+          snipTokensFreed,
+        )
     queryCheckpoint('query_autocompact_end')
 
     if (compactionResult) {
@@ -630,6 +634,7 @@ async function* queryLoop(
       reactiveCompact?.isReactiveCompactEnabled() ?? false
     if (
       !compactionResult &&
+      !skipContextLimitPreflight &&
       querySource !== 'compact' &&
       querySource !== 'session_memory' &&
       !(

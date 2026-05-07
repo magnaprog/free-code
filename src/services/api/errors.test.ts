@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   classifyAPIError,
   getAssistantMessageFromError,
+  getContextLimitErrorDetails,
   isContextLimitError,
   isContextLimitErrorText,
   isPromptTooLongMessage,
@@ -45,14 +46,18 @@ describe('context-limit error detection', () => {
   })
 
   test('recognizes structured context-limit errors', () => {
-    expect(
-      isContextLimitError({
-        error: {
-          code: 'context_length_exceeded',
-          message: 'maximum context length exceeded',
-        },
-      }),
-    ).toBe(true)
+    const error = {
+      error: {
+        code: 'context_length_exceeded',
+        message: 'maximum context length exceeded with access_token="secret"',
+      },
+    }
+
+    expect(isContextLimitError(error)).toBe(true)
+    const details = getContextLimitErrorDetails(error)
+    expect(details).toContain('context_length_exceeded')
+    expect(details).toContain('maximum context length exceeded')
+    expect(details).not.toContain('secret')
   })
 
   test('normalizes context-limit errors to prompt-too-long assistant messages', () => {

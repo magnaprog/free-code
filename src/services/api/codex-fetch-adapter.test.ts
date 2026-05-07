@@ -271,7 +271,8 @@ describe('codex fetch adapter translation', () => {
           response: {
             error: {
               code: 'context_length_exceeded',
-              message: 'maximum context length exceeded',
+              message:
+                'maximum context length exceeded with access_token="secret"',
             },
           },
         },
@@ -282,6 +283,7 @@ describe('codex fetch adapter translation', () => {
     const text = await response.text()
     expect(text).toContain('context_length_exceeded')
     expect(text).toContain('maximum context length exceeded')
+    expect(text).not.toContain('secret')
   })
 
   test('translates non-streaming Responses output to Anthropic message shape', async () => {
