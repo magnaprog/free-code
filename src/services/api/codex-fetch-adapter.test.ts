@@ -226,6 +226,66 @@ describe('codex fetch adapter translation', () => {
     }
   })
 
+  test('preserves context-limit details from Codex non-OK responses', async () => {
+    const previousFetch = globalThis.fetch
+    const payload = btoa(
+      JSON.stringify({
+        'https://api.openai.com/auth': { chatgpt_account_id: 'acct_test' },
+      }),
+    )
+    const token = `header.${payload}.signature`
+
+    globalThis.fetch = (async () =>
+      new Response(
+        '{"error":{"code":"context_length_exceeded","message":"maximum context length exceeded"},"access_token":"secret"}',
+        { status: 400 },
+      )) as typeof fetch
+
+    try {
+      const response = await createCodexFetch(token)(
+        'https://api.anthropic.com/v1/messages',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            model: 'gpt-5.5',
+            stream: false,
+            messages: [{ role: 'user', content: 'hello' }],
+          }),
+        },
+      )
+      const body = await response.json()
+
+      expect(body.error.message).toContain('context_length_exceeded')
+      expect(body.error.message).toContain('maximum context length exceeded')
+      expect(body.error.message).not.toContain('secret')
+    } finally {
+      globalThis.fetch = previousFetch
+    }
+  })
+
+  test('preserves context-limit code from streaming response failures', async () => {
+    const response = await codexFetchAdapterTestHooks.translateCodexStreamToAnthropic(
+      sseResponse([
+        {
+          type: 'response.failed',
+          response: {
+            error: {
+              code: 'context_length_exceeded',
+              message:
+                'maximum context length exceeded with access_token="secret"',
+            },
+          },
+        },
+      ]),
+      'gpt-5.5',
+    )
+
+    const text = await response.text()
+    expect(text).toContain('context_length_exceeded')
+    expect(text).toContain('maximum context length exceeded')
+    expect(text).not.toContain('secret')
+  })
+
   test('translates non-streaming Responses output to Anthropic message shape', async () => {
     const openAIResponse = new Response(
       JSON.stringify({

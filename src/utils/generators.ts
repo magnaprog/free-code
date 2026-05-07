@@ -72,7 +72,7 @@ export async function* all<A>(
 }
 
 export async function toArray<A>(
-  generator: AsyncGenerator<A, void>,
+  generator: AsyncGenerator<A, unknown>,
 ): Promise<A[]> {
   const result: A[] = []
   for await (const a of generator) {

@@ -507,9 +507,17 @@ function getOpenAIResponseErrorMessage(event: Record<string, unknown>): string {
   const error =
     (response?.error as Record<string, unknown> | undefined) ??
     (event.error as Record<string, unknown> | undefined)
-  return typeof error?.message === 'string'
-    ? error.message
-    : 'OpenAI Responses stream failed'
+  const message =
+    typeof error?.message === 'string'
+      ? error.message
+      : 'OpenAI Responses stream failed'
+  const code =
+    typeof error?.code === 'string'
+      ? error.code
+      : typeof error?.type === 'string'
+        ? error.type
+        : undefined
+  return redactSecrets(code ? `${code}: ${message}` : message)
 }
 
 /**
@@ -1260,7 +1268,7 @@ export function createCodexFetch(
         type: 'error',
         error: {
           type: 'api_error',
-          message: `Codex API error (${codexResponse.status}): ${errorText}`,
+          message: `Codex API error (${codexResponse.status}): ${redactSecrets(errorText)}`,
         },
       }
       return new Response(JSON.stringify(errorBody), {

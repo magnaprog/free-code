@@ -157,19 +157,11 @@ export function isAutoCompactEnabled(): boolean {
   return userConfig.autoCompactEnabled
 }
 
-export async function shouldAutoCompact(
-  messages: Message[],
-  model: string,
-  querySource?: QuerySource,
-  // Snip removes messages but the surviving assistant's usage still reflects
-  // pre-snip context, so tokenCountWithEstimation can't see the savings.
-  // Subtract the rough-delta that snip already computed.
-  snipTokensFreed = 0,
-): Promise<boolean> {
+function isHardBlockedAutoCompactQuery(querySource?: QuerySource): boolean {
   // Recursion guards. session_memory and compact are forked agents that
   // would deadlock.
   if (querySource === 'session_memory' || querySource === 'compact') {
-    return false
+    return true
   }
   // marble_origami is the ctx-agent — if ITS context blows up and
   // autocompact fires, runPostCompactCleanup calls resetContextCollapse()
@@ -178,14 +170,15 @@ export async function shouldAutoCompact(
   // external builds (it's in excluded-strings.txt).
   if (feature('CONTEXT_COLLAPSE')) {
     if (querySource === 'marble_origami') {
-      return false
+      return true
     }
   }
+  return false
+}
 
-  if (!isAutoCompactEnabled()) {
-    return false
-  }
-
+function isProactiveAutoCompactSuppressedForQuery(
+  querySource?: QuerySource,
+): boolean {
   // Reactive-only mode: suppress proactive autocompact, let reactive compact
   // catch the API's prompt-too-long. feature() wrapper keeps the flag string
   // out of external builds (REACTIVE_COMPACT is ant-only).
@@ -194,7 +187,7 @@ export async function shouldAutoCompact(
   // still tries session memory first. Revisit if reactive-only graduates.
   if (feature('REACTIVE_COMPACT')) {
     if (getFeatureValue_CACHED_MAY_BE_STALE('tengu_cobalt_raccoon', false)) {
-      return false
+      return true
     }
   }
 
@@ -218,8 +211,32 @@ export async function shouldAutoCompact(
       require('../contextCollapse/index.js') as typeof import('../contextCollapse/index.js')
     /* eslint-enable @typescript-eslint/no-require-imports */
     if (isContextCollapseEnabled()) {
-      return false
+      return true
     }
+  }
+
+  return false
+}
+
+export async function shouldAutoCompact(
+  messages: Message[],
+  model: string,
+  querySource?: QuerySource,
+  // Snip removes messages but the surviving assistant's usage still reflects
+  // pre-snip context, so tokenCountWithEstimation can't see the savings.
+  // Subtract the rough-delta that snip already computed.
+  snipTokensFreed = 0,
+): Promise<boolean> {
+  if (isHardBlockedAutoCompactQuery(querySource)) {
+    return false
+  }
+
+  if (!isAutoCompactEnabled()) {
+    return false
+  }
+
+  if (isProactiveAutoCompactSuppressedForQuery(querySource)) {
+    return false
   }
 
   const tokenCount = tokenCountWithEstimation(messages) - snipTokensFreed
@@ -238,44 +255,18 @@ export async function shouldAutoCompact(
   return isAboveAutoCompactThreshold
 }
 
-export async function autoCompactIfNeeded(
+async function runAutoCompact(
   messages: Message[],
   toolUseContext: ToolUseContext,
   cacheSafeParams: CacheSafeParams,
-  querySource?: QuerySource,
-  tracking?: AutoCompactTrackingState,
-  snipTokensFreed?: number,
+  querySource: QuerySource | undefined,
+  tracking: AutoCompactTrackingState | undefined,
 ): Promise<{
   wasCompacted: boolean
   compactionResult?: CompactionResult
   consecutiveFailures?: number
 }> {
-  if (isEnvTruthy(process.env.DISABLE_COMPACT)) {
-    return { wasCompacted: false }
-  }
-
-  // Circuit breaker: stop retrying after N consecutive failures.
-  // Without this, sessions where context is irrecoverably over the limit
-  // hammer the API with doomed compaction attempts on every turn.
-  if (
-    tracking?.consecutiveFailures !== undefined &&
-    tracking.consecutiveFailures >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES
-  ) {
-    return { wasCompacted: false }
-  }
-
   const model = toolUseContext.options.mainLoopModel
-  const shouldCompact = await shouldAutoCompact(
-    messages,
-    model,
-    querySource,
-    snipTokensFreed,
-  )
-
-  if (!shouldCompact) {
-    return { wasCompacted: false }
-  }
-
   const recompactionInfo: RecompactionInfo = {
     isRecompactionInChain: tracking?.compacted === true,
     turnsSincePreviousCompact: tracking?.turnCounter ?? -1,
@@ -348,4 +339,86 @@ export async function autoCompactIfNeeded(
     }
     return { wasCompacted: false, consecutiveFailures: nextFailures }
   }
+}
+
+function shouldSkipAutoCompactAttempt(
+  querySource: QuerySource | undefined,
+  tracking: AutoCompactTrackingState | undefined,
+): boolean {
+  if (isEnvTruthy(process.env.DISABLE_COMPACT)) {
+    return true
+  }
+  if (isHardBlockedAutoCompactQuery(querySource)) {
+    return true
+  }
+  // Circuit breaker: stop retrying after N consecutive failures.
+  // Without this, sessions where context is irrecoverably over the limit
+  // hammer the API with doomed compaction attempts on every turn.
+  return (
+    tracking?.consecutiveFailures !== undefined &&
+    tracking.consecutiveFailures >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES
+  )
+}
+
+export async function forceAutoCompact(
+  messages: Message[],
+  toolUseContext: ToolUseContext,
+  cacheSafeParams: CacheSafeParams,
+  querySource?: QuerySource,
+  tracking?: AutoCompactTrackingState,
+): Promise<{
+  wasCompacted: boolean
+  compactionResult?: CompactionResult
+  consecutiveFailures?: number
+}> {
+  if (shouldSkipAutoCompactAttempt(querySource, tracking)) {
+    return { wasCompacted: false }
+  }
+  if (!isAutoCompactEnabled()) {
+    return { wasCompacted: false }
+  }
+  return runAutoCompact(
+    messages,
+    toolUseContext,
+    cacheSafeParams,
+    querySource,
+    tracking,
+  )
+}
+
+export async function autoCompactIfNeeded(
+  messages: Message[],
+  toolUseContext: ToolUseContext,
+  cacheSafeParams: CacheSafeParams,
+  querySource?: QuerySource,
+  tracking?: AutoCompactTrackingState,
+  snipTokensFreed?: number,
+): Promise<{
+  wasCompacted: boolean
+  compactionResult?: CompactionResult
+  consecutiveFailures?: number
+}> {
+  if (shouldSkipAutoCompactAttempt(querySource, tracking)) {
+    return { wasCompacted: false }
+  }
+
+  const model = toolUseContext.options.mainLoopModel
+  const shouldCompact = await shouldAutoCompact(
+    messages,
+    model,
+    querySource,
+    snipTokensFreed,
+  )
+
+  if (!shouldCompact) {
+    return { wasCompacted: false }
+  }
+
+  return runAutoCompact(
+    messages,
+    toolUseContext,
+    cacheSafeParams,
+    querySource,
+    tracking,
+  )
 }
