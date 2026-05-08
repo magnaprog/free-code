@@ -27,7 +27,7 @@ import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js';
 import { semanticBoolean } from '../../utils/semanticBoolean.js';
 import { semanticNumber } from '../../utils/semanticNumber.js';
 import { getCachedPowerShellPath } from '../../utils/shell/powershellDetection.js';
-import { buildShellOutputPreview, getShellModelOutputPreview, persistShellOutput, setShellModelOutputPreview } from '../../utils/shell/outputPreview.js';
+import { buildShellErrorOutputPreview, buildShellOutputPreview, getShellModelOutputPreview, persistShellOutput, setShellModelOutputPreview } from '../../utils/shell/outputPreview.js';
 import { EndTruncatingAccumulator } from '../../utils/stringUtils.js';
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js';
 import { TaskOutput } from '../../utils/task/TaskOutput.js';
@@ -585,30 +585,12 @@ export const PowerShellTool = buildTool({
         throw new Error(result.preSpawnError);
       }
       if (interpretation.isError && !isInterrupt) {
-        const persistedErrorOutput = await persistShellOutput(result.outputFilePath, result.outputTaskId);
-        const compactErrorOutput = persistedErrorOutput
-          ? await buildShellOutputPreview({
-            persistedOutputPath: persistedErrorOutput.filepath,
-            originalSizeBytes: persistedErrorOutput.originalSize,
-            persistedSizeBytes: persistedErrorOutput.persistedSize,
-            persistedWasTruncated: persistedErrorOutput.truncated,
-            stderr: result.stderr || '',
-            headBytes: 3 * 1024,
-            tailBytes: 4 * 1024,
-            stderrBytes: 1024,
-            includeWrapper: false,
-          })
-          : result.outputFilePath
-            ? await buildShellOutputPreview({
-              outputFilePath: result.outputFilePath,
-              originalSizeBytes: result.outputFileSize,
-              stderr: result.stderr || '',
-              headBytes: 3 * 1024,
-              tailBytes: 4 * 1024,
-              stderrBytes: 1024,
-              includeWrapper: false,
-            })
-            : null;
+        const compactErrorOutput = await buildShellErrorOutputPreview({
+          outputFilePath: result.outputFilePath,
+          outputTaskId: result.outputTaskId,
+          originalSizeBytes: result.outputFileSize,
+          stderr: result.stderr || '',
+        });
         throw compactErrorOutput
           ? new ShellError(compactErrorOutput, '', result.code, result.interrupted)
           : new ShellError(stdout, result.stderr || '', result.code, result.interrupted);

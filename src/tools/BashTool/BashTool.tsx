@@ -32,7 +32,7 @@ import type { ExecResult } from '../../utils/ShellCommand.js';
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js';
 import { semanticBoolean } from '../../utils/semanticBoolean.js';
 import { semanticNumber } from '../../utils/semanticNumber.js';
-import { buildShellOutputPreview, getShellModelOutputPreview, persistShellOutput, setShellModelOutputPreview } from '../../utils/shell/outputPreview.js';
+import { buildShellErrorOutputPreview, buildShellOutputPreview, getShellModelOutputPreview, persistShellOutput, setShellModelOutputPreview } from '../../utils/shell/outputPreview.js';
 import { EndTruncatingAccumulator } from '../../utils/stringUtils.js';
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js';
 import { TaskOutput } from '../../utils/task/TaskOutput.js';
@@ -730,32 +730,13 @@ export const BashTool = buildTool({
         throw new Error(result.preSpawnError);
       }
       if (interpretationResult.isError && !isInterrupt) {
-        const persistedErrorOutput = await persistShellOutput(result.outputFilePath, result.outputTaskId);
-        const compactErrorOutput = persistedErrorOutput
-          ? await buildShellOutputPreview({
-            persistedOutputPath: persistedErrorOutput.filepath,
-            originalSizeBytes: persistedErrorOutput.originalSize,
-            persistedSizeBytes: persistedErrorOutput.persistedSize,
-            persistedWasTruncated: persistedErrorOutput.truncated,
-            stderr: appendedOutputAnnotation,
-            stderrLabel: 'Additional diagnostics:',
-            headBytes: 3 * 1024,
-            tailBytes: 4 * 1024,
-            stderrBytes: 1024,
-            includeWrapper: false,
-          })
-          : result.outputFilePath
-            ? await buildShellOutputPreview({
-              outputFilePath: result.outputFilePath,
-              originalSizeBytes: result.outputFileSize,
-              stderr: appendedOutputAnnotation,
-              stderrLabel: 'Additional diagnostics:',
-              headBytes: 3 * 1024,
-              tailBytes: 4 * 1024,
-              stderrBytes: 1024,
-              includeWrapper: false,
-            })
-            : null;
+        const compactErrorOutput = await buildShellErrorOutputPreview({
+          outputFilePath: result.outputFilePath,
+          outputTaskId: result.outputTaskId,
+          originalSizeBytes: result.outputFileSize,
+          stderr: appendedOutputAnnotation,
+          stderrLabel: 'Additional diagnostics:',
+        });
         // stderr is merged into stdout (merged fd); outputWithSbFailures
         // already has the full output. Pass '' for stdout to avoid
         // duplication in getErrorParts() and processBashCommand.

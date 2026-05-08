@@ -73,6 +73,31 @@ describe('shell output preview', () => {
     expect(preview!.length).toBeLessThan(30_000)
   })
 
+  test('does not split UTF-8 characters when limiting inline preview text', async () => {
+    const preview = await buildShellOutputPreview({
+      stdoutPreview: '🙂'.repeat(10),
+      headBytes: 5,
+      tailBytes: 0,
+    })
+
+    expect(preview).toContain('🙂')
+    expect(preview).toContain('...')
+    expect(preview).not.toContain('�')
+  })
+
+  test('does not split UTF-8 characters at file preview boundaries', async () => {
+    const filePath = await tempFile('🙂'.repeat(100))
+
+    const preview = await buildShellOutputPreview({
+      outputFilePath: filePath,
+      headBytes: 5,
+      tailBytes: 5,
+    })
+
+    expect(preview).toContain('🙂')
+    expect(preview).not.toContain('�')
+  })
+
   test('supports smaller previews for ShellError formatting', async () => {
     const filePath = await tempFile(`HEAD\n${'middle\n'.repeat(5000)}TAIL\n`)
 

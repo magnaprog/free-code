@@ -1,6 +1,5 @@
 import { copyFile, link, open, stat as fsStat, unlink } from 'fs/promises'
 import { extractClaudeCodeHints } from '../claudeCodeHints.js'
-import { readFileRange, tailFile } from '../fsOperations.js'
 import { formatFileSize } from '../format.js'
 import {
   ensureToolResultsDir,
@@ -11,6 +10,9 @@ import {
 
 const HEAD_PREVIEW_BYTES = 8 * 1024
 const TAIL_PREVIEW_BYTES = 12 * 1024
+const SHELL_ERROR_HEAD_PREVIEW_BYTES = 3 * 1024
+const SHELL_ERROR_TAIL_PREVIEW_BYTES = 4 * 1024
+const SHELL_ERROR_STDERR_PREVIEW_BYTES = 1024
 export const MAX_PERSISTED_SHELL_OUTPUT_BYTES = 64 * 1024 * 1024
 
 export const SHELL_MODEL_OUTPUT_PREVIEW = Symbol('shellModelOutputPreview')
@@ -52,6 +54,14 @@ export type ShellOutputPreviewInput = {
   tailBytes?: number
   stderrBytes?: number
   includeWrapper?: boolean
+}
+
+export type ShellErrorOutputPreviewInput = {
+  outputFilePath?: string
+  outputTaskId?: string
+  originalSizeBytes?: number
+  stderr?: string
+  stderrLabel?: string
 }
 
 export async function persistShellOutput(
@@ -100,6 +110,41 @@ export async function persistShellOutput(
     }
     return null
   }
+}
+
+export async function buildShellErrorOutputPreview({
+  outputFilePath,
+  outputTaskId,
+  originalSizeBytes,
+  stderr = '',
+  stderrLabel,
+}: ShellErrorOutputPreviewInput): Promise<string | null> {
+  const persistedOutput = await persistShellOutput(outputFilePath, outputTaskId)
+  return persistedOutput
+    ? buildShellOutputPreview({
+      persistedOutputPath: persistedOutput.filepath,
+      originalSizeBytes: persistedOutput.originalSize,
+      persistedSizeBytes: persistedOutput.persistedSize,
+      persistedWasTruncated: persistedOutput.truncated,
+      stderr,
+      ...(stderrLabel === undefined ? {} : { stderrLabel }),
+      headBytes: SHELL_ERROR_HEAD_PREVIEW_BYTES,
+      tailBytes: SHELL_ERROR_TAIL_PREVIEW_BYTES,
+      stderrBytes: SHELL_ERROR_STDERR_PREVIEW_BYTES,
+      includeWrapper: false,
+    })
+    : outputFilePath
+      ? buildShellOutputPreview({
+        outputFilePath,
+        originalSizeBytes,
+        stderr,
+        stderrLabel,
+        headBytes: SHELL_ERROR_HEAD_PREVIEW_BYTES,
+        tailBytes: SHELL_ERROR_TAIL_PREVIEW_BYTES,
+        stderrBytes: SHELL_ERROR_STDERR_PREVIEW_BYTES,
+        includeWrapper: false,
+      })
+      : null
 }
 
 export async function buildShellOutputPreview({
@@ -193,44 +238,73 @@ async function buildFileSections(
   headBytes: number,
   tailBytes: number,
 ): Promise<{ lines: string[]; totalBytes: number } | null> {
+  const totalBytes = (await fsStat(sourcePath)).size
   const fullPreviewBytes = headBytes + tailBytes
-  const head = await readFileRange(sourcePath, 0, fullPreviewBytes)
-  if (!head) {
+  if (totalBytes === 0) {
     return {
       totalBytes: 0,
       lines: ['Preview:', ''],
     }
   }
 
-  if (head.bytesTotal <= fullPreviewBytes) {
+  if (totalBytes <= fullPreviewBytes) {
+    const full = await readFileSlice(sourcePath, 0, totalBytes)
     return {
-      totalBytes: head.bytesTotal,
+      totalBytes,
       lines: [
-        `Preview (${formatFileSize(head.bytesRead)}):`,
-        cleanPreviewText(head.content),
+        `Preview (${formatFileSize(full.bytesRead)}):`,
+        cleanPreviewText(full.content),
       ],
     }
   }
 
-  const headOnly = await readFileRange(sourcePath, 0, headBytes)
-  const tail = await tailFile(sourcePath, tailBytes)
-  const actualHeadBytes = headOnly?.bytesRead ?? 0
-  const actualTailBytes = tail.bytesRead
-  const omittedBytes = Math.max(0, tail.bytesTotal - actualHeadBytes - actualTailBytes)
+  const actualHeadBytes = Math.min(headBytes, totalBytes)
+  const actualTailBytes = Math.min(tailBytes, totalBytes - actualHeadBytes)
+  const [head, tail] = await Promise.all([
+    readFileSlice(sourcePath, 0, actualHeadBytes),
+    readFileSlice(sourcePath, totalBytes - actualTailBytes, actualTailBytes),
+  ])
+  const omittedBytes = Math.max(0, totalBytes - head.bytesRead - tail.bytesRead)
 
   return {
-    totalBytes: tail.bytesTotal,
+    totalBytes,
     lines: [
-      `Preview (first ${formatFileSize(actualHeadBytes)}, last ${formatFileSize(actualTailBytes)}):`,
-      `--- first ${formatFileSize(actualHeadBytes)} ---`,
-      cleanPreviewText(headOnly?.content ?? ''),
+      `Preview (first ${formatFileSize(head.bytesRead)}, last ${formatFileSize(tail.bytesRead)}):`,
+      `--- first ${formatFileSize(head.bytesRead)} ---`,
+      cleanPreviewText(head.content),
       '',
       `--- omitted ${formatFileSize(omittedBytes)} ---`,
       '',
-      `--- last ${formatFileSize(actualTailBytes)} ---`,
+      `--- last ${formatFileSize(tail.bytesRead)} ---`,
       cleanPreviewText(tail.content),
     ],
   }
+}
+
+async function readFileSlice(
+  sourcePath: string,
+  offset: number,
+  maxBytes: number,
+): Promise<{ content: string; bytesRead: number }> {
+  if (maxBytes <= 0) return { content: '', bytesRead: 0 }
+
+  await using file = await open(sourcePath, 'r')
+  const buffer = Buffer.allocUnsafe(maxBytes)
+  let totalRead = 0
+
+  while (totalRead < maxBytes) {
+    const { bytesRead } = await file.read(
+      buffer,
+      totalRead,
+      maxBytes - totalRead,
+      offset + totalRead,
+    )
+    if (bytesRead === 0) break
+    totalRead += bytesRead
+  }
+
+  const content = decodePreviewBuffer(buffer.subarray(0, totalRead))
+  return { content, bytesRead: totalRead }
 }
 
 function buildInlineSections(
@@ -254,5 +328,47 @@ function cleanPreviewText(text: string): string {
 function limitText(text: string, maxBytes: number): string {
   const buffer = Buffer.from(text, 'utf8')
   if (buffer.byteLength <= maxBytes) return text
-  return `${buffer.toString('utf8', 0, maxBytes).trimEnd()}\n...`
+  return `${decodePreviewBuffer(buffer.subarray(0, maxBytes)).trimEnd()}\n...`
+}
+
+function decodePreviewBuffer(buffer: Buffer): string {
+  let start = 0
+  let end = buffer.length
+
+  while (start < end && isUtf8ContinuationByte(buffer[start] ?? 0)) {
+    start++
+  }
+
+  end = trimIncompleteUtf8End(buffer, start, end)
+  return buffer.toString('utf8', start, end)
+}
+
+function trimIncompleteUtf8End(
+  buffer: Buffer,
+  start: number,
+  end: number,
+): number {
+  let lead = end - 1
+  while (lead >= start && isUtf8ContinuationByte(buffer[lead] ?? 0)) {
+    lead--
+  }
+  if (lead < start) return start
+
+  const sequenceLength = getUtf8SequenceLength(buffer[lead] ?? 0)
+  if (sequenceLength > 0 && lead + sequenceLength > end) {
+    return lead
+  }
+  return end
+}
+
+function isUtf8ContinuationByte(byte: number): boolean {
+  return (byte & 0xc0) === 0x80
+}
+
+function getUtf8SequenceLength(byte: number): number {
+  if ((byte & 0x80) === 0) return 1
+  if ((byte & 0xe0) === 0xc0) return 2
+  if ((byte & 0xf0) === 0xe0) return 3
+  if ((byte & 0xf8) === 0xf0) return 4
+  return 0
 }
