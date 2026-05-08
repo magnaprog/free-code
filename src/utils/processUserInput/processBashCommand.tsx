@@ -10,10 +10,25 @@ import { logEvent } from '../../services/analytics/index.js';
 import { errorMessage, ShellError } from '../errors.js';
 import { createSyntheticUserCaveatMessage, createUserInterruptionMessage, createUserMessage, prepareUserContent } from '../messages.js';
 import { resolveDefaultShell } from '../shell/resolveDefaultShell.js';
+import { copyShellModelOutputPreview, getShellModelOutputPreview } from '../shell/outputPreview.js';
 import { isPowerShellToolEnabled } from '../shell/shellToolUtils.js';
-import { processToolResultBlock } from '../toolResultStorage.js';
+import { PERSISTED_OUTPUT_CLOSING_TAG, PERSISTED_OUTPUT_TAG, processToolResultBlock } from '../toolResultStorage.js';
 import { escapeXml } from '../xml.js';
 import type { ProcessUserInputContext } from './processUserInput.js';
+
+export function escapeMappedShellOutputForBashStdout(content: string, preservePersistedOutputWrapper: boolean): string {
+  if (!preservePersistedOutputWrapper) {
+    return escapeXml(content);
+  }
+  const closingStart = content.lastIndexOf(PERSISTED_OUTPUT_CLOSING_TAG);
+  if (!content.startsWith(PERSISTED_OUTPUT_TAG) || closingStart === -1) {
+    return escapeXml(content);
+  }
+  const body = content.slice(PERSISTED_OUTPUT_TAG.length, closingStart);
+  const trailing = content.slice(closingStart + PERSISTED_OUTPUT_CLOSING_TAG.length);
+  return `${PERSISTED_OUTPUT_TAG}${escapeXml(body)}${PERSISTED_OUTPUT_CLOSING_TAG}${escapeXml(trailing)}`;
+}
+
 export async function processBashCommand(inputString: string, precedingInputBlocks: ContentBlockParam[], attachmentMessages: AttachmentMessage[], context: ProcessUserInputContext, setToolJSX: SetToolJSXFn): Promise<{
   messages: (UserMessage | AttachmentMessage | SystemMessage)[];
   shouldQuery: boolean;
@@ -92,18 +107,23 @@ export async function processBashCommand(inputString: string, precedingInputBloc
     }
     const stderr = data.stderr;
     // Reuse the same formatting pipeline as inline !`cmd` bash (promptShellExecution)
-    // and model-initiated Bash. When BashTool.call() persists large output to disk,
-    // data.persistedOutputPath is set and the formatter wraps in <persisted-output>.
-    // Pass stderr:'' to keep it separate for the <bash-stderr> UI tag.
-    const mapped = await processToolResultBlock(shellTool, {
+    // and model-initiated Bash. Pass stderr:'' to keep it separate for the
+    // <bash-stderr> UI tag.
+    const toolResult = {
       ...data,
       stderr: ''
-    }, randomUUID());
-    // mapped.content may contain our own <persisted-output> wrapper (trusted
-    // XML from buildLargeToolResultMessage). Escaping it would turn structural
-    // tags into &lt;persisted-output&gt;, breaking the model's parse and
-    // UserBashOutputMessage's extractTag. Escape the raw fallback only.
-    const stdout = typeof mapped.content === 'string' ? mapped.content : escapeXml(data.stdout);
+    };
+    copyShellModelOutputPreview(data, toolResult);
+    const mapped = await processToolResultBlock(shellTool, toolResult, randomUUID());
+    // mapped.content may contain our generated <persisted-output> wrapper.
+    // Keep only that wrapper structural; escape all command output inside it so
+    // raw stdout cannot break the surrounding <bash-stdout> XML tag.
+    const stdout = typeof mapped.content === 'string'
+      ? escapeMappedShellOutputForBashStdout(
+        mapped.content,
+        getShellModelOutputPreview(toolResult) !== undefined,
+      )
+      : escapeXml(data.stdout);
     return {
       messages: [createSyntheticUserCaveatMessage(), userMessage, ...attachmentMessages, createUserMessage({
         content: `<bash-stdout>${stdout}</bash-stdout><bash-stderr>${escapeXml(stderr)}</bash-stderr>`
