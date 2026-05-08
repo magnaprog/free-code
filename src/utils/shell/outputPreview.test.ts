@@ -12,6 +12,8 @@ import {
 
 let tempDirs: string[] = []
 let persistedPaths: string[] = []
+const MULTIBYTE_CHAR = '\u{1f642}'
+const REPLACEMENT_CHAR = '\ufffd'
 
 afterEach(async () => {
   for (const dir of tempDirs) {
@@ -77,18 +79,18 @@ describe('shell output preview', () => {
 
   test('does not split UTF-8 characters when limiting inline preview text', async () => {
     const preview = await buildShellOutputPreview({
-      stdoutPreview: '🙂'.repeat(10),
+      stdoutPreview: MULTIBYTE_CHAR.repeat(10),
       headBytes: 5,
       tailBytes: 0,
     })
 
-    expect(preview).toContain('🙂')
+    expect(preview).toContain(MULTIBYTE_CHAR)
     expect(preview).toContain('...')
-    expect(preview).not.toContain('�')
+    expect(preview).not.toContain(REPLACEMENT_CHAR)
   })
 
   test('does not split UTF-8 characters at file preview boundaries', async () => {
-    const filePath = await tempFile('🙂'.repeat(100))
+    const filePath = await tempFile(MULTIBYTE_CHAR.repeat(100))
 
     const preview = await buildShellOutputPreview({
       outputFilePath: filePath,
@@ -96,12 +98,12 @@ describe('shell output preview', () => {
       tailBytes: 5,
     })
 
-    expect(preview).toContain('🙂')
-    expect(preview).not.toContain('�')
+    expect(preview).toContain(MULTIBYTE_CHAR)
+    expect(preview).not.toContain(REPLACEMENT_CHAR)
   })
 
   test('drops partial tail characters without replacement markers', async () => {
-    const filePath = await tempFile(`prefix${'🙂'.repeat(20)}`)
+    const filePath = await tempFile(`prefix${MULTIBYTE_CHAR.repeat(20)}`)
 
     const preview = await buildShellOutputPreview({
       outputFilePath: filePath,
@@ -109,7 +111,7 @@ describe('shell output preview', () => {
       tailBytes: 3,
     })
 
-    expect(preview).not.toContain('�')
+    expect(preview).not.toContain(REPLACEMENT_CHAR)
   })
 
   test('preserves invalid bytes for full slices', async () => {
@@ -119,7 +121,7 @@ describe('shell output preview', () => {
       outputFilePath: filePath,
     })
 
-    expect(preview).toContain('�')
+    expect(preview).toContain(REPLACEMENT_CHAR)
   })
 
   test('does not hide all-continuation tail slices', async () => {
@@ -132,7 +134,7 @@ describe('shell output preview', () => {
     })
 
     expect(preview).toContain('--- last 1 bytes ---')
-    expect(preview).toContain('�')
+    expect(preview).toContain(REPLACEMENT_CHAR)
   })
 
   test('does not hide invalid leading bytes in large file head slices', async () => {
@@ -148,7 +150,33 @@ describe('shell output preview', () => {
     })
 
     expect(preview).toContain('--- first 1 bytes ---')
-    expect(preview).toContain('�')
+    expect(preview).toContain(REPLACEMENT_CHAR)
+  })
+
+  test('preserves invalid head bytes at preview boundaries', async () => {
+    const filePath = await tempFile(Buffer.from([0xe0, 0x80, 0x80, 0x61]))
+
+    const preview = await buildShellOutputPreview({
+      outputFilePath: filePath,
+      headBytes: 1,
+      tailBytes: 1,
+    })
+
+    expect(preview).toContain('--- first 1 bytes ---')
+    expect(preview).toContain(REPLACEMENT_CHAR)
+  })
+
+  test('preserves invalid tail bytes at preview boundaries', async () => {
+    const filePath = await tempFile(Buffer.from([0x61, 0xe0, 0x80, 0x80]))
+
+    const preview = await buildShellOutputPreview({
+      outputFilePath: filePath,
+      headBytes: 1,
+      tailBytes: 2,
+    })
+
+    expect(preview).toContain('--- last 2 bytes ---')
+    expect(preview).toContain(REPLACEMENT_CHAR)
   })
 
   test('does not drop invalid tail bytes after a partial UTF-8 lead', async () => {
@@ -160,7 +188,7 @@ describe('shell output preview', () => {
       tailBytes: 2,
     })
 
-    expect(preview).toContain('�A')
+    expect(preview).toContain(`${REPLACEMENT_CHAR}A`)
   })
 
   test('supports smaller previews for bounded formatting', async () => {
@@ -229,6 +257,47 @@ describe('shell output preview', () => {
     expect((await stat(filePath)).size).toBe(20)
     expect(await readFile(filePath, 'utf8')).toBe('0123456789abcdefghij')
     expect(await readFile(persisted!.filepath, 'utf8')).toBe('0123456789')
+  })
+
+  test('omits internal hint lines from persisted model output', async () => {
+    const filePath = await tempFile(
+      'before\n<claude-code-hint v="1" type="plugin" value="x@y" />\nafter',
+    )
+    const persisted = await persistShellOutput(filePath, 'task-hints', 1000)
+    if (persisted) persistedPaths.push(persisted.filepath)
+
+    expect(persisted).not.toBeNull()
+    expect(persisted!.truncated).toBe(false)
+    const persistedContent = await readFile(persisted!.filepath, 'utf8')
+    expect(persistedContent).toContain('before')
+    expect(persistedContent).toContain('after')
+    expect(persistedContent).not.toContain('<claude-code-hint')
+  })
+
+  test('omits capped partial hint lines from persisted model output', async () => {
+    const content = 'before\n<claude-code-hint v="1" type="plugin" value="x@y" />\nafter'
+    const cap = 'before\n<claude-code-hint'.length
+    const filePath = await tempFile(content)
+    const persisted = await persistShellOutput(filePath, 'task-partial-hint', cap)
+    if (persisted) persistedPaths.push(persisted.filepath)
+
+    expect(persisted).not.toBeNull()
+    expect(persisted!.truncated).toBe(true)
+    const persistedContent = await readFile(persisted!.filepath, 'utf8')
+    expect(persistedContent).toBe('before\n')
+  })
+
+  test('keeps capped non-hint lines with a matching prefix', async () => {
+    const content = 'before\n<claude-code-hinter output line'
+    const cap = 'before\n<claude-code-hinter'.length
+    const filePath = await tempFile(content)
+    const persisted = await persistShellOutput(filePath, 'task-hint-prefix', cap)
+    if (persisted) persistedPaths.push(persisted.filepath)
+
+    expect(persisted).not.toBeNull()
+    expect(persisted!.truncated).toBe(true)
+    const persistedContent = await readFile(persisted!.filepath, 'utf8')
+    expect(persistedContent).toBe('before\n<claude-code-hinter')
   })
 
   test('does not mark output truncated at the exact persistence limit', async () => {

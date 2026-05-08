@@ -573,19 +573,13 @@ export const PowerShellTool = buildTool({
         throw new ShellError(stdout, result.stderr || '', result.code, result.interrupted);
       }
 
-      // Large output: file on disk has more than getMaxOutputLength() bytes.
-      // stdout already contains the first chunk. Copy the output file to the
-      // tool-results dir so the model can read it via FileRead.
-      const persistedOutput = await persistShellOutput(result.outputFilePath, result.outputTaskId);
-      const persistedOutputSize = persistedOutput?.originalSize;
-
       // Cap image dimensions + size if present (CC-304 — see
       // resizeShellImageOutput). Scope the decoded buffer so it can be
       // reclaimed before we build the output object.
       let isImage = isImageOutput(stdout);
       let compressedStdout = stdout;
       if (isImage) {
-        const resized = await resizeShellImageOutput(stdout, result.outputFilePath, persistedOutputSize);
+        const resized = await resizeShellImageOutput(stdout, result.outputFilePath, result.outputFileSize);
         if (resized) {
           compressedStdout = resized;
         } else {
@@ -597,6 +591,9 @@ export const PowerShellTool = buildTool({
         }
       }
       const finalStderr = [result.stderr || '', stderrForShellReset].filter(Boolean).join('\n');
+      // Non-image file-backed output gets a model-facing copy for FileRead.
+      // stdout already contains the first chunk.
+      const persistedOutput = !isImage ? await persistShellOutput(result.outputFilePath, result.outputTaskId) : null;
       const modelOutputPreview = !isImage && persistedOutput
         ? await buildShellOutputPreview({
           persistedOutputPath: persistedOutput.filepath,

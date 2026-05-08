@@ -727,11 +727,6 @@ export const BashTool = buildTool({
     // Get final string from accumulator
     const stdout = stdoutAccumulator.toString();
 
-    // Large output: the file on disk has more than getMaxOutputLength() bytes.
-    // stdout already contains the first chunk (from getStdout()). Copy the
-    // output file to the tool-results dir so the model can read it via FileRead.
-    const persistedOutput = await persistShellOutput(result.outputFilePath, result.outputTaskId);
-    const persistedOutputSize = persistedOutput?.originalSize;
     const commandType = input.command.split(' ')[0];
     logEvent('tengu_bash_tool_command_executed', {
       command_type: commandType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -770,7 +765,7 @@ export const BashTool = buildTool({
     // before we build the output Out object.
     let compressedStdout = strippedStdout;
     if (isImage) {
-      const resized = await resizeShellImageOutput(strippedStdout, result.outputFilePath, persistedOutputSize);
+      const resized = await resizeShellImageOutput(strippedStdout, result.outputFilePath, result.outputFileSize);
       if (resized) {
         compressedStdout = resized;
       } else {
@@ -781,6 +776,9 @@ export const BashTool = buildTool({
         isImage = false;
       }
     }
+    // Non-image file-backed output gets a model-facing copy for FileRead.
+    // stdout already contains the first chunk from getStdout().
+    const persistedOutput = !isImage ? await persistShellOutput(result.outputFilePath, result.outputTaskId) : null;
     const modelOutputPreview = !isImage && persistedOutput
       ? await buildShellOutputPreview({
         persistedOutputPath: persistedOutput.filepath,
