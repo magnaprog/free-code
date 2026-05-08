@@ -1,5 +1,6 @@
-import { copyFile, link, open, stat as fsStat, unlink } from 'fs/promises'
+import { link, open, stat as fsStat, unlink } from 'fs/promises'
 import { extractClaudeCodeHints } from '../claudeCodeHints.js'
+import { getErrnoCode } from '../errors.js'
 import { formatFileSize } from '../format.js'
 import {
   ensureToolResultsDir,
@@ -10,16 +11,9 @@ import {
 
 const HEAD_PREVIEW_BYTES = 8 * 1024
 const TAIL_PREVIEW_BYTES = 12 * 1024
-const SHELL_ERROR_HEAD_PREVIEW_BYTES = 3 * 1024
-const SHELL_ERROR_TAIL_PREVIEW_BYTES = 4 * 1024
-const SHELL_ERROR_STDERR_PREVIEW_BYTES = 1024
 export const MAX_PERSISTED_SHELL_OUTPUT_BYTES = 64 * 1024 * 1024
 
-export const SHELL_MODEL_OUTPUT_PREVIEW = Symbol('shellModelOutputPreview')
-
-type ShellPreviewCarrier = {
-  [SHELL_MODEL_OUTPUT_PREVIEW]?: string
-}
+const shellModelOutputPreviews = new WeakMap<object, string>()
 
 export type PersistedShellOutput = {
   filepath: string
@@ -29,16 +23,18 @@ export type PersistedShellOutput = {
 }
 
 export function setShellModelOutputPreview(output: object, preview: string): void {
-  Object.defineProperty(output, SHELL_MODEL_OUTPUT_PREVIEW, {
-    value: preview,
-    enumerable: true,
-    configurable: true,
-  })
+  shellModelOutputPreviews.set(output, preview)
 }
 
 export function getShellModelOutputPreview(output: object): string | undefined {
-  const preview = (output as ShellPreviewCarrier)[SHELL_MODEL_OUTPUT_PREVIEW]
-  return typeof preview === 'string' ? preview : undefined
+  return shellModelOutputPreviews.get(output)
+}
+
+export function copyShellModelOutputPreview(source: object, target: object): void {
+  const preview = getShellModelOutputPreview(source)
+  if (preview !== undefined) {
+    setShellModelOutputPreview(target, preview)
+  }
 }
 
 export type ShellOutputPreviewInput = {
@@ -56,14 +52,6 @@ export type ShellOutputPreviewInput = {
   includeWrapper?: boolean
 }
 
-export type ShellErrorOutputPreviewInput = {
-  outputFilePath?: string
-  outputTaskId?: string
-  originalSizeBytes?: number
-  stderr?: string
-  stderrLabel?: string
-}
-
 export async function persistShellOutput(
   outputFilePath: string | undefined,
   outputTaskId: string | undefined,
@@ -71,80 +59,60 @@ export async function persistShellOutput(
 ): Promise<PersistedShellOutput | null> {
   if (!outputFilePath || !outputTaskId) return null
 
-  let dest: string | undefined
   try {
     const fileStat = await fsStat(outputFilePath)
     const originalSize = fileStat.size
     await ensureToolResultsDir()
-    dest = getToolResultPath(outputTaskId, false)
+    const dest = getToolResultPath(outputTaskId, false)
 
     if (originalSize > maxBytes) {
-      const persistedSize = await copyFilePrefix(
-        outputFilePath,
-        dest,
-        maxBytes,
-      )
-      return {
-        filepath: dest,
-        originalSize,
-        persistedSize,
-        truncated: true,
+      try {
+        const persistedSize = await copyFilePrefix(outputFilePath, dest, maxBytes)
+        return {
+          filepath: dest,
+          originalSize,
+          persistedSize,
+          truncated: true,
+        }
+      } catch (error) {
+        if (getErrnoCode(error) === 'EEXIST') {
+          return await getExistingPersistedShellOutput(dest, originalSize)
+        }
+        return null
       }
     }
 
     try {
       await link(outputFilePath, dest)
-    } catch {
-      await copyFile(outputFilePath, dest)
+      return {
+        filepath: dest,
+        originalSize,
+        persistedSize: originalSize,
+        truncated: false,
+      }
+    } catch (error) {
+      if (getErrnoCode(error) === 'EEXIST') {
+        return await getExistingPersistedShellOutput(dest, originalSize)
+      }
     }
 
-    return {
-      filepath: dest,
-      originalSize,
-      persistedSize: originalSize,
-      truncated: false,
+    try {
+      const persistedSize = await copyFilePrefix(outputFilePath, dest, originalSize)
+      return {
+        filepath: dest,
+        originalSize,
+        persistedSize,
+        truncated: persistedSize < originalSize,
+      }
+    } catch (error) {
+      if (getErrnoCode(error) === 'EEXIST') {
+        return await getExistingPersistedShellOutput(dest, originalSize)
+      }
+      return null
     }
   } catch {
-    if (dest) {
-      await unlink(dest).catch(() => {})
-    }
     return null
   }
-}
-
-export async function buildShellErrorOutputPreview({
-  outputFilePath,
-  outputTaskId,
-  originalSizeBytes,
-  stderr = '',
-  stderrLabel,
-}: ShellErrorOutputPreviewInput): Promise<string | null> {
-  const persistedOutput = await persistShellOutput(outputFilePath, outputTaskId)
-  return persistedOutput
-    ? buildShellOutputPreview({
-      persistedOutputPath: persistedOutput.filepath,
-      originalSizeBytes: persistedOutput.originalSize,
-      persistedSizeBytes: persistedOutput.persistedSize,
-      persistedWasTruncated: persistedOutput.truncated,
-      stderr,
-      ...(stderrLabel === undefined ? {} : { stderrLabel }),
-      headBytes: SHELL_ERROR_HEAD_PREVIEW_BYTES,
-      tailBytes: SHELL_ERROR_TAIL_PREVIEW_BYTES,
-      stderrBytes: SHELL_ERROR_STDERR_PREVIEW_BYTES,
-      includeWrapper: false,
-    })
-    : outputFilePath
-      ? buildShellOutputPreview({
-        outputFilePath,
-        originalSizeBytes,
-        stderr,
-        stderrLabel,
-        headBytes: SHELL_ERROR_HEAD_PREVIEW_BYTES,
-        tailBytes: SHELL_ERROR_TAIL_PREVIEW_BYTES,
-        stderrBytes: SHELL_ERROR_STDERR_PREVIEW_BYTES,
-        includeWrapper: false,
-      })
-      : null
 }
 
 export async function buildShellOutputPreview({
@@ -168,10 +136,10 @@ export async function buildShellOutputPreview({
     const sections = sourcePath
       ? await buildFileSections(sourcePath, headBytes, tailBytes)
       : buildInlineSections(stdoutPreview, headBytes + tailBytes)
-    if (!sections) return null
+    if (!sections && !stderr) return null
 
-    const originalSize = originalSizeBytes ?? sections.totalBytes
-    const persistedSize = persistedSizeBytes ?? sections.totalBytes
+    const originalSize = originalSizeBytes ?? sections?.totalBytes ?? 0
+    const persistedSize = persistedSizeBytes ?? sections?.totalBytes ?? 0
     const lines: string[] = includeWrapper ? [PERSISTED_OUTPUT_TAG] : []
 
     lines.push(`Output too large (${formatFileSize(originalSize)}).`)
@@ -184,7 +152,7 @@ export async function buildShellOutputPreview({
       } else {
         lines.push(`Full output saved to: ${persistedOutputPath}.`)
       }
-    } else if (originalSize > sections.totalBytes) {
+    } else if (sections && originalSize > sections.totalBytes) {
       lines.push('Full output could not be saved; showing captured preview only.')
     }
 
@@ -195,8 +163,10 @@ export async function buildShellOutputPreview({
       lines.push(limitText(cleanedStderr, stderrBytes))
     }
 
-    lines.push('')
-    lines.push(...sections.lines)
+    if (sections) {
+      lines.push('')
+      lines.push(...sections.lines)
+    }
     if (includeWrapper) {
       lines.push(PERSISTED_OUTPUT_CLOSING_TAG)
     }
@@ -207,30 +177,56 @@ export async function buildShellOutputPreview({
   }
 }
 
+async function getExistingPersistedShellOutput(
+  filepath: string,
+  originalSize: number,
+): Promise<PersistedShellOutput | null> {
+  try {
+    const existingStat = await fsStat(filepath)
+    return {
+      filepath,
+      originalSize,
+      persistedSize: existingStat.size,
+      truncated: existingStat.size < originalSize,
+    }
+  } catch {
+    return null
+  }
+}
+
 async function copyFilePrefix(
   sourcePath: string,
   destPath: string,
   maxBytes: number,
 ): Promise<number> {
-  await using source = await open(sourcePath, 'r')
-  await using dest = await open(destPath, 'w')
-  const buffer = Buffer.allocUnsafe(Math.min(maxBytes, 1024 * 1024))
-  let bytesCopied = 0
+  let createdDest = false
+  try {
+    await using source = await open(sourcePath, 'r')
+    await using dest = await open(destPath, 'wx')
+    createdDest = true
+    const buffer = Buffer.allocUnsafe(Math.min(maxBytes, 1024 * 1024))
+    let bytesCopied = 0
 
-  while (bytesCopied < maxBytes) {
-    const bytesToRead = Math.min(buffer.length, maxBytes - bytesCopied)
-    const { bytesRead } = await source.read(
-      buffer,
-      0,
-      bytesToRead,
-      bytesCopied,
-    )
-    if (bytesRead === 0) break
-    await dest.write(buffer, 0, bytesRead)
-    bytesCopied += bytesRead
+    while (bytesCopied < maxBytes) {
+      const bytesToRead = Math.min(buffer.length, maxBytes - bytesCopied)
+      const { bytesRead } = await source.read(
+        buffer,
+        0,
+        bytesToRead,
+        bytesCopied,
+      )
+      if (bytesRead === 0) break
+      await dest.write(buffer, 0, bytesRead)
+      bytesCopied += bytesRead
+    }
+
+    return bytesCopied
+  } catch (error) {
+    if (createdDest) {
+      await unlink(destPath).catch(() => {})
+    }
+    throw error
   }
-
-  return bytesCopied
 }
 
 async function buildFileSections(
@@ -261,8 +257,10 @@ async function buildFileSections(
   const actualHeadBytes = Math.min(headBytes, totalBytes)
   const actualTailBytes = Math.min(tailBytes, totalBytes - actualHeadBytes)
   const [head, tail] = await Promise.all([
-    readFileSlice(sourcePath, 0, actualHeadBytes),
-    readFileSlice(sourcePath, totalBytes - actualTailBytes, actualTailBytes),
+    readFileSlice(sourcePath, 0, actualHeadBytes, {
+      trimTrailingPartialCharacter: true,
+    }),
+    readTailFileSlice(sourcePath, totalBytes - actualTailBytes, actualTailBytes),
   ])
   const omittedBytes = Math.max(0, totalBytes - head.bytesRead - tail.bytesRead)
 
@@ -285,9 +283,48 @@ async function readFileSlice(
   sourcePath: string,
   offset: number,
   maxBytes: number,
+  {
+    trimTrailingPartialCharacter = false,
+  }: {
+    trimTrailingPartialCharacter?: boolean
+  } = {},
 ): Promise<{ content: string; bytesRead: number }> {
   if (maxBytes <= 0) return { content: '', bytesRead: 0 }
 
+  const bytesToRead = trimTrailingPartialCharacter ? maxBytes + 3 : maxBytes
+  const { buffer, bytesRead } = await readFileBuffer(sourcePath, offset, bytesToRead)
+  const visibleBytes = Math.min(bytesRead, maxBytes)
+  const content = decodePreviewBuffer(buffer, {
+    visibleBytes,
+    trimTrailingPartialCharacter,
+  })
+  return { content, bytesRead: visibleBytes }
+}
+
+async function readTailFileSlice(
+  sourcePath: string,
+  offset: number,
+  maxBytes: number,
+): Promise<{ content: string; bytesRead: number }> {
+  if (maxBytes <= 0) return { content: '', bytesRead: 0 }
+
+  const contextBytes = Math.min(offset, 3)
+  const contextOffset = offset - contextBytes
+  const { buffer, bytesRead } = await readFileBuffer(
+    sourcePath,
+    contextOffset,
+    maxBytes + contextBytes,
+  )
+  const sliceStart = Math.min(contextBytes, bytesRead)
+  const content = decodeTailPreviewBuffer(buffer, sliceStart)
+  return { content, bytesRead: Math.max(0, bytesRead - sliceStart) }
+}
+
+async function readFileBuffer(
+  sourcePath: string,
+  offset: number,
+  maxBytes: number,
+): Promise<{ buffer: Buffer; bytesRead: number }> {
   await using file = await open(sourcePath, 'r')
   const buffer = Buffer.allocUnsafe(maxBytes)
   let totalRead = 0
@@ -303,8 +340,10 @@ async function readFileSlice(
     totalRead += bytesRead
   }
 
-  const content = decodePreviewBuffer(buffer.subarray(0, totalRead))
-  return { content, bytesRead: totalRead }
+  return {
+    buffer: buffer.subarray(0, totalRead),
+    bytesRead: totalRead,
+  }
 }
 
 function buildInlineSections(
@@ -328,37 +367,97 @@ function cleanPreviewText(text: string): string {
 function limitText(text: string, maxBytes: number): string {
   const buffer = Buffer.from(text, 'utf8')
   if (buffer.byteLength <= maxBytes) return text
-  return `${decodePreviewBuffer(buffer.subarray(0, maxBytes)).trimEnd()}\n...`
+  return `${decodePreviewBuffer(buffer, {
+    visibleBytes: maxBytes,
+    trimTrailingPartialCharacter: true,
+  }).trimEnd()}\n...`
 }
 
-function decodePreviewBuffer(buffer: Buffer): string {
-  let start = 0
-  let end = buffer.length
+function decodePreviewBuffer(
+  buffer: Buffer,
+  {
+    visibleBytes = buffer.length,
+    trimTrailingPartialCharacter = false,
+  }: {
+    visibleBytes?: number
+    trimTrailingPartialCharacter?: boolean
+  } = {},
+): string {
+  let end = Math.min(visibleBytes, buffer.length)
 
-  while (start < end && isUtf8ContinuationByte(buffer[start] ?? 0)) {
-    start++
+  if (trimTrailingPartialCharacter) {
+    end = trimIncompleteUtf8End(buffer, 0, end, buffer.length)
+  }
+  return buffer.toString('utf8', 0, end)
+}
+
+function decodeTailPreviewBuffer(buffer: Buffer, sliceStart: number): string {
+  const start = getTailDecodeStart(buffer, sliceStart)
+  const end = trimIncompleteUtf8End(buffer, start, buffer.length, buffer.length)
+  return buffer.toString('utf8', start, end)
+}
+
+function getTailDecodeStart(buffer: Buffer, sliceStart: number): number {
+  if (!isUtf8ContinuationByte(buffer[sliceStart] ?? 0)) {
+    return sliceStart
   }
 
-  end = trimIncompleteUtf8End(buffer, start, end)
-  return buffer.toString('utf8', start, end)
+  let lead = sliceStart - 1
+  while (lead >= 0 && isUtf8ContinuationByte(buffer[lead] ?? 0)) {
+    lead--
+  }
+  if (lead < 0) {
+    return sliceStart
+  }
+
+  const sequenceLength = getUtf8SequenceLength(buffer[lead] ?? 0)
+  if (
+    sequenceLength > 0 &&
+    lead + sequenceLength > sliceStart &&
+    lead + sequenceLength <= buffer.length &&
+    hasExpectedContinuationBytes(buffer, lead, sequenceLength)
+  ) {
+    return lead + sequenceLength
+  }
+  return sliceStart
 }
 
 function trimIncompleteUtf8End(
   buffer: Buffer,
   start: number,
   end: number,
+  availableEnd: number,
 ): number {
   let lead = end - 1
   while (lead >= start && isUtf8ContinuationByte(buffer[lead] ?? 0)) {
     lead--
   }
-  if (lead < start) return start
+  if (lead < start) return end
 
   const sequenceLength = getUtf8SequenceLength(buffer[lead] ?? 0)
   if (sequenceLength > 0 && lead + sequenceLength > end) {
-    return lead
+    if (
+      lead + sequenceLength <= availableEnd &&
+      hasExpectedContinuationBytes(buffer, lead, sequenceLength)
+    ) {
+      return lead
+    }
+    return end
   }
   return end
+}
+
+function hasExpectedContinuationBytes(
+  buffer: Buffer,
+  lead: number,
+  sequenceLength: number,
+): boolean {
+  for (let i = 1; i < sequenceLength; i++) {
+    if (!isUtf8ContinuationByte(buffer[lead + i] ?? 0)) {
+      return false
+    }
+  }
+  return true
 }
 
 function isUtf8ContinuationByte(byte: number): boolean {
@@ -367,8 +466,8 @@ function isUtf8ContinuationByte(byte: number): boolean {
 
 function getUtf8SequenceLength(byte: number): number {
   if ((byte & 0x80) === 0) return 1
-  if ((byte & 0xe0) === 0xc0) return 2
-  if ((byte & 0xf0) === 0xe0) return 3
-  if ((byte & 0xf8) === 0xf0) return 4
+  if (byte >= 0xc2 && byte <= 0xdf) return 2
+  if (byte >= 0xe0 && byte <= 0xef) return 3
+  if (byte >= 0xf0 && byte <= 0xf4) return 4
   return 0
 }

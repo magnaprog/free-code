@@ -32,12 +32,11 @@ import type { ExecResult } from '../../utils/ShellCommand.js';
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js';
 import { semanticBoolean } from '../../utils/semanticBoolean.js';
 import { semanticNumber } from '../../utils/semanticNumber.js';
-import { buildShellErrorOutputPreview, buildShellOutputPreview, getShellModelOutputPreview, persistShellOutput, setShellModelOutputPreview } from '../../utils/shell/outputPreview.js';
+import { buildShellOutputPreview, getShellModelOutputPreview, persistShellOutput, setShellModelOutputPreview } from '../../utils/shell/outputPreview.js';
 import { EndTruncatingAccumulator } from '../../utils/stringUtils.js';
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js';
 import { TaskOutput } from '../../utils/task/TaskOutput.js';
 import { isOutputLineTruncated } from '../../utils/terminal.js';
-import { buildLargeToolResultMessage, generatePreview, PREVIEW_SIZE_BYTES } from '../../utils/toolResultStorage.js';
 import { userFacingName as fileEditUserFacingName } from '../FileEditTool/UI.js';
 import { trackGitOperations } from '../shared/gitOperationTracking.js';
 import { bashToolHasPermission, commandHasAnyCd, matchWildcardPattern, permissionRuleExtractPrefix } from './bashPermissions.js';
@@ -300,9 +299,7 @@ const outputSchema = lazySchema(() => z.object({
   dangerouslyDisableSandbox: z.boolean().optional().describe('Flag to indicate if sandbox mode was overridden'),
   returnCodeInterpretation: z.string().optional().describe('Semantic interpretation for non-error exit codes with special meaning'),
   noOutputExpected: z.boolean().optional().describe('Whether the command is expected to produce no output on success'),
-  structuredContent: z.array(z.any()).optional().describe('Structured content blocks'),
-  persistedOutputPath: z.string().optional().describe('Path to the persisted full output in tool-results dir (set when output is too large for inline)'),
-  persistedOutputSize: z.number().optional().describe('Total size of the output in bytes (set when output is too large for inline)')
+  structuredContent: z.array(z.any()).optional().describe('Structured content blocks')
 }));
 type OutputSchema = ReturnType<typeof outputSchema>;
 export type Out = z.infer<OutputSchema>;
@@ -556,8 +553,7 @@ export const BashTool = buildTool({
   renderToolUseQueuedMessage,
   renderToolResultMessage,
   // BashToolResultMessage shows <OutputLine content={stdout}> + stderr.
-  // UI never shows persistedOutputPath wrapper, backgroundInfo — those are
-  // model-facing (mapToolResult... below).
+  // Background info and model-only previews are added only in mapToolResult...
   extractSearchText({
     stdout,
     stderr
@@ -573,9 +569,7 @@ export const BashTool = buildTool({
       backgroundTaskId,
       backgroundedByUser,
       assistantAutoBackgrounded,
-      structuredContent,
-      persistedOutputPath,
-      persistedOutputSize
+      structuredContent
     } = data;
     // Handle structured content
     if (structuredContent && structuredContent.length > 0) {
@@ -599,20 +593,9 @@ export const BashTool = buildTool({
       processedStdout = processedStdout.trimEnd();
     }
 
-    // For large output that was persisted to disk, build a model-only preview.
-    // The UI/hooks/SDK still see data.stdout.
     const modelPreview = getShellModelOutputPreview(data);
     if (modelPreview) {
       processedStdout = modelPreview;
-    } else if (persistedOutputPath) {
-      const preview = generatePreview(processedStdout, PREVIEW_SIZE_BYTES);
-      processedStdout = buildLargeToolResultMessage({
-        filepath: persistedOutputPath,
-        originalSize: persistedOutputSize ?? 0,
-        isJson: false,
-        preview: preview.preview,
-        hasMore: preview.hasMore
-      });
     }
     let errorMessage = stderr.trim();
     if (interrupted) {
@@ -722,25 +705,19 @@ export const BashTool = buildTool({
         }
       }
 
-      // Annotate output with sandbox violations if any (stderr is in stdout)
       const rawFailureOutput = result.stdout || '';
-      const outputWithSbFailures = SandboxManager.annotateStderrWithSandboxFailures(input.command, rawFailureOutput);
-      const appendedOutputAnnotation = getAppendedOutputAnnotation(outputWithSbFailures, rawFailureOutput);
+      const extractedFailure = extractClaudeCodeHints(rawFailureOutput, input.command);
+      const strippedFailureOutput = extractedFailure.stripped;
+      if (isMainThread && extractedFailure.hints.length > 0) {
+        for (const hint of extractedFailure.hints) maybeRecordPluginHint(hint);
+      }
+      const outputWithSbFailures = SandboxManager.annotateStderrWithSandboxFailures(input.command, strippedFailureOutput);
+      const sandboxDiagnostics = getAppendedOutputAnnotation(outputWithSbFailures, strippedFailureOutput);
       if (result.preSpawnError) {
         throw new Error(result.preSpawnError);
       }
       if (interpretationResult.isError && !isInterrupt) {
-        const compactErrorOutput = await buildShellErrorOutputPreview({
-          outputFilePath: result.outputFilePath,
-          outputTaskId: result.outputTaskId,
-          originalSizeBytes: result.outputFileSize,
-          stderr: appendedOutputAnnotation,
-          stderrLabel: 'Additional diagnostics:',
-        });
-        // stderr is merged into stdout (merged fd); outputWithSbFailures
-        // already has the full output. Pass '' for stdout to avoid
-        // duplication in getErrorParts() and processBashCommand.
-        throw new ShellError('', compactErrorOutput ?? outputWithSbFailures, result.code, result.interrupted);
+        throw new ShellError(strippedFailureOutput, sandboxDiagnostics, result.code, result.interrupted);
       }
       wasInterrupted = result.interrupted;
     } finally {
@@ -754,7 +731,6 @@ export const BashTool = buildTool({
     // stdout already contains the first chunk (from getStdout()). Copy the
     // output file to the tool-results dir so the model can read it via FileRead.
     const persistedOutput = await persistShellOutput(result.outputFilePath, result.outputTaskId);
-    const persistedOutputPath = persistedOutput?.filepath;
     const persistedOutputSize = persistedOutput?.originalSize;
     const commandType = input.command.split(' ')[0];
     logEvent('tengu_bash_tool_command_executed', {
@@ -828,9 +804,7 @@ export const BashTool = buildTool({
       backgroundTaskId: result.backgroundTaskId,
       backgroundedByUser: result.backgroundedByUser,
       assistantAutoBackgrounded: result.assistantAutoBackgrounded,
-      dangerouslyDisableSandbox: 'dangerouslyDisableSandbox' in input ? input.dangerouslyDisableSandbox as boolean | undefined : undefined,
-      persistedOutputPath,
-      persistedOutputSize
+      dangerouslyDisableSandbox: 'dangerouslyDisableSandbox' in input ? input.dangerouslyDisableSandbox as boolean | undefined : undefined
     };
     if (modelOutputPreview) {
       setShellModelOutputPreview(data, modelOutputPreview);

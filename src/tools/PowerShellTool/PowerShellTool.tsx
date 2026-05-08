@@ -27,12 +27,11 @@ import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js';
 import { semanticBoolean } from '../../utils/semanticBoolean.js';
 import { semanticNumber } from '../../utils/semanticNumber.js';
 import { getCachedPowerShellPath } from '../../utils/shell/powershellDetection.js';
-import { buildShellErrorOutputPreview, buildShellOutputPreview, getShellModelOutputPreview, persistShellOutput, setShellModelOutputPreview } from '../../utils/shell/outputPreview.js';
+import { buildShellOutputPreview, getShellModelOutputPreview, persistShellOutput, setShellModelOutputPreview } from '../../utils/shell/outputPreview.js';
 import { EndTruncatingAccumulator } from '../../utils/stringUtils.js';
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js';
 import { TaskOutput } from '../../utils/task/TaskOutput.js';
 import { isOutputLineTruncated } from '../../utils/terminal.js';
-import { buildLargeToolResultMessage, generatePreview, PREVIEW_SIZE_BYTES } from '../../utils/toolResultStorage.js';
 import { shouldUseSandbox } from '../BashTool/shouldUseSandbox.js';
 import { BackgroundHint } from '../BashTool/UI.js';
 import { buildImageToolResult, isImageOutput, resetCwdIfOutsideProject, resizeShellImageOutput, stdErrAppendShellResetMessage, stripEmptyLines } from '../BashTool/utils.js';
@@ -248,8 +247,6 @@ const outputSchema = lazySchema(() => z.object({
   interrupted: z.boolean().describe('Whether the command was interrupted'),
   returnCodeInterpretation: z.string().optional().describe('Semantic interpretation for non-error exit codes with special meaning'),
   isImage: z.boolean().optional().describe('Flag to indicate if stdout contains image data'),
-  persistedOutputPath: z.string().optional().describe('Path to persisted full output when too large for inline'),
-  persistedOutputSize: z.number().optional().describe('Total output size in bytes when persisted'),
   backgroundTaskId: z.string().optional().describe('ID of the background task if command is running in background'),
   backgroundedByUser: z.boolean().optional().describe('True if the user manually backgrounded the command with Ctrl+B'),
   assistantAutoBackgrounded: z.boolean().optional().describe('True if the command was auto-backgrounded by the assistant-mode blocking budget')
@@ -386,8 +383,6 @@ export const PowerShellTool = buildTool({
       stdout,
       stderr,
       isImage,
-      persistedOutputPath,
-      persistedOutputSize,
       backgroundTaskId,
       backgroundedByUser,
       assistantAutoBackgrounded
@@ -401,16 +396,6 @@ export const PowerShellTool = buildTool({
     const modelPreview = getShellModelOutputPreview(data);
     if (modelPreview) {
       processedStdout = modelPreview;
-    } else if (persistedOutputPath) {
-      const trimmed = stdout ? stdout.replace(/^(\s*\n)+/, '').trimEnd() : '';
-      const preview = generatePreview(trimmed, PREVIEW_SIZE_BYTES);
-      processedStdout = buildLargeToolResultMessage({
-        filepath: persistedOutputPath,
-        originalSize: persistedOutputSize ?? 0,
-        isJson: false,
-        preview: preview.preview,
-        hasMore: preview.hasMore
-      });
     } else if (stdout) {
       processedStdout = stdout.replace(/^(\s*\n)+/, '');
       processedStdout = processedStdout.trimEnd();
@@ -585,22 +570,13 @@ export const PowerShellTool = buildTool({
         throw new Error(result.preSpawnError);
       }
       if (interpretation.isError && !isInterrupt) {
-        const compactErrorOutput = await buildShellErrorOutputPreview({
-          outputFilePath: result.outputFilePath,
-          outputTaskId: result.outputTaskId,
-          originalSizeBytes: result.outputFileSize,
-          stderr: result.stderr || '',
-        });
-        throw compactErrorOutput
-          ? new ShellError(compactErrorOutput, '', result.code, result.interrupted)
-          : new ShellError(stdout, result.stderr || '', result.code, result.interrupted);
+        throw new ShellError(stdout, result.stderr || '', result.code, result.interrupted);
       }
 
       // Large output: file on disk has more than getMaxOutputLength() bytes.
       // stdout already contains the first chunk. Copy the output file to the
       // tool-results dir so the model can read it via FileRead.
       const persistedOutput = await persistShellOutput(result.outputFilePath, result.outputTaskId);
-      const persistedOutputPath = persistedOutput?.filepath;
       const persistedOutputSize = persistedOutput?.originalSize;
 
       // Cap image dimensions + size if present (CC-304 — see
@@ -646,9 +622,7 @@ export const PowerShellTool = buildTool({
         stderr: finalStderr,
         interrupted: result.interrupted,
         returnCodeInterpretation: interpretation.message,
-        isImage,
-        persistedOutputPath,
-        persistedOutputSize
+        isImage
       };
       if (modelOutputPreview) {
         setShellModelOutputPreview(data, modelOutputPreview);

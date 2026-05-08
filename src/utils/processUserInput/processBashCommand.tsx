@@ -10,7 +10,7 @@ import { logEvent } from '../../services/analytics/index.js';
 import { errorMessage, ShellError } from '../errors.js';
 import { createSyntheticUserCaveatMessage, createUserInterruptionMessage, createUserMessage, prepareUserContent } from '../messages.js';
 import { resolveDefaultShell } from '../shell/resolveDefaultShell.js';
-import { getShellModelOutputPreview } from '../shell/outputPreview.js';
+import { copyShellModelOutputPreview, getShellModelOutputPreview } from '../shell/outputPreview.js';
 import { isPowerShellToolEnabled } from '../shell/shellToolUtils.js';
 import { PERSISTED_OUTPUT_CLOSING_TAG, PERSISTED_OUTPUT_TAG, processToolResultBlock } from '../toolResultStorage.js';
 import { escapeXml } from '../xml.js';
@@ -107,13 +107,13 @@ export async function processBashCommand(inputString: string, precedingInputBloc
     }
     const stderr = data.stderr;
     // Reuse the same formatting pipeline as inline !`cmd` bash (promptShellExecution)
-    // and model-initiated Bash. When BashTool.call() persists large output to disk,
-    // data.persistedOutputPath is set and the formatter wraps in <persisted-output>.
-    // Pass stderr:'' to keep it separate for the <bash-stderr> UI tag.
+    // and model-initiated Bash. Pass stderr:'' to keep it separate for the
+    // <bash-stderr> UI tag.
     const toolResult = {
       ...data,
       stderr: ''
     };
+    copyShellModelOutputPreview(data, toolResult);
     const mapped = await processToolResultBlock(shellTool, toolResult, randomUUID());
     // mapped.content may contain our generated <persisted-output> wrapper.
     // Keep only that wrapper structural; escape all command output inside it so
@@ -121,7 +121,7 @@ export async function processBashCommand(inputString: string, precedingInputBloc
     const stdout = typeof mapped.content === 'string'
       ? escapeMappedShellOutputForBashStdout(
         mapped.content,
-        Boolean(data.persistedOutputPath || getShellModelOutputPreview(toolResult)),
+        getShellModelOutputPreview(toolResult) !== undefined,
       )
       : escapeXml(data.stdout);
     return {
