@@ -535,7 +535,6 @@ function extractIncludePathsFromTokens(
 }
 
 const MAX_INCLUDE_DEPTH = 5
-const sessionInjectedPaths = new Set<string>()
 
 /**
  * Checks whether a CLAUDE.md file path is excluded by the claudeMdExcludes setting.
@@ -1121,7 +1120,6 @@ function consumeNextEagerLoadReason(): InstructionsLoadReason | undefined {
 export function clearMemoryFileCaches(): void {
   // ?.cache because tests spyOn this, which replaces the memoize wrapper.
   getMemoryFiles.cache?.clear?.()
-  sessionInjectedPaths.clear()
 }
 
 export function resetGetMemoryFilesCache(
@@ -1151,21 +1149,6 @@ export function filterInjectedMemoryFiles(
   )
   if (!skipMemoryIndex) return files
   return files.filter(f => f.type !== 'AutoMem' && f.type !== 'TeamMem')
-}
-
-function filterSessionInjectedMemoryFiles(
-  files: MemoryFileInfo[],
-): MemoryFileInfo[] {
-  const result: MemoryFileInfo[] = []
-  const fs = getFsImplementation()
-  for (const file of files) {
-    const { resolvedPath } = safeResolvePath(fs, file.path)
-    const normalizedPath = normalizePathForComparison(resolvedPath)
-    if (sessionInjectedPaths.has(normalizedPath)) continue
-    sessionInjectedPaths.add(normalizedPath)
-    result.push(file)
-  }
-  return result
 }
 
 export const getClaudeMds = (
@@ -1252,7 +1235,7 @@ export async function getManagedAndUserConditionalRules(
     )
   }
 
-  return filterSessionInjectedMemoryFiles(result)
+  return result
 }
 
 /**
@@ -1332,7 +1315,7 @@ export async function getMemoryFilesForNestedDirectory(
     processedPaths.add(path)
   }
 
-  return filterSessionInjectedMemoryFiles(result)
+  return result
 }
 
 /**
@@ -1350,14 +1333,12 @@ export async function getConditionalRulesForCwdLevelDirectory(
   processedPaths: Set<string>,
 ): Promise<MemoryFileInfo[]> {
   const rulesDir = join(dir, '.claude', 'rules')
-  return filterSessionInjectedMemoryFiles(
-    await processConditionedMdRules(
-      targetPath,
-      rulesDir,
-      'Project',
-      processedPaths,
-      false,
-    ),
+  return processConditionedMdRules(
+    targetPath,
+    rulesDir,
+    'Project',
+    processedPaths,
+    false,
   )
 }
 

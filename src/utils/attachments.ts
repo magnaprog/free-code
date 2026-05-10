@@ -19,7 +19,7 @@ import { FileTooLargeError, readFileInRange } from './readFileInRange.js'
 import { expandPath } from './path.js'
 import { countCharInString } from './stringUtils.js'
 import { count, uniq } from './array.js'
-import { getFsImplementation } from './fsOperations.js'
+import { getFsImplementation, safeResolvePath } from './fsOperations.js'
 import { readdir, stat } from 'fs/promises'
 import type { IDESelection } from '../hooks/useIdeSelection.js'
 import { TODO_WRITE_TOOL_NAME } from '../tools/TodoWriteTool/constants.js'
@@ -118,6 +118,7 @@ import { isAbortError } from './errors.js'
 import {
   getFileModificationTimeAsync,
   isFileWithinReadSizeLimit,
+  normalizePathForComparison,
 } from './file.js'
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
 import { filterAgentsByMcpRequirements } from '../tools/AgentTool/loadAgentsDir.js'
@@ -1706,6 +1707,11 @@ function isInstructionsMemoryType(
   )
 }
 
+function getNestedMemoryDedupKey(memoryFile: MemoryFileInfo): string {
+  const { resolvedPath } = safeResolvePath(getFsImplementation(), memoryFile.path)
+  return normalizePathForComparison(resolvedPath)
+}
+
 /** Exported for testing — regression guard for LRU-eviction re-injection. */
 export function memoryFilesToAttachments(
   memoryFiles: MemoryFileInfo[],
@@ -1714,12 +1720,17 @@ export function memoryFilesToAttachments(
 ): Attachment[] {
   const attachments: Attachment[] = []
   const shouldFireHook = hasInstructionsLoadedHook()
+  const loadedNestedMemoryPaths = toolUseContext.loadedNestedMemoryPaths
 
   for (const memoryFile of memoryFiles) {
-    // Dedup: loadedNestedMemoryPaths is a non-evicting Set; readFileState
-    // is a 100-entry LRU that drops entries in busy sessions, so relying
-    // on it alone re-injects the same CLAUDE.md on every eviction cycle.
-    if (toolUseContext.loadedNestedMemoryPaths?.has(memoryFile.path)) {
+    // Dedup: loadedNestedMemoryPaths is a non-evicting per-context Set;
+    // readFileState is a 100-entry LRU that drops entries in busy sessions,
+    // so relying on it alone re-injects the same CLAUDE.md on eviction.
+    // Store resolved keys so symlink aliases don't bypass the per-context dedup.
+    const dedupKey = loadedNestedMemoryPaths
+      ? getNestedMemoryDedupKey(memoryFile)
+      : memoryFile.path
+    if (loadedNestedMemoryPaths?.has(dedupKey)) {
       continue
     }
     if (!toolUseContext.readFileState.has(memoryFile.path)) {
@@ -1729,7 +1740,7 @@ export function memoryFilesToAttachments(
         content: memoryFile,
         displayPath: relative(getCwd(), memoryFile.path),
       })
-      toolUseContext.loadedNestedMemoryPaths?.add(memoryFile.path)
+      loadedNestedMemoryPaths?.add(dedupKey)
 
       // Mark as loaded in readFileState — this provides cross-function and
       // cross-turn dedup via the .has() check above.
