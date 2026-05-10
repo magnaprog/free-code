@@ -93,6 +93,41 @@ type MCPOAuthFlowErrorReason =
 
 const MAX_LOCK_RETRIES = 5
 
+async function withMcpOAuthStorageLock<T>(
+  serverName: string,
+  fn: () => T | Promise<T>,
+): Promise<T> {
+  const claudeDir = getClaudeConfigHomeDir()
+  await mkdir(claudeDir, { recursive: true })
+  const lockfilePath = join(claudeDir, 'mcp-oauth-storage.lock')
+
+  let release: (() => Promise<void>) | undefined
+  for (let retry = 0; retry < MAX_LOCK_RETRIES; retry++) {
+    try {
+      release = await lockfile.lock(lockfilePath, {
+        realpath: false,
+        onCompromised: () => {
+          logMCPDebug(serverName, 'OAuth storage lock was compromised')
+        },
+      })
+      break
+    } catch (e: unknown) {
+      if (getErrnoCode(e) !== 'ELOCKED') break
+      await sleep(1000 + Math.random() * 1000)
+    }
+  }
+
+  try {
+    return await fn()
+  } finally {
+    if (release) {
+      await release().catch(() => {
+        logMCPDebug(serverName, 'Failed to release OAuth storage lock')
+      })
+    }
+  }
+}
+
 /**
  * OAuth query parameters that should be redacted from logs.
  * These contain sensitive values that could enable CSRF or session fixation attacks.
@@ -1703,31 +1738,36 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
 
   async saveTokens(tokens: OAuthTokens): Promise<void> {
     this._pendingStepUpScope = undefined
-    const storage = getSecureStorage()
-    const existingData = storage.read() || {}
     const serverKey = getServerKey(this.serverName, this.serverConfig)
 
     logMCPDebug(this.serverName, `Saving tokens`)
     logMCPDebug(this.serverName, `Token expires in: ${tokens.expires_in}`)
     logMCPDebug(this.serverName, `Has refresh token: ${!!tokens.refresh_token}`)
 
-    const updatedData: SecureStorageData = {
-      ...existingData,
-      mcpOAuth: {
-        ...existingData.mcpOAuth,
-        [serverKey]: {
-          ...existingData.mcpOAuth?.[serverKey],
-          serverName: this.serverName,
-          serverUrl: this.serverConfig.url,
-          accessToken: tokens.access_token,
-          refreshToken: tokens.refresh_token,
-          expiresAt: Date.now() + (tokens.expires_in || 3600) * 1000,
-          scope: tokens.scope,
-        },
-      },
-    }
+    await withMcpOAuthStorageLock(this.serverName, () => {
+      const storage = getSecureStorage()
+      const existingData = storage.read() || {}
+      const previousTokenData = existingData.mcpOAuth?.[serverKey]
+      const refreshToken = tokens.refresh_token || previousTokenData?.refreshToken
 
-    storage.update(updatedData)
+      const updatedData: SecureStorageData = {
+        ...existingData,
+        mcpOAuth: {
+          ...existingData.mcpOAuth,
+          [serverKey]: {
+            ...previousTokenData,
+            serverName: this.serverName,
+            serverUrl: this.serverConfig.url,
+            accessToken: tokens.access_token,
+            refreshToken,
+            expiresAt: Date.now() + (tokens.expires_in || 3600) * 1000,
+            scope: tokens.scope,
+          },
+        },
+      }
+
+      storage.update(updatedData)
+    })
   }
 
   /**
