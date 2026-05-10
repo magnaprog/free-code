@@ -115,6 +115,16 @@ const MAX_URL_LENGTH = 2000
 const MAX_HTTP_CONTENT_LENGTH = 10 * 1024 * 1024
 const MAX_HTML_LENGTH_FOR_MARKDOWN = 2 * 1024 * 1024
 
+function truncateHtmlForMarkdown(html: string): string {
+  if (html.length <= MAX_HTML_LENGTH_FOR_MARKDOWN) return html
+  const truncated = html.slice(0, MAX_HTML_LENGTH_FOR_MARKDOWN)
+  const lastTagStart = truncated.lastIndexOf('<')
+  const lastTagEnd = truncated.lastIndexOf('>')
+  return lastTagStart > lastTagEnd
+    ? truncated.slice(0, lastTagStart)
+    : truncated
+}
+
 // Timeout for the main HTTP fetch request (60 seconds).
 // Prevents hanging indefinitely on slow/unresponsive servers.
 const FETCH_TIMEOUT_MS = 60_000
@@ -469,10 +479,7 @@ export async function getURLMarkdownContent(
     const cleanedHtml = htmlContent
       .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
       .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-    const htmlForConversion =
-      cleanedHtml.length > MAX_HTML_LENGTH_FOR_MARKDOWN
-        ? cleanedHtml.slice(0, MAX_HTML_LENGTH_FOR_MARKDOWN)
-        : cleanedHtml
+    const htmlForConversion = truncateHtmlForMarkdown(cleanedHtml)
 
     markdownContent = (await getTurndownService()).turndown(htmlForConversion)
     contentBytes = Buffer.byteLength(markdownContent)

@@ -312,19 +312,24 @@ type HookInputContext = {
 }
 
 function getHookEffort(context?: HookInputContext): { level: string } {
-  let effortValue: EffortValue | undefined
   try {
-    effortValue = context?.getAppState?.().effortValue
+    const effortValue = context?.getAppState?.().effortValue
+    return {
+      level: getCurrentEffortLevel(
+        context?.options?.mainLoopModel ?? getMainLoopModel(),
+        effortValue ?? getInitialEffortSetting(),
+      ),
+    }
   } catch {
-    effortValue = undefined
+    return { level: 'high' }
   }
+}
 
-  return {
-    level: getCurrentEffortLevel(
-      context?.options?.mainLoopModel ?? getMainLoopModel(),
-      effortValue ?? getInitialEffortSetting(),
-    ),
-  }
+function getEffortLevelFromHookInput(hookInput: HookInput): string | undefined {
+  const effort = hookInput.effort
+  if (typeof effort !== 'object' || effort === null) return undefined
+  const level = (effort as { level?: unknown }).level
+  return typeof level === 'string' ? level : undefined
 }
 
 export function createBaseHookInput(
@@ -784,6 +789,7 @@ async function execCommandHook(
   hookEvent: HookEvent | 'StatusLine' | 'FileSuggestion',
   hookName: string,
   jsonInput: string,
+  effortLevel: string | undefined,
   signal: AbortSignal,
   hookId: string,
   hookIndex?: number,
@@ -912,16 +918,6 @@ async function execCommandHook(
   const hookTimeoutMs = hook.timeout
     ? hook.timeout * 1000
     : TOOL_HOOK_EXECUTION_TIMEOUT_MS
-
-  let effortLevel: string | undefined
-  try {
-    const parsedInput = jsonParse(jsonInput) as { effort?: { level?: unknown } }
-    if (typeof parsedInput.effort?.level === 'string') {
-      effortLevel = parsedInput.effort.level
-    }
-  } catch {
-    effortLevel = undefined
-  }
 
   // Build env vars — all paths go through toHookPath for Windows POSIX conversion
   const envVars: NodeJS.ProcessEnv = {
@@ -2185,6 +2181,8 @@ async function* executeHooks({
     }
   }
 
+  const effortLevel = getEffortLevelFromHookInput(hookInput)
+
   // Run all hooks in parallel with individual timeouts
   const hookPromises = matchingHooks.map(async function* (
     { hook, pluginRoot, pluginId, skillRoot },
@@ -2496,6 +2494,7 @@ async function* executeHooks({
         hookEvent,
         hookName,
         jsonInput,
+        effortLevel,
         abortSignal,
         hookId,
         hookIndex,
@@ -3132,6 +3131,7 @@ async function executeHooksOutsideREPL({
     logError(error)
     return []
   }
+  const effortLevel = getEffortLevelFromHookInput(hookInput)
 
   // Run all hooks in parallel with individual timeouts
   const hookPromises = matchingHooks.map(
@@ -3341,6 +3341,7 @@ async function executeHooksOutsideREPL({
           hookEvent,
           hookName,
           jsonInput,
+          effortLevel,
           abortSignal,
           randomUUID(),
           hookIndex,
@@ -4685,6 +4686,7 @@ export async function executeStatusLineCommand(
       'StatusLine',
       'statusLine',
       jsonInput,
+      getEffortLevelFromHookInput(statusLineInput),
       abortSignal,
       randomUUID(),
     )
@@ -4776,6 +4778,7 @@ export async function executeFileSuggestionCommand(
       'FileSuggestion',
       'FileSuggestion',
       jsonInput,
+      getEffortLevelFromHookInput(fileSuggestionInput),
       abortSignal,
       randomUUID(),
     )

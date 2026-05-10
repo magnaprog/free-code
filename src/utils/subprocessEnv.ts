@@ -13,16 +13,12 @@ import { isEnvTruthy } from './envUtils.js'
  * job-scoped and expires when the workflow ends.
  */
 const ALWAYS_STRIP_SUBPROCESS_ENV = [
-  // OTLP exporter config can carry Authorization=Bearer tokens for monitoring
-  // backends; child processes never need it.
+  // OTLP exporter headers can carry Authorization=Bearer tokens for monitoring
+  // backends; child processes never need them.
   'OTEL_EXPORTER_OTLP_HEADERS',
   'OTEL_EXPORTER_OTLP_LOGS_HEADERS',
   'OTEL_EXPORTER_OTLP_METRICS_HEADERS',
   'OTEL_EXPORTER_OTLP_TRACES_HEADERS',
-  'OTEL_EXPORTER_OTLP_ENDPOINT',
-  'OTEL_EXPORTER_OTLP_LOGS_ENDPOINT',
-  'OTEL_EXPORTER_OTLP_METRICS_ENDPOINT',
-  'OTEL_EXPORTER_OTLP_TRACES_ENDPOINT',
 ] as const
 
 const GHA_SUBPROCESS_SCRUB = [
@@ -63,7 +59,7 @@ const GHA_SUBPROCESS_SCRUB = [
  * spawning subprocesses (Bash tool, shell snapshot, MCP stdio servers, LSP
  * servers, shell hooks).
  *
- * OTEL exporter secrets are always stripped. Additional GitHub Actions
+ * OTEL exporter header secrets are always stripped. Additional GitHub Actions
  * secrets are stripped when CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is enabled.
  */
 // Registered by init.ts after the upstreamproxy module is dynamically imported

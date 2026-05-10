@@ -57,7 +57,6 @@ export type AutoCompactTrackingState = {
   // Used as a circuit breaker to stop retrying when the context is
   // irrecoverably over the limit (e.g., prompt_too_long).
   consecutiveFailures?: number
-  lastSuccessfulCompactTurnCounter?: number
   consecutiveImmediateRefills?: number
 }
 
@@ -419,8 +418,8 @@ export async function autoCompactIfNeeded(
     return { wasCompacted: false }
   }
 
-  if (tracking?.lastSuccessfulCompactTurnCounter !== undefined) {
-    if (tracking.turnCounter - tracking.lastSuccessfulCompactTurnCounter <= 1) {
+  if (tracking?.compacted === true) {
+    if (tracking.turnCounter <= 1) {
       const refills = (tracking.consecutiveImmediateRefills ?? 0) + 1
       tracking.consecutiveImmediateRefills = refills
       if (refills >= MAX_CONSECUTIVE_IMMEDIATE_REFILLS) {

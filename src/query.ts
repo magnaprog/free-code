@@ -315,7 +315,6 @@ async function* queryLoop(
       turnId: deps.uuid(),
       turnCounter: 0,
       consecutiveFailures: 0,
-      lastSuccessfulCompactTurnCounter: 0,
       consecutiveImmediateRefills: previous?.consecutiveImmediateRefills ?? 0,
     }
   }
@@ -1256,8 +1255,6 @@ async function* queryLoop(
             turnId: tracking?.turnId ?? deps.uuid(),
             turnCounter: tracking?.turnCounter ?? 0,
             consecutiveFailures: forcedCompact.consecutiveFailures,
-            lastSuccessfulCompactTurnCounter:
-              tracking?.lastSuccessfulCompactTurnCounter,
             consecutiveImmediateRefills: tracking?.consecutiveImmediateRefills,
           }
         }

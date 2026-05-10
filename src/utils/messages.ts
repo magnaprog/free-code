@@ -4780,8 +4780,8 @@ function isThinkingBlock(
 }
 
 /**
- * Filter trailing thinking blocks from the last message if it's an assistant message.
- * The API doesn't allow assistant messages to end with thinking/redacted_thinking blocks.
+ * Remove thinking blocks that appear after an assistant tool_use block.
+ * The API accepts thinking before tool_use, not after tool_use in the same turn.
  */
 function filterThinkingAfterToolUse(
   messages: (UserMessage | AssistantMessage)[],

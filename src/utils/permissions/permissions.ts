@@ -479,7 +479,8 @@ function blockPlanModeWrites(
   if (context.getAppState().toolPermissionContext.mode !== 'plan') return null
   if (tool.name === EXIT_PLAN_MODE_V2_TOOL_NAME) return null
   try {
-    if (tool.isReadOnly(input as never)) return null
+    const isReadOnly = tool.isReadOnly as (value: typeof input) => boolean
+    if (isReadOnly(input)) return null
   } catch {
     // Invalid inputs should not bypass plan mode's write block.
   }

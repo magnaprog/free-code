@@ -148,6 +148,7 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
 }
 
 export function modelSupportsBudgetThinking(model: string): boolean {
+  // Opus 4.7 uses adaptive thinking only; manual budget thinking is unsupported.
   if (getCanonicalName(model).includes('opus-4-7')) {
     return false
   }

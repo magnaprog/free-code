@@ -189,10 +189,10 @@ export const EnterWorktreeTool: Tool<InputSchema, Output> = buildTool({
         deleteBranchOnRemove: false,
       }
 
-      restoreWorktreeSession(worktreeSession)
       process.chdir(worktreeSession.worktreePath)
       setCwd(worktreeSession.worktreePath)
       setOriginalCwd(getCwd())
+      restoreWorktreeSession(worktreeSession)
       saveWorktreeState(worktreeSession)
       saveCurrentProjectConfig(current => ({
         ...current,

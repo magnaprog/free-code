@@ -1723,6 +1723,9 @@ export function memoryFilesToAttachments(
   const loadedNestedMemoryPaths = toolUseContext.loadedNestedMemoryPaths
 
   for (const memoryFile of memoryFiles) {
+    if (toolUseContext.readFileState.has(memoryFile.path)) {
+      continue
+    }
     // Dedup: loadedNestedMemoryPaths is a non-evicting per-context Set;
     // readFileState is a 100-entry LRU that drops entries in busy sessions,
     // so relying on it alone re-injects the same CLAUDE.md on eviction.
@@ -1733,52 +1736,49 @@ export function memoryFilesToAttachments(
     if (loadedNestedMemoryPaths?.has(dedupKey)) {
       continue
     }
-    if (!toolUseContext.readFileState.has(memoryFile.path)) {
-      attachments.push({
-        type: 'nested_memory',
-        path: memoryFile.path,
-        content: memoryFile,
-        displayPath: relative(getCwd(), memoryFile.path),
-      })
-      loadedNestedMemoryPaths?.add(dedupKey)
+    attachments.push({
+      type: 'nested_memory',
+      path: memoryFile.path,
+      content: memoryFile,
+      displayPath: relative(getCwd(), memoryFile.path),
+    })
+    loadedNestedMemoryPaths?.add(dedupKey)
 
-      // Mark as loaded in readFileState — this provides cross-function and
-      // cross-turn dedup via the .has() check above.
-      //
-      // When the injected content doesn't match disk (stripped HTML comments,
-      // stripped frontmatter, truncated MEMORY.md), cache the RAW disk bytes
-      // with `isPartialView: true`. Edit/Write see the flag and require a real
-      // Read first; getChangedFiles sees real content + undefined offset/limit
-      // so mid-session change detection still works.
-      toolUseContext.readFileState.set(memoryFile.path, {
-        content: memoryFile.contentDiffersFromDisk
-          ? (memoryFile.rawContent ?? memoryFile.content)
-          : memoryFile.content,
-        timestamp: Date.now(),
-        offset: undefined,
-        limit: undefined,
-        isPartialView: memoryFile.contentDiffersFromDisk,
-      })
+    // Mark as loaded in readFileState — this provides cross-function and
+    // cross-turn dedup via the .has() check above.
+    //
+    // When the injected content doesn't match disk (stripped HTML comments,
+    // stripped frontmatter, truncated MEMORY.md), cache the RAW disk bytes
+    // with `isPartialView: true`. Edit/Write see the flag and require a real
+    // Read first; getChangedFiles sees real content + undefined offset/limit
+    // so mid-session change detection still works.
+    toolUseContext.readFileState.set(memoryFile.path, {
+      content: memoryFile.contentDiffersFromDisk
+        ? (memoryFile.rawContent ?? memoryFile.content)
+        : memoryFile.content,
+      timestamp: Date.now(),
+      offset: undefined,
+      limit: undefined,
+      isPartialView: memoryFile.contentDiffersFromDisk,
+    })
 
-
-      // Fire InstructionsLoaded hook for audit/observability (fire-and-forget)
-      if (shouldFireHook && isInstructionsMemoryType(memoryFile.type)) {
-        const loadReason = memoryFile.globs
-          ? 'path_glob_match'
-          : memoryFile.parent
-            ? 'include'
-            : 'nested_traversal'
-        void executeInstructionsLoadedHooks(
-          memoryFile.path,
-          memoryFile.type,
-          loadReason,
-          {
-            globs: memoryFile.globs,
-            triggerFilePath,
-            parentFilePath: memoryFile.parent,
-          },
-        )
-      }
+    // Fire InstructionsLoaded hook for audit/observability (fire-and-forget)
+    if (shouldFireHook && isInstructionsMemoryType(memoryFile.type)) {
+      const loadReason = memoryFile.globs
+        ? 'path_glob_match'
+        : memoryFile.parent
+          ? 'include'
+          : 'nested_traversal'
+      void executeInstructionsLoadedHooks(
+        memoryFile.path,
+        memoryFile.type,
+        loadReason,
+        {
+          globs: memoryFile.globs,
+          triggerFilePath,
+          parentFilePath: memoryFile.parent,
+        },
+      )
     }
   }
 

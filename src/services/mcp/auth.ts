@@ -1582,7 +1582,9 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
             serverName: this.serverName,
             serverUrl: this.serverConfig.url,
             clientId: clientInformation.client_id,
-            clientSecret: clientInformation.client_secret,
+            clientSecret:
+              clientInformation.client_secret ??
+              existingData.mcpOAuth?.[serverKey]?.clientSecret,
             // Provide default values for required fields if not present
             accessToken: existingData.mcpOAuth?.[serverKey]?.accessToken || '',
             expiresAt: existingData.mcpOAuth?.[serverKey]?.expiresAt || 0,

@@ -783,7 +783,17 @@ const FIND_DANGEROUS_FLAGS = new Set([
   '-delete',
 ])
 const FIND_DANGEROUS_FLAGS_FALLBACK =
-  /(?:^|[ \t])(?:\\?-|['"]-)(?:exec|execdir|ok|okdir|delete)\b/
+  /(?:^|[ \t])-(?:exec|execdir|ok|okdir|delete)\b/
+
+function normalizeFindFlagFallback(command: string): string {
+  return command
+    .replace(/\\([A-Za-z-])/g, '$1')
+    .replace(
+      /'([^'\r\n]*)'|"([^"\r\n]*)"/g,
+      (_match: string, single?: string, double?: string) =>
+        single ?? double ?? '',
+    )
+}
 
 function findCommandHasDangerousFlag(command: string): boolean {
   const parsed = tryParseShellCommand(command)
@@ -795,8 +805,82 @@ function findCommandHasDangerousFlag(command: string): boolean {
       FIND_DANGEROUS_FLAGS.has(token),
     )
   }
-  return FIND_DANGEROUS_FLAGS_FALLBACK.test(command)
+  return FIND_DANGEROUS_FLAGS_FALLBACK.test(normalizeFindFlagFallback(command))
 }
+
+function skipWrapperOptions(
+  tokens: string[],
+  start: number,
+  longOptionsWithValue: ReadonlySet<string>,
+  shortOptionsWithValue: ReadonlySet<string>,
+): number {
+  let commandStart = start
+  while (commandStart < tokens.length) {
+    const token = tokens[commandStart]!
+    if (token === '--') {
+      return commandStart + 1
+    }
+    if (!token.startsWith('-') || token === '-') {
+      return commandStart
+    }
+    if (token.startsWith('--')) {
+      const equalsIndex = token.indexOf('=')
+      const optionName = token.slice(
+        2,
+        equalsIndex === -1 ? undefined : equalsIndex,
+      )
+      commandStart++
+      if (equalsIndex === -1 && longOptionsWithValue.has(optionName)) {
+        commandStart++
+      }
+      continue
+    }
+
+    let consumesNext = false
+    for (let i = 1; i < token.length; i++) {
+      if (shortOptionsWithValue.has(token[i]!)) {
+        consumesNext = i === token.length - 1
+        break
+      }
+    }
+    commandStart += consumesNext ? 2 : 1
+  }
+  return commandStart
+}
+
+const SUDO_LONG_OPTIONS_WITH_VALUE = new Set([
+  'user',
+  'group',
+  'host',
+  'chdir',
+  'role',
+  'type',
+  'prompt',
+  'login-class',
+  'close-from',
+  'command-timeout',
+])
+const SUDO_SHORT_OPTIONS_WITH_VALUE = new Set([
+  'u',
+  'U',
+  'g',
+  'h',
+  'C',
+  'D',
+  'p',
+  'r',
+  't',
+  'T',
+])
+const DOAS_LONG_OPTIONS_WITH_VALUE = new Set(['config', 'user'])
+const DOAS_SHORT_OPTIONS_WITH_VALUE = new Set(['C', 'u'])
+const PKEXEC_LONG_OPTIONS_WITH_VALUE = new Set(['user', 'process'])
+const EXEC_SHORT_OPTIONS_WITH_VALUE = new Set(['a'])
+const WATCH_LONG_OPTIONS_WITH_VALUE = new Set(['interval'])
+const WATCH_SHORT_OPTIONS_WITH_VALUE = new Set(['n'])
+const IONICE_LONG_OPTIONS_WITH_VALUE = new Set(['class', 'classdata', 'pid'])
+const IONICE_SHORT_OPTIONS_WITH_VALUE = new Set(['c', 'n', 'p'])
+const NO_OPTIONS_WITH_VALUE = new Set<string>()
 
 function stripExecWrappersForDeny(command: string): string {
   const parsed = tryParseShellCommand(command)
@@ -814,22 +898,54 @@ function stripExecWrappersForDeny(command: string): string {
 
   switch (tokens[0]) {
     case 'sudo': {
+      commandStart = skipWrapperOptions(
+        tokens,
+        commandStart,
+        SUDO_LONG_OPTIONS_WITH_VALUE,
+        SUDO_SHORT_OPTIONS_WITH_VALUE,
+      )
+      break
+    }
+    case 'doas': {
+      commandStart = skipWrapperOptions(
+        tokens,
+        commandStart,
+        DOAS_LONG_OPTIONS_WITH_VALUE,
+        DOAS_SHORT_OPTIONS_WITH_VALUE,
+      )
+      break
+    }
+    case 'pkexec': {
+      commandStart = skipWrapperOptions(
+        tokens,
+        commandStart,
+        PKEXEC_LONG_OPTIONS_WITH_VALUE,
+        NO_OPTIONS_WITH_VALUE,
+      )
+      break
+    }
+    case 'exec': {
+      commandStart = skipWrapperOptions(
+        tokens,
+        commandStart,
+        NO_OPTIONS_WITH_VALUE,
+        EXEC_SHORT_OPTIONS_WITH_VALUE,
+      )
+      break
+    }
+    case 'command': {
       while (commandStart < tokens.length) {
         const token = tokens[commandStart]!
         if (token === '--') {
           commandStart++
           break
         }
-        if (!token.startsWith('-') || token === '-') break
-        if (
-          /^(?:--(?:user|group|host|chdir|role|type|prompt|login-class|close-from|command-timeout))$/.test(
-            token,
-          ) || /^-[A-Za-z]*[uUgghCDprtT]$/.test(token)
-        ) {
-          commandStart += 2
+        if (token === '-p') {
+          commandStart++
           continue
         }
-        commandStart++
+        if (token.startsWith('-')) return command
+        break
       }
       break
     }
@@ -868,63 +984,30 @@ function stripExecWrappersForDeny(command: string): string {
       break
     }
     case 'watch': {
-      while (commandStart < tokens.length) {
-        const token = tokens[commandStart]!
-        if (token === '--') {
-          commandStart++
-          break
-        }
-        if (token === '-n' || token === '--interval') {
-          commandStart += 2
-          continue
-        }
-        if (token.startsWith('-')) {
-          commandStart++
-          continue
-        }
-        break
-      }
+      commandStart = skipWrapperOptions(
+        tokens,
+        commandStart,
+        WATCH_LONG_OPTIONS_WITH_VALUE,
+        WATCH_SHORT_OPTIONS_WITH_VALUE,
+      )
       break
     }
     case 'ionice': {
-      while (commandStart < tokens.length) {
-        const token = tokens[commandStart]!
-        if (token === '--') {
-          commandStart++
-          break
-        }
-        if (
-          token === '-c' ||
-          token === '--class' ||
-          token === '-n' ||
-          token === '--classdata' ||
-          token === '-p' ||
-          token === '--pid'
-        ) {
-          commandStart += 2
-          continue
-        }
-        if (token.startsWith('-')) {
-          commandStart++
-          continue
-        }
-        break
-      }
+      commandStart = skipWrapperOptions(
+        tokens,
+        commandStart,
+        IONICE_LONG_OPTIONS_WITH_VALUE,
+        IONICE_SHORT_OPTIONS_WITH_VALUE,
+      )
       break
     }
     case 'setsid': {
-      while (commandStart < tokens.length) {
-        const token = tokens[commandStart]!
-        if (token === '--') {
-          commandStart++
-          break
-        }
-        if (token.startsWith('-')) {
-          commandStart++
-          continue
-        }
-        break
-      }
+      commandStart = skipWrapperOptions(
+        tokens,
+        commandStart,
+        NO_OPTIONS_WITH_VALUE,
+        NO_OPTIONS_WITH_VALUE,
+      )
       break
     }
     default:
@@ -945,6 +1028,8 @@ function filterRulesByContentsMatchingInput(
     skipCompoundCheck = false,
   }: { stripAllEnvVars?: boolean; skipCompoundCheck?: boolean } = {},
 ): PermissionRule[] {
+  if (rules.size === 0) return []
+
   const command = input.command.trim()
 
   // Strip output redirections for permission matching
@@ -1034,6 +1119,16 @@ function filterRulesByContentsMatchingInput(
     }
   }
 
+  const dangerousFindFlags = new Map<string, boolean>()
+  function hasDangerousFindFlag(cmd: string): boolean {
+    let result = dangerousFindFlags.get(cmd)
+    if (result === undefined) {
+      result = findCommandHasDangerousFlag(cmd)
+      dangerousFindFlags.set(cmd, result)
+    }
+    return result
+  }
+
   return Array.from(rules.entries())
     .filter(([ruleContent]) => {
       const bashRule = bashPermissionRule(ruleContent)
@@ -1061,7 +1156,7 @@ function filterRulesByContentsMatchingInput(
                 if (
                   !stripAllEnvVars &&
                   bashRule.prefix === 'find' &&
-                  findCommandHasDangerousFlag(cmdToMatch)
+                  hasDangerousFindFlag(cmdToMatch)
                 ) {
                   return false
                 }
