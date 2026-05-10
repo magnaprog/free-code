@@ -775,6 +775,8 @@ export function stripAllLeadingEnvVars(
   return stripped.trim()
 }
 
+const FIND_DANGEROUS_FLAGS = /(?:^|[ \t])\\?-(?:exec|execdir|ok|okdir|delete)\b/
+
 function stripExecWrappersForDeny(command: string): string {
   const parsed = tryParseShellCommand(command)
   if (
@@ -1033,6 +1035,13 @@ function filterRulesByContentsMatchingInput(
                 // which then looks like a single command that starts with "cd ".
                 // Re-splitting the candidate here catches those cases.
                 if (isCompoundCommand.get(cmdToMatch)) {
+                  return false
+                }
+                if (
+                  !stripAllEnvVars &&
+                  bashRule.prefix === 'find' &&
+                  FIND_DANGEROUS_FLAGS.test(cmdToMatch)
+                ) {
                   return false
                 }
                 // Ensure word boundary: prefix must be followed by space or end of string
