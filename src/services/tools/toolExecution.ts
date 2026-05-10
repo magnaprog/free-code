@@ -1594,6 +1594,7 @@ async function checkPermissionsAndCallTool(
       requestId,
       mcpServerType,
       mcpServerBaseUrl,
+      durationMs,
     )) {
       if ('updatedToolOutput' in hookResult) {
         toolOutput = hookResult.updatedToolOutput

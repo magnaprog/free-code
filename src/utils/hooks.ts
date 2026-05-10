@@ -3495,6 +3495,7 @@ export async function* executePreToolHooks<ToolInput>(
  * @param toolInput The input that was passed to the tool
  * @param toolResponse The response from the tool
  * @param toolUseContext ToolUseContext for prompt-based hooks
+ * @param durationMs Tool execution duration in milliseconds
  * @param permissionMode Optional permission mode from toolPermissionContext
  * @param signal Optional AbortSignal to cancel hook execution
  * @param timeoutMs Optional timeout in milliseconds for hook execution
@@ -3506,6 +3507,7 @@ export async function* executePostToolHooks<ToolInput, ToolResponse>(
   toolInput: ToolInput,
   toolResponse: ToolResponse,
   toolUseContext: ToolUseContext,
+  durationMs: number,
   permissionMode?: string,
   signal?: AbortSignal,
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
@@ -3517,6 +3519,7 @@ export async function* executePostToolHooks<ToolInput, ToolResponse>(
     tool_input: toolInput,
     tool_response: toolResponse,
     tool_use_id: toolUseID,
+    duration_ms: durationMs,
   }
 
   yield* executeHooks({

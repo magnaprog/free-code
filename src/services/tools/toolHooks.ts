@@ -47,6 +47,7 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
   requestId: string | undefined,
   mcpServerType: McpServerType,
   mcpServerBaseUrl: string | undefined,
+  durationMs: number,
 ): AsyncGenerator<PostToolUseHooksResult<Output>> {
   const postToolStartTime = Date.now()
   try {
@@ -60,6 +61,7 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
       toolInput,
       toolOutput,
       toolUseContext,
+      durationMs,
       permissionMode,
       toolUseContext.abortController.signal,
     )) {
