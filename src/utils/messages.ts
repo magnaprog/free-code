@@ -4790,18 +4790,13 @@ function filterThinkingAfterToolUse(
     if (message.type !== 'assistant') return message
 
     const content = message.message.content
-    let lastToolUseIndex = -1
-    for (let i = content.length - 1; i >= 0; i--) {
-      if (content[i]?.type === 'tool_use') {
-        lastToolUseIndex = i
-        break
+    let hasSeenToolUse = false
+    const filtered = content.filter(block => {
+      if (block.type === 'tool_use') {
+        hasSeenToolUse = true
+        return true
       }
-    }
-    if (lastToolUseIndex === -1) return message
-
-    const filtered = content.filter((block, index) => {
-      if (index <= lastToolUseIndex) return true
-      return !isThinkingBlock(block)
+      return !hasSeenToolUse || !isThinkingBlock(block)
     })
     if (filtered.length === content.length) return message
 

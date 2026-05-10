@@ -827,6 +827,16 @@ export async function cleanupWorktree(): Promise<void> {
       hookBased,
       deleteBranchOnRemove,
     } = currentWorktreeSession
+    const canDeleteBranchOnRemove = deleteBranchOnRemove !== false
+
+    if (!canDeleteBranchOnRemove) {
+      logForDebugging(
+        `Refusing to remove user-owned worktree entered by path: ${worktreePath}`,
+        { level: 'warn' },
+      )
+      await keepWorktree()
+      return
+    }
 
     // Change back to original directory first
     process.chdir(originalCwd)
@@ -873,7 +883,7 @@ export async function cleanupWorktree(): Promise<void> {
     }))
 
     // Delete only branches created for this session's managed worktrees.
-    if (!hookBased && worktreeBranch && deleteBranchOnRemove !== false) {
+    if (!hookBased && worktreeBranch && canDeleteBranchOnRemove) {
       // Wait a bit to ensure git has released all locks
       await sleep(100)
 

@@ -456,7 +456,7 @@ export const SettingsSchema = lazySchema(() =>
             .enum(['fresh', 'head'])
             .optional()
             .describe(
-              'Base for new worktrees. "fresh" (default) branches from origin/<default>; "head" branches from local HEAD.',
+              'Base for new worktrees. "fresh" (default) branches from origin/<default>; "head" branches from the main worktree HEAD.',
             ),
         })
         .optional()

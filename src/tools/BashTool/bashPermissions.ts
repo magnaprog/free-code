@@ -908,7 +908,7 @@ function stripExecWrappersForDeny(command: string): string {
     return command
   }
 
-  const tokens = parsed.tokens as string[]
+  let tokens = parsed.tokens as string[]
   if (tokens.length < 2) return command
 
   let commandStart = 1
@@ -967,6 +967,7 @@ function stripExecWrappersForDeny(command: string): string {
       break
     }
     case 'env': {
+      let splitExpansions = 0
       while (commandStart < tokens.length) {
         const token = tokens[commandStart]!
         if (token === '--') {
@@ -975,37 +976,80 @@ function stripExecWrappersForDeny(command: string): string {
         }
         if (token === '-S' || token === '--split-string') {
           const splitCommand = tokens[commandStart + 1]
-          return splitCommand
-            ? [splitCommand, ...tokens.slice(commandStart + 2)].join(' ')
-            : command
+          if (!splitCommand) return command
+          if (++splitExpansions > 8) return command
+          const split = tryParseShellCommand(splitCommand)
+          if (
+            !split.success ||
+            split.tokens.some(part => typeof part !== 'string')
+          ) {
+            return command
+          }
+          tokens = [
+            ...tokens.slice(0, commandStart),
+            ...(split.tokens as string[]),
+            ...tokens.slice(commandStart + 2),
+          ]
+          continue
         }
-        if (/^--split-string=/.test(token)) {
-          return [
+        if (token.startsWith('--split-string=')) {
+          if (++splitExpansions > 8) return command
+          const split = tryParseShellCommand(
             token.slice('--split-string='.length),
+          )
+          if (
+            !split.success ||
+            split.tokens.some(part => typeof part !== 'string')
+          ) {
+            return command
+          }
+          tokens = [
+            ...tokens.slice(0, commandStart),
+            ...(split.tokens as string[]),
             ...tokens.slice(commandStart + 1),
-          ].join(' ')
+          ]
+          continue
+        }
+        if (token.startsWith('-S') && token.length > 2) {
+          if (++splitExpansions > 8) return command
+          const split = tryParseShellCommand(token.slice(2))
+          if (
+            !split.success ||
+            split.tokens.some(part => typeof part !== 'string')
+          ) {
+            return command
+          }
+          tokens = [
+            ...tokens.slice(0, commandStart),
+            ...(split.tokens as string[]),
+            ...tokens.slice(commandStart + 1),
+          ]
+          continue
         }
         if (
           token === '-u' ||
           token === '-C' ||
           token === '-P' ||
-          /^(?:--(?:unset|ignore-signal|block-signal|default-signal|chdir|path))$/.test(
-            token,
-          )
+          /^(?:--(?:unset|chdir|path))$/.test(token)
         ) {
           commandStart += 2
           continue
         }
         if (
           /^-(?:u|C|P).+/.test(token) ||
-          /^--(?:unset|ignore-signal|block-signal|default-signal|chdir|path)=/.test(
-            token,
-          )
+          /^--(?:unset|chdir|path)=/.test(token)
         ) {
           commandStart++
           continue
         }
-        if (token === '-i' || token === '-0' || token === '-v') {
+        if (
+          token === '-' ||
+          /^-[i0v]+$/.test(token) ||
+          /^(?:--(?:ignore-environment|null|debug))$/.test(token) ||
+          /^(?:--(?:ignore-signal|block-signal|default-signal))(?:=.*)?$/.test(
+            token,
+          )
+        ) {
           commandStart++
           continue
         }
@@ -1228,6 +1272,13 @@ function filterRulesByContentsMatchingInput(
             // compound commands in prefix mode. e.g., Bash(cd *) must not match
             // "cd /path && python3 evil.py" even though "cd *" pattern would match it.
             if (isCompoundCommand.get(cmdToMatch)) {
+              return false
+            }
+            if (
+              !stripAllEnvVars &&
+              (cmdToMatch === 'find' || cmdToMatch.startsWith('find ')) &&
+              hasDangerousFindFlag(cmdToMatch)
+            ) {
               return false
             }
             // In prefix mode (after splitting), wildcards can safely match subcommands

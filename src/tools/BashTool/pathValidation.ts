@@ -921,6 +921,39 @@ function validateSinglePathCommandArgv(
   return pathChecker(args, cwd, toolPermissionContext, compoundCommandHasCd)
 }
 
+function hasNetworkInputRedirect(command: string): boolean {
+  let quote: 'single' | 'double' | null = null
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i]
+    if (char === '\\' && quote !== 'single') {
+      i++
+      continue
+    }
+    if (char === "'" && quote !== 'double') {
+      quote = quote === 'single' ? null : 'single'
+      continue
+    }
+    if (char === '"' && quote !== 'single') {
+      quote = quote === 'double' ? null : 'double'
+      continue
+    }
+    if (quote || char !== '<') continue
+
+    const next = command[i + 1]
+    if (next === '(') continue
+    if (next === '<') {
+      while (command[i + 1] === '<') i++
+      continue
+    }
+    let targetStart = i + 1
+    if (next === '>') targetStart++
+    while (/\s/.test(command[targetStart] ?? '')) targetStart++
+    const target = command.slice(targetStart)
+    if (/^(?:['"])?\/dev\/(?:tcp|udp)\//.test(target)) return true
+  }
+  return false
+}
+
 function validateOutputRedirections(
   redirections: Array<{ target: string; operator: '>' | '>>' }>,
   cwd: string,
@@ -949,7 +982,7 @@ function validateOutputRedirections(
         behavior: 'ask',
         message: 'Redirect to network pseudo-device requires approval',
         decisionReason: {
-          type: 'safetyCheck',
+          type: 'other',
           reason: 'Network pseudo-device redirect',
         },
       }
@@ -1054,9 +1087,24 @@ export function checkPathConstraints(
   // garbled tokens on a successful parse (not a parse failure, so the
   // fail-closed guard doesn't help). The AST already resolved targets
   // correctly and checkSemantics validated them.
-  const { redirections, hasDangerousRedirection } = astRedirects
-    ? astRedirectsToOutputRedirections(astRedirects)
-    : extractOutputRedirections(input.command)
+  const { redirections, hasDangerousRedirection, hasNetworkInputRedirection } =
+    astRedirects
+      ? astRedirectsToOutputRedirections(astRedirects)
+      : {
+          ...extractOutputRedirections(input.command),
+          hasNetworkInputRedirection: hasNetworkInputRedirect(input.command),
+        }
+
+  if (hasNetworkInputRedirection) {
+    return {
+      behavior: 'ask',
+      message: 'Input redirect from network pseudo-device requires approval',
+      decisionReason: {
+        type: 'other',
+        reason: 'Network pseudo-device input redirect',
+      },
+    }
+  }
 
   // SECURITY: If we found a redirection operator with a target containing shell expansion
   // syntax ($VAR or %VAR%), require manual approval since the target can't be safely validated.
@@ -1122,13 +1170,16 @@ export function checkPathConstraints(
 /**
  * Convert AST-derived Redirect[] to the format expected by
  * validateOutputRedirections. Filters to output-only redirects (excluding
- * fd duplications like 2>&1) and maps operators to '>' | '>>'.
+ * fd duplications like 2>&1), maps operators to '>' | '>>', and flags
+ * network pseudo-devices used as input redirects.
  */
 function astRedirectsToOutputRedirections(redirects: Redirect[]): {
   redirections: Array<{ target: string; operator: '>' | '>>' }>
   hasDangerousRedirection: boolean
+  hasNetworkInputRedirection: boolean
 } {
   const redirections: Array<{ target: string; operator: '>' | '>>' }> = []
+  let hasNetworkInputRedirection = false
   for (const r of redirects) {
     switch (r.op) {
       case '>':
@@ -1151,13 +1202,22 @@ function astRedirectsToOutputRedirections(redirects: Redirect[]): {
       case '<<':
       case '<&':
       case '<<<':
-        // input redirects — skip
+        if (
+          r.target.startsWith('/dev/tcp/') ||
+          r.target.startsWith('/dev/udp/')
+        ) {
+          hasNetworkInputRedirection = true
+        }
         break
     }
   }
   // AST targets are fully resolved (no shell expansion) — checkSemantics
-  // already validated them. No dangerous redirections are possible.
-  return { redirections, hasDangerousRedirection: false }
+  // already validated them. No expansion-based redirections are possible.
+  return {
+    redirections,
+    hasDangerousRedirection: false,
+    hasNetworkInputRedirection,
+  }
 }
 
 // ───────────────────────────────────────────────────────────────────────────

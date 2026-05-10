@@ -129,6 +129,9 @@ async function withMcpOAuthStorageLock<T>(
   }
 
   try {
+    // Locked read-modify-write paths must bypass macOS's 30s keychain read
+    // cache, or a later locked writer can merge against stale data.
+    clearKeychainCache()
     return await fn()
   } finally {
     if (release) {

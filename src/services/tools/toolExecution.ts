@@ -262,6 +262,15 @@ function getNextImagePasteId(messages: Message[]): number {
   return maxId + 1
 }
 
+function messageContainsMediaPayload(message: Message): boolean {
+  if (message.type !== 'user') return false
+  const content = message.message.content
+  return (
+    Array.isArray(content) &&
+    content.some(block => block.type === 'image' || block.type === 'document')
+  )
+}
+
 export type MessageUpdateLazy<M extends Message = Message> = {
   message: M
   contextModifier?: {
@@ -1654,13 +1663,13 @@ async function checkPermissionsAndCallTool(
     }
 
     // PostToolUse output replacement is the model-visible redaction boundary.
-    // Supplemental newMessages can contain the original media payload.
-    if (
-      !toolOutputWasUpdatedByHook &&
-      result.newMessages &&
-      result.newMessages.length > 0
-    ) {
+    // Filter only supplemental media payloads; text newMessages can carry
+    // required follow-up context such as injected skill prompts.
+    if (result.newMessages && result.newMessages.length > 0) {
       for (const message of result.newMessages) {
+        if (toolOutputWasUpdatedByHook && messageContainsMediaPayload(message)) {
+          continue
+        }
         resultingMessages.push({ message })
       }
     }
