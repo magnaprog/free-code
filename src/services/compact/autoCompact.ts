@@ -57,6 +57,8 @@ export type AutoCompactTrackingState = {
   // Used as a circuit breaker to stop retrying when the context is
   // irrecoverably over the limit (e.g., prompt_too_long).
   consecutiveFailures?: number
+  lastSuccessfulCompactTurnCounter?: number
+  consecutiveImmediateRefills?: number
 }
 
 export const AUTOCOMPACT_BUFFER_TOKENS = 13_000
@@ -68,6 +70,7 @@ export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000
 // BQ 2026-03-10: 1,279 sessions had 50+ consecutive failures (up to 3,272)
 // in a single session, wasting ~250K API calls/day globally.
 const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3
+const MAX_CONSECUTIVE_IMMEDIATE_REFILLS = 3
 
 export function getAutoCompactThreshold(model: string): number {
   const effectiveContextWindow = getEffectiveContextWindowSize(model)
@@ -355,8 +358,10 @@ function shouldSkipAutoCompactAttempt(
   // Without this, sessions where context is irrecoverably over the limit
   // hammer the API with doomed compaction attempts on every turn.
   return (
-    tracking?.consecutiveFailures !== undefined &&
-    tracking.consecutiveFailures >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES
+    (tracking?.consecutiveFailures !== undefined &&
+      tracking.consecutiveFailures >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES) ||
+    (tracking?.consecutiveImmediateRefills !== undefined &&
+      tracking.consecutiveImmediateRefills >= MAX_CONSECUTIVE_IMMEDIATE_REFILLS)
   )
 }
 
@@ -412,6 +417,22 @@ export async function autoCompactIfNeeded(
 
   if (!shouldCompact) {
     return { wasCompacted: false }
+  }
+
+  if (tracking?.lastSuccessfulCompactTurnCounter !== undefined) {
+    if (tracking.turnCounter - tracking.lastSuccessfulCompactTurnCounter <= 1) {
+      const refills = (tracking.consecutiveImmediateRefills ?? 0) + 1
+      tracking.consecutiveImmediateRefills = refills
+      if (refills >= MAX_CONSECUTIVE_IMMEDIATE_REFILLS) {
+        logForDebugging(
+          `autocompact: thrash breaker tripped after ${refills} immediate refills`,
+          { level: 'warn' },
+        )
+        return { wasCompacted: false }
+      }
+    } else {
+      tracking.consecutiveImmediateRefills = 0
+    }
   }
 
   return runAutoCompact(

@@ -307,12 +307,16 @@ async function* queryLoop(
     )
   }
 
-  function createPostAutoCompactTracking(): AutoCompactTrackingState {
+  function createPostAutoCompactTracking(
+    previous?: AutoCompactTrackingState,
+  ): AutoCompactTrackingState {
     return {
       compacted: true,
       turnId: deps.uuid(),
       turnCounter: 0,
       consecutiveFailures: 0,
+      lastSuccessfulCompactTurnCounter: 0,
+      consecutiveImmediateRefills: previous?.consecutiveImmediateRefills ?? 0,
     }
   }
 
@@ -542,7 +546,7 @@ async function* queryLoop(
       // compact. recompactionInfo (autoCompact.ts:190) already captured the
       // old values for turnsSincePreviousCompact/previousCompactTurnId before
       // the call, so this reset doesn't lose those.
-      tracking = createPostAutoCompactTracking()
+      tracking = createPostAutoCompactTracking(tracking)
 
       const postCompactMessages = buildPostCompactMessages(compactionResult)
 
@@ -1223,7 +1227,7 @@ async function* queryLoop(
         if (forcedCompact.compactionResult) {
           updateTaskBudgetRemainingAfterCompact(messagesForQuery)
 
-          tracking = createPostAutoCompactTracking()
+          tracking = createPostAutoCompactTracking(tracking)
 
           const postCompactMessages = buildPostCompactMessages(
             forcedCompact.compactionResult,
@@ -1252,6 +1256,9 @@ async function* queryLoop(
             turnId: tracking?.turnId ?? deps.uuid(),
             turnCounter: tracking?.turnCounter ?? 0,
             consecutiveFailures: forcedCompact.consecutiveFailures,
+            lastSuccessfulCompactTurnCounter:
+              tracking?.lastSuccessfulCompactTurnCounter,
+            consecutiveImmediateRefills: tracking?.consecutiveImmediateRefills,
           }
         }
       }
