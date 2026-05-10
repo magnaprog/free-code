@@ -390,6 +390,7 @@ export const BaseHookInputSchema = lazySchema(() =>
     transcript_path: z.string(),
     cwd: z.string(),
     permission_mode: z.string().optional(),
+    effort: z.object({ level: z.string() }),
     agent_id: z
       .string()
       .optional()

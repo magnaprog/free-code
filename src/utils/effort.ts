@@ -195,6 +195,13 @@ export function getDisplayedEffortLevel(
   return convertEffortValueToLevel(resolved)
 }
 
+export function getCurrentEffortLevel(
+  model: string,
+  appStateEffort: EffortValue | undefined,
+): EffortLevel {
+  return getDisplayedEffortLevel(model, appStateEffort)
+}
+
 /**
  * Build the ` with {level} effort` suffix shown in Logo/Spinner.
  * Returns empty string if the user hasn't explicitly set an effort value.

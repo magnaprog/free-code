@@ -170,6 +170,7 @@ export type ExecOptions = {
   preventCwdChanges?: boolean
   shouldUseSandbox?: boolean
   shouldAutoBackground?: boolean
+  effortLevel?: string
   /** When provided, stdout is piped (not sent to file) and this callback fires on each data chunk. */
   onStdout?: (data: string) => void
 }
@@ -190,6 +191,7 @@ export async function exec(
     preventCwdChanges,
     shouldUseSandbox,
     shouldAutoBackground,
+    effortLevel,
     onStdout,
   } = options ?? {}
   const commandTimeout = timeout || DEFAULT_TIMEOUT
@@ -321,6 +323,7 @@ export async function exec(
         CLAUDECODE: '1',
         ...envOverrides,
         CLAUDE_CODE_SESSION_ID: getSessionId(),
+        ...(effortLevel ? { CLAUDE_EFFORT: effortLevel } : {}),
       },
       cwd,
       stdio: usePipeMode

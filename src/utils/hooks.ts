@@ -16,6 +16,12 @@ import {
   invalidateSessionEnvCache,
 } from './sessionEnvironment.js'
 import { subprocessEnv } from './subprocessEnv.js'
+import {
+  type EffortValue,
+  getCurrentEffortLevel,
+  getInitialEffortSetting,
+} from './effort.js'
+import { getMainLoopModel } from './model/model.js'
 import { getPlatform } from './platform.js'
 import { findGitBashPath, windowsPathToPosixPath } from './windowsPaths.js'
 import { getCachedPowerShellPath } from './shell/powershellDetection.js'
@@ -298,12 +304,33 @@ export function shouldSkipHookDueToTrust(): boolean {
 /**
  * Creates the base hook input that's common to all hook types
  */
+type HookInputContext = {
+  agentId?: string
+  agentType?: string
+  options?: { mainLoopModel?: string }
+  getAppState?: () => { effortValue?: EffortValue }
+}
+
+function getHookEffort(context?: HookInputContext): { level: string } {
+  let effortValue: EffortValue | undefined
+  try {
+    effortValue = context?.getAppState?.().effortValue
+  } catch {
+    effortValue = undefined
+  }
+
+  return {
+    level: getCurrentEffortLevel(
+      context?.options?.mainLoopModel ?? getMainLoopModel(),
+      effortValue ?? getInitialEffortSetting(),
+    ),
+  }
+}
+
 export function createBaseHookInput(
   permissionMode?: string,
   sessionId?: string,
-  // Typed narrowly (not ToolUseContext) so callers can pass toolUseContext
-  // directly via structural typing without this function depending on Tool.ts.
-  agentInfo?: { agentId?: string; agentType?: string },
+  agentInfo?: HookInputContext,
 ): {
   session_id: string
   transcript_path: string
@@ -311,6 +338,7 @@ export function createBaseHookInput(
   permission_mode?: string
   agent_id?: string
   agent_type?: string
+  effort: { level: string }
 } {
   const resolvedSessionId = sessionId ?? getSessionId()
   // agent_type: subagent's type (from toolUseContext) takes precedence over
@@ -324,6 +352,7 @@ export function createBaseHookInput(
     permission_mode: permissionMode,
     agent_id: agentInfo?.agentId,
     agent_type: resolvedAgentType,
+    effort: getHookEffort(agentInfo),
   }
 }
 
@@ -884,10 +913,21 @@ async function execCommandHook(
     ? hook.timeout * 1000
     : TOOL_HOOK_EXECUTION_TIMEOUT_MS
 
+  let effortLevel: string | undefined
+  try {
+    const parsedInput = jsonParse(jsonInput) as { effort?: { level?: unknown } }
+    if (typeof parsedInput.effort?.level === 'string') {
+      effortLevel = parsedInput.effort.level
+    }
+  } catch {
+    effortLevel = undefined
+  }
+
   // Build env vars — all paths go through toHookPath for Windows POSIX conversion
   const envVars: NodeJS.ProcessEnv = {
     ...subprocessEnv(),
     CLAUDE_PROJECT_DIR: toHookPath(projectDir),
+    ...(effortLevel ? { CLAUDE_EFFORT: effortLevel } : {}),
   }
 
   // Plugin and skill hooks both set CLAUDE_PLUGIN_ROOT (skills use the same
@@ -3682,7 +3722,7 @@ export async function* executeStopHooks(
 
   const hookInput: StopHookInput | SubagentStopHookInput = subagentId
     ? {
-        ...createBaseHookInput(permissionMode),
+        ...createBaseHookInput(permissionMode, undefined, toolUseContext),
         hook_event_name: 'SubagentStop',
         stop_hook_active: stopHookActive,
         agent_id: subagentId,
@@ -3691,7 +3731,7 @@ export async function* executeStopHooks(
         last_assistant_message: lastAssistantText,
       }
     : {
-        ...createBaseHookInput(permissionMode),
+        ...createBaseHookInput(permissionMode, undefined, toolUseContext),
         hook_event_name: 'Stop',
         stop_hook_active: stopHookActive,
         last_assistant_message: lastAssistantText,

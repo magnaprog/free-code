@@ -17,6 +17,7 @@ import { parseForSecurity } from '../../utils/bash/ast.js';
 import { splitCommand_DEPRECATED, splitCommandWithOperators } from '../../utils/bash/commands.js';
 import { extractClaudeCodeHints } from '../../utils/claudeCodeHints.js';
 import { detectCodeIndexingFromCommand } from '../../utils/codeIndexing.js';
+import { getCurrentEffortLevel } from '../../utils/effort.js';
 import { isEnvTruthy } from '../../utils/envUtils.js';
 import { isENOENT, ShellError } from '../../utils/errors.js';
 import { detectFileEncoding, detectLineEndings, getFileModificationTime, writeTextContent } from '../../utils/file.js';
@@ -640,6 +641,7 @@ export const BashTool = buildTool({
     let result: ExecResult;
     const isMainThread = !toolUseContext.agentId;
     const preventCwdChanges = !isMainThread;
+    const effortLevel = getCurrentEffortLevel(toolUseContext.options.mainLoopModel, getAppState().effortValue);
     try {
       // Use the new async generator version of runShellCommand
       const commandGenerator = runShellCommand({
@@ -652,7 +654,8 @@ export const BashTool = buildTool({
         preventCwdChanges,
         isMainThread,
         toolUseId: toolUseContext.toolUseId,
-        agentId: toolUseContext.agentId
+        agentId: toolUseContext.agentId,
+        effortLevel
       });
 
       // Consume the generator and capture the return value
@@ -824,7 +827,8 @@ async function* runShellCommand({
   preventCwdChanges,
   isMainThread,
   toolUseId,
-  agentId
+  agentId,
+  effortLevel
 }: {
   input: BashToolInput;
   abortController: AbortController;
@@ -834,6 +838,7 @@ async function* runShellCommand({
   isMainThread?: boolean;
   toolUseId?: string;
   agentId?: AgentId;
+  effortLevel?: string;
 }): AsyncGenerator<{
   type: 'progress';
   output: string;
@@ -887,7 +892,8 @@ async function* runShellCommand({
     },
     preventCwdChanges,
     shouldUseSandbox: shouldUseSandbox(input),
-    shouldAutoBackground
+    shouldAutoBackground,
+    effortLevel
   });
 
   // Start the command execution
