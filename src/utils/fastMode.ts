@@ -26,6 +26,7 @@ import {
   type ModelSetting,
   parseUserSpecifiedModel,
 } from './model/model.js'
+import { getModelStrings } from './model/modelStrings.js'
 import { getAPIProvider } from './model/providers.js'
 import { isEssentialTrafficOnly } from './privacyLevel.js'
 import {
@@ -143,7 +144,7 @@ export function getFastModeUnavailableReason(): string | null {
 export const FAST_MODE_MODEL_DISPLAY = 'Opus 4.6'
 
 export function getFastModeModel(): string {
-  return 'opus' + (isOpus1mMergeEnabled() ? '[1m]' : '')
+  return getModelStrings().opus46 + (isOpus1mMergeEnabled() ? '[1m]' : '')
 }
 
 export function getInitialFastModeSetting(model: ModelSetting): boolean {

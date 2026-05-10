@@ -181,6 +181,7 @@ import { calculateUSDCost } from 'src/utils/modelCost.js'
 import { endQueryProfile, queryCheckpoint } from 'src/utils/queryProfiler.js'
 import {
   modelSupportsAdaptiveThinking,
+  modelSupportsBudgetThinking,
   modelSupportsThinking,
   type ThinkingConfig,
 } from 'src/utils/thinking.js'
@@ -1622,7 +1623,7 @@ async function* queryModel(
         thinking = {
           type: 'adaptive',
         } satisfies BetaMessageStreamParams['thinking']
-      } else {
+      } else if (modelSupportsBudgetThinking(options.model)) {
         // For models that do not support adaptive thinking, use the default
         // thinking budget unless explicitly specified.
         let thinkingBudget = getMaxThinkingTokensForModel(options.model)

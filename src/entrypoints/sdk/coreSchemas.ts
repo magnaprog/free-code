@@ -71,7 +71,7 @@ export const ThinkingAdaptiveSchema = lazySchema(() =>
     .object({
       type: z.literal('adaptive'),
     })
-    .describe('Claude decides when and how much to think (Opus 4.6+).'),
+    .describe('Claude decides when and how much to think (Opus 4.7/4.6 and Sonnet 4.6).'),
 )
 
 export const ThinkingEnabledSchema = lazySchema(() =>
@@ -1061,7 +1061,7 @@ export const ModelInfoSchema = lazySchema(() =>
         .optional()
         .describe('Whether this model supports effort levels'),
       supportedEffortLevels: z
-        .array(z.enum(['low', 'medium', 'high', 'max']))
+        .array(z.enum(['low', 'medium', 'high', 'xhigh', 'max']))
         .optional()
         .describe('Available effort levels for this model'),
       supportsAdaptiveThinking: z
@@ -1170,7 +1170,7 @@ export const AgentDefinitionSchema = lazySchema(() =>
           "Scope for auto-loading agent memory files. 'user' - ~/.claude/agent-memory/<agentType>/, 'project' - .claude/agent-memory/<agentType>/, 'local' - .claude/agent-memory-local/<agentType>/",
         ),
       effort: z
-        .union([z.enum(['low', 'medium', 'high', 'max']), z.number().int()])
+        .union([z.enum(['low', 'medium', 'high', 'xhigh', 'max']), z.number().int()])
         .optional()
         .describe(
           'Reasoning effort level for this agent. Either a named level or an integer',

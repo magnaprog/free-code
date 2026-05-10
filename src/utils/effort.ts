@@ -13,6 +13,7 @@ export const EFFORT_LEVELS = [
   'low',
   'medium',
   'high',
+  'xhigh',
   'max',
 ] as const satisfies readonly EffortLevel[]
 
@@ -40,7 +41,12 @@ export function modelSupportsEffort(model: string): boolean {
     return true
   }
   // Supported by a subset of Claude 4 models
-  if (m.includes('opus-4-6') || m.includes('sonnet-4-6')) {
+  if (
+    m.includes('opus-4-7') ||
+    m.includes('opus-4-6') ||
+    m.includes('opus-4-5') ||
+    m.includes('sonnet-4-6')
+  ) {
     return true
   }
   // Exclude any other known legacy models (haiku, older opus/sonnet variants)
@@ -59,7 +65,7 @@ export function modelSupportsEffort(model: string): boolean {
 }
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports 'max' effort.
-// Per Anthropic API docs, 'max' is Opus 4.6 only for public Claude models.
+// Per Anthropic API docs, 'max' is available on Opus 4.7, Opus 4.6, and Sonnet 4.6.
 // OpenAI reasoning models use `xhigh`; the Codex adapter maps free-code's
 // `max` value to OpenAI's wire value.
 export function modelSupportsMaxEffort(model: string): boolean {
@@ -70,7 +76,30 @@ export function modelSupportsMaxEffort(model: string): boolean {
   if (isOpenAIReasoningModel(model)) {
     return true
   }
-  if (model.toLowerCase().includes('opus-4-6')) {
+  const m = model.toLowerCase()
+  if (
+    m.includes('opus-4-7') ||
+    m.includes('opus-4-6') ||
+    m.includes('sonnet-4-6')
+  ) {
+    return true
+  }
+  if (process.env.USER_TYPE === 'ant' && resolveAntModel(model)) {
+    return true
+  }
+  return false
+}
+
+export function modelSupportsXHighEffort(model: string): boolean {
+  const supported3P = get3PModelCapabilityOverride(model, 'xhigh_effort')
+  if (supported3P !== undefined) {
+    return supported3P
+  }
+  if (isOpenAIReasoningModel(model)) {
+    return true
+  }
+  const m = model.toLowerCase()
+  if (m.includes('opus-4-7')) {
     return true
   }
   if (process.env.USER_TYPE === 'ant' && resolveAntModel(model)) {
@@ -103,7 +132,7 @@ export function parseEffortValue(value: unknown): EffortValue | undefined {
 
 /**
  * Numeric values are model-default only and not persisted.
- * 'max' is session-scoped for external users (ants can persist it).
+ * 'xhigh' and 'max' are session-scoped for external users (ants can persist them).
  * Write sites call this before saving to settings so the Zod schema
  * (which only accepts string levels) never rejects a write.
  */
@@ -113,15 +142,18 @@ export function toPersistableEffort(
   if (value === 'low' || value === 'medium' || value === 'high') {
     return value
   }
-  if (value === 'max' && process.env.USER_TYPE === 'ant') {
+  if (
+    (value === 'xhigh' || value === 'max') &&
+    process.env.USER_TYPE === 'ant'
+  ) {
     return value
   }
   return undefined
 }
 
 export function getInitialEffortSetting(): EffortLevel | undefined {
-  // toPersistableEffort filters 'max' for non-ants on read, so a manually
-  // edited settings.json doesn't leak session-scoped max into a fresh session.
+  // toPersistableEffort filters xhigh/max for non-ants on read, so a manually
+  // edited settings.json doesn't leak session-scoped levels into a fresh session.
   return toPersistableEffort(getInitialSettings().effortLevel)
 }
 
@@ -174,7 +206,9 @@ export function resolveAppliedEffort(
   }
   const resolved =
     envOverride ?? appStateEffortValue ?? getDefaultEffortForModel(model)
-  // API rejects 'max' on non-Opus-4.6 models — downgrade to 'high'.
+  if (resolved === 'xhigh' && !modelSupportsXHighEffort(model)) {
+    return 'high'
+  }
   if (resolved === 'max' && !modelSupportsMaxEffort(model)) {
     return 'high'
   }
@@ -206,7 +240,7 @@ export function getCurrentEffortLevel(
  * Build the ` with {level} effort` suffix shown in Logo/Spinner.
  * Returns empty string if the user hasn't explicitly set an effort value.
  * Delegates to resolveAppliedEffort() so the displayed level matches what
- * the API actually receives (including max→high clamp for non-Opus models).
+ * the API actually receives (including unsupported xhigh/max → high clamps).
  */
 export function getEffortSuffix(
   model: string,
@@ -252,8 +286,10 @@ export function getEffortLevelDescription(level: EffortLevel): string {
       return 'Balanced approach with standard implementation and testing'
     case 'high':
       return 'Comprehensive implementation with extensive testing and documentation'
+    case 'xhigh':
+      return 'Extended capability for long-horizon work (Opus 4.7 and OpenAI)'
     case 'max':
-      return 'Maximum capability with deepest reasoning (Opus 4.6, or xhigh for OpenAI)'
+      return 'Maximum capability with deepest reasoning (Opus 4.7/4.6, Sonnet 4.6, or xhigh for OpenAI)'
   }
 }
 

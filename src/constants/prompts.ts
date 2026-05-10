@@ -114,12 +114,12 @@ export const CLAUDE_CODE_DOCS_MAP_URL =
 export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY =
   '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__'
 
-// @[MODEL LAUNCH]: Update the latest frontier model.
-const FRONTIER_MODEL_NAME = 'Claude Opus 4.6'
+// @[MODEL LAUNCH]: Update the Fast Mode model if supported models change.
+const FAST_MODE_MODEL_NAME = 'Claude Opus 4.6'
 
 // @[MODEL LAUNCH]: Update the model family IDs below to the latest in each tier.
-const CLAUDE_4_5_OR_4_6_MODEL_IDS = {
-  opus: 'claude-opus-4-6',
+const CURRENT_CLAUDE_MODEL_IDS = {
+  opus: 'claude-opus-4-7',
   sonnet: 'claude-sonnet-4-6',
   haiku: 'claude-haiku-4-5-20251001',
 }
@@ -693,13 +693,13 @@ export async function computeSimpleEnvInfo(
     knowledgeCutoffMessage,
     process.env.USER_TYPE === 'ant' && isUndercover()
       ? null
-      : `The most recent Claude model family is Claude 4.5/4.6. Model IDs — Opus 4.6: '${CLAUDE_4_5_OR_4_6_MODEL_IDS.opus}', Sonnet 4.6: '${CLAUDE_4_5_OR_4_6_MODEL_IDS.sonnet}', Haiku 4.5: '${CLAUDE_4_5_OR_4_6_MODEL_IDS.haiku}'. When building AI applications, default to the latest and most capable Claude models.`,
+      : `The most recent Claude model family is Claude 4.5/4.6/4.7. Model IDs — Opus 4.7: '${CURRENT_CLAUDE_MODEL_IDS.opus}', Sonnet 4.6: '${CURRENT_CLAUDE_MODEL_IDS.sonnet}', Haiku 4.5: '${CURRENT_CLAUDE_MODEL_IDS.haiku}'. When building AI applications, default to the latest and most capable Claude models.`,
     process.env.USER_TYPE === 'ant' && isUndercover()
       ? null
       : `Claude Code is available as a CLI in the terminal, desktop app (Mac/Windows), web app (claude.ai/code), and IDE extensions (VS Code, JetBrains).`,
     process.env.USER_TYPE === 'ant' && isUndercover()
       ? null
-      : `Fast mode for Claude Code uses the same ${FRONTIER_MODEL_NAME} model with faster output. It does NOT switch to a different model. It can be toggled with /fast.`,
+      : `Fast mode for Claude Code uses the same ${FAST_MODE_MODEL_NAME} model with faster output. It does NOT switch to a different model. It can be toggled with /fast.`,
   ].filter(item => item !== null)
 
   return [
@@ -712,7 +712,9 @@ export async function computeSimpleEnvInfo(
 // @[MODEL LAUNCH]: Add a knowledge cutoff date for the new model.
 function getKnowledgeCutoff(modelId: string): string | null {
   const canonical = getCanonicalName(modelId)
-  if (canonical.includes('claude-sonnet-4-6')) {
+  if (canonical.includes('claude-opus-4-7')) {
+    return 'January 2026'
+  } else if (canonical.includes('claude-sonnet-4-6')) {
     return 'August 2025'
   } else if (canonical.includes('claude-opus-4-6')) {
     return 'May 2025'
