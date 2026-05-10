@@ -259,6 +259,7 @@ async function getOrCreateWorktree(
 
   const fetchEnv = { ...process.env, ...GIT_NO_PROMPT_ENV }
 
+  const baseRef = getInitialSettings().worktree?.baseRef ?? 'fresh'
   let baseBranch: string
   let baseSha: string | null = null
   if (options?.prNumber) {
@@ -274,6 +275,8 @@ async function getOrCreateWorktree(
       )
     }
     baseBranch = 'FETCH_HEAD'
+  } else if (baseRef === 'head') {
+    baseBranch = 'HEAD'
   } else {
     // If origin/<branch> already exists locally, skip fetch. In large repos
     // (210k files, 16M objects) fetch burns ~6-8s on a local commit-graph
@@ -302,8 +305,7 @@ async function getOrCreateWorktree(
     }
   }
 
-  // For the fetch/PR-fetch paths we still need the SHA — the fs-only resolveRef
-  // above only covers the "origin/<branch> already exists locally" case.
+  // Resolve the base SHA unless the fs-only origin/<branch> path already did.
   if (!baseSha) {
     const { stdout, code: shaCode } = await execFileNoThrowWithCwd(
       gitExe(),
