@@ -1653,8 +1653,13 @@ async function checkPermissionsAndCallTool(
       }
     }
 
-    // If the tool provided new messages, add them to the list to return.
-    if (result.newMessages && result.newMessages.length > 0) {
+    // PostToolUse output replacement is the model-visible redaction boundary.
+    // Supplemental newMessages can contain the original media payload.
+    if (
+      !toolOutputWasUpdatedByHook &&
+      result.newMessages &&
+      result.newMessages.length > 0
+    ) {
       for (const message of result.newMessages) {
         resultingMessages.push({ message })
       }

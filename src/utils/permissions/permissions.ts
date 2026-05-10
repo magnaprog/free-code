@@ -477,7 +477,7 @@ function blockPlanModeWrites(
   context: ToolUseContext,
 ): PermissionDenyDecision | null {
   if (context.getAppState().toolPermissionContext.mode !== 'plan') return null
-  if (tool.name === EXIT_PLAN_MODE_V2_TOOL_NAME) return null
+  if (tool.name === EXIT_PLAN_MODE_V2_TOOL_NAME && !tool.isMcp) return null
   try {
     const parsedInput = tool.inputSchema.safeParse(input)
     if (parsedInput.success && tool.isReadOnly(parsedInput.data)) return null

@@ -147,7 +147,7 @@ export type WorktreeSession = {
   sessionId: string
   tmuxSessionName?: string
   hookBased?: boolean
-  /** False for user-owned worktrees entered by path; keep their branch on remove. */
+  /** False for user-owned worktrees entered by path; ExitWorktree must not remove them. */
   deleteBranchOnRemove?: boolean
   /** How long worktree creation took (unset when resuming an existing worktree). */
   creationDurationMs?: number

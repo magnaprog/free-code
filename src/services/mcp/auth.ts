@@ -1804,13 +1804,9 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
    * On exchange failure, clears the id_token cache so the next interactive
    * auth does a fresh IdP login (the cached id_token is likely stale/revoked).
    *
-   * TODO(xaa-ga): add cross-process lockfile before GA. `_refreshInProgress`
-   * only dedupes within one process — two CC instances with expiring tokens
-   * both fire the full 4-request XAA chain and race on storage.update().
-   * Unlike inc-4829 the id_token is not single-use so both access_tokens
-   * stay valid (wasted round-trips + keychain write race, not brickage),
-   * but this is the shape CLAUDE.md flags under "Token/auth caching across
-   * process boundaries". Mirror refreshAuthorization()'s lockfile pattern.
+   * `_refreshInProgress` only dedupes within one process — two CC instances
+   * with expiring tokens can both fire the full 4-request XAA chain. The
+   * storage write below is still serialized with the OAuth storage lock.
    */
   private async xaaRefresh(): Promise<OAuthTokens | undefined> {
     const idp = getXaaIdpSettings()
@@ -1870,29 +1866,31 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
       // only spreads existing data; if no prior performMCPXaaAuth ran,
       // revokeServerTokens would later read tokenData.clientId as undefined
       // and send a client_id-less RFC 7009 request that strict ASes reject.
-      const storage = getSecureStorage()
-      const existingData = storage.read() || {}
       const serverKey = getServerKey(this.serverName, this.serverConfig)
-      const prev = existingData.mcpOAuth?.[serverKey]
-      storage.update({
-        ...existingData,
-        mcpOAuth: {
-          ...existingData.mcpOAuth,
-          [serverKey]: {
-            ...prev,
-            serverName: this.serverName,
-            serverUrl: this.serverConfig.url,
-            accessToken: tokens.access_token,
-            refreshToken: tokens.refresh_token ?? prev?.refreshToken,
-            expiresAt: Date.now() + (tokens.expires_in || 3600) * 1000,
-            scope: tokens.scope,
-            clientId,
-            clientSecret: clientConfig.clientSecret,
-            discoveryState: {
-              authorizationServerUrl: tokens.authorizationServerUrl,
+      await withMcpOAuthStorageLock(this.serverName, () => {
+        const storage = getSecureStorage()
+        const existingData = storage.read() || {}
+        const prev = existingData.mcpOAuth?.[serverKey]
+        storage.update({
+          ...existingData,
+          mcpOAuth: {
+            ...existingData.mcpOAuth,
+            [serverKey]: {
+              ...prev,
+              serverName: this.serverName,
+              serverUrl: this.serverConfig.url,
+              accessToken: tokens.access_token,
+              refreshToken: tokens.refresh_token ?? prev?.refreshToken,
+              expiresAt: Date.now() + (tokens.expires_in || 3600) * 1000,
+              scope: tokens.scope,
+              clientId,
+              clientSecret: clientConfig.clientSecret,
+              discoveryState: {
+                authorizationServerUrl: tokens.authorizationServerUrl,
+              },
             },
           },
-        },
+        })
       })
       return {
         access_token: tokens.access_token,
@@ -1952,15 +1950,17 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
     // Guard with !handleRedirection to avoid persisting during normal auth flows
     // (where the scope may come from metadata scopes_supported rather than a 401).
     if (this._scopes && !this.handleRedirection) {
-      const storage = getSecureStorage()
-      const existingData = storage.read() || {}
       const serverKey = getServerKey(this.serverName, this.serverConfig)
-      const existing = existingData.mcpOAuth?.[serverKey]
-      if (existing) {
-        existing.stepUpScope = this._scopes
-        storage.update(existingData)
-        logMCPDebug(this.serverName, `Persisted step-up scope: ${this._scopes}`)
-      }
+      await withMcpOAuthStorageLock(this.serverName, () => {
+        const storage = getSecureStorage()
+        const existingData = storage.read() || {}
+        const existing = existingData.mcpOAuth?.[serverKey]
+        if (existing) {
+          existing.stepUpScope = this._scopes
+          storage.update(existingData)
+          logMCPDebug(this.serverName, `Persisted step-up scope: ${this._scopes}`)
+        }
+      })
     }
 
     if (!this.handleRedirection) {
@@ -2024,43 +2024,45 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
   async invalidateCredentials(
     scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery',
   ): Promise<void> {
-    const storage = getSecureStorage()
-    const existingData = storage.read()
-    if (!existingData?.mcpOAuth) return
-
-    const serverKey = getServerKey(this.serverName, this.serverConfig)
-    const tokenData = existingData.mcpOAuth[serverKey]
-    if (!tokenData) return
-
-    switch (scope) {
-      case 'all':
-        delete existingData.mcpOAuth[serverKey]
-        break
-      case 'client':
-        tokenData.clientId = undefined
-        tokenData.clientSecret = undefined
-        break
-      case 'tokens':
-        tokenData.accessToken = ''
-        tokenData.refreshToken = undefined
-        tokenData.expiresAt = 0
-        break
-      case 'verifier':
-        this._codeVerifier = undefined
-        return
-      case 'discovery':
-        tokenData.discoveryState = undefined
-        tokenData.stepUpScope = undefined
-        break
+    if (scope === 'verifier') {
+      this._codeVerifier = undefined
+      return
     }
 
-    storage.update(existingData)
-    logMCPDebug(this.serverName, `Invalidated credentials (scope: ${scope})`)
+    const serverKey = getServerKey(this.serverName, this.serverConfig)
+    await withMcpOAuthStorageLock(this.serverName, () => {
+      const storage = getSecureStorage()
+      const existingData = storage.read()
+      if (!existingData?.mcpOAuth) return
+
+      const tokenData = existingData.mcpOAuth[serverKey]
+      if (!tokenData) return
+
+      switch (scope) {
+        case 'all':
+          delete existingData.mcpOAuth[serverKey]
+          break
+        case 'client':
+          tokenData.clientId = undefined
+          tokenData.clientSecret = undefined
+          break
+        case 'tokens':
+          tokenData.accessToken = ''
+          tokenData.refreshToken = undefined
+          tokenData.expiresAt = 0
+          break
+        case 'discovery':
+          tokenData.discoveryState = undefined
+          tokenData.stepUpScope = undefined
+          break
+      }
+
+      storage.update(existingData)
+      logMCPDebug(this.serverName, `Invalidated credentials (scope: ${scope})`)
+    })
   }
 
   async saveDiscoveryState(state: OAuthDiscoveryState): Promise<void> {
-    const storage = getSecureStorage()
-    const existingData = storage.read() || {}
     const serverKey = getServerKey(this.serverName, this.serverConfig)
 
     logMCPDebug(
@@ -2068,34 +2070,39 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
       `Saving discovery state (authServer: ${state.authorizationServerUrl})`,
     )
 
-    // Persist only the URLs, NOT the full metadata blobs.
-    // authorizationServerMetadata alone is ~1.5-2KB per MCP server (every
-    // grant type, PKCE method, endpoint the IdP supports). On macOS the
-    // keychain write goes through `security -i` which has a 4096-byte stdin
-    // line limit — with hex encoding that's ~2013 bytes of JSON total. Two
-    // OAuth MCP servers persisting full metadata overflows it, corrupting
-    // the credential store (#30337). The SDK re-fetches missing metadata
-    // with one HTTP GET on the next auth — see node_modules/.../auth.js
-    // `cachedState.authorizationServerMetadata ?? await discover...`.
-    const updatedData: SecureStorageData = {
-      ...existingData,
-      mcpOAuth: {
-        ...existingData.mcpOAuth,
-        [serverKey]: {
-          ...existingData.mcpOAuth?.[serverKey],
-          serverName: this.serverName,
-          serverUrl: this.serverConfig.url,
-          accessToken: existingData.mcpOAuth?.[serverKey]?.accessToken || '',
-          expiresAt: existingData.mcpOAuth?.[serverKey]?.expiresAt || 0,
-          discoveryState: {
-            authorizationServerUrl: state.authorizationServerUrl,
-            resourceMetadataUrl: state.resourceMetadataUrl,
+    await withMcpOAuthStorageLock(this.serverName, () => {
+      const storage = getSecureStorage()
+      const existingData = storage.read() || {}
+
+      // Persist only the URLs, NOT the full metadata blobs.
+      // authorizationServerMetadata alone is ~1.5-2KB per MCP server (every
+      // grant type, PKCE method, endpoint the IdP supports). On macOS the
+      // keychain write goes through `security -i` which has a 4096-byte stdin
+      // line limit — with hex encoding that's ~2013 bytes of JSON total. Two
+      // OAuth MCP servers persisting full metadata overflows it, corrupting
+      // the credential store (#30337). The SDK re-fetches missing metadata
+      // with one HTTP GET on the next auth — see node_modules/.../auth.js
+      // `cachedState.authorizationServerMetadata ?? await discover...`.
+      const updatedData: SecureStorageData = {
+        ...existingData,
+        mcpOAuth: {
+          ...existingData.mcpOAuth,
+          [serverKey]: {
+            ...existingData.mcpOAuth?.[serverKey],
+            serverName: this.serverName,
+            serverUrl: this.serverConfig.url,
+            accessToken: existingData.mcpOAuth?.[serverKey]?.accessToken || '',
+            expiresAt: existingData.mcpOAuth?.[serverKey]?.expiresAt || 0,
+            discoveryState: {
+              authorizationServerUrl: state.authorizationServerUrl,
+              resourceMetadataUrl: state.resourceMetadataUrl,
+            },
           },
         },
-      },
-    }
+      }
 
-    storage.update(updatedData)
+      storage.update(updatedData)
+    })
   }
 
   async discoveryState(): Promise<OAuthDiscoveryState | undefined> {

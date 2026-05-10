@@ -775,15 +775,24 @@ export function stripAllLeadingEnvVars(
   return stripped.trim()
 }
 
-const FIND_DANGEROUS_FLAGS = new Set([
-  '-exec',
-  '-execdir',
-  '-ok',
-  '-okdir',
-  '-delete',
-])
-const FIND_DANGEROUS_FLAGS_FALLBACK =
-  /(?:^|[ \t])-(?:exec|execdir|ok|okdir|delete)\b/
+const FIND_DANGEROUS_FLAG_NAMES = [
+  'exec',
+  'execdir',
+  'ok',
+  'okdir',
+  'delete',
+  'fprint',
+  'fprint0',
+  'fls',
+  'fprintf',
+  'files0-from',
+] as const
+const FIND_DANGEROUS_FLAGS = new Set(
+  FIND_DANGEROUS_FLAG_NAMES.map(flag => `-${flag}`),
+)
+const FIND_DANGEROUS_FLAGS_FALLBACK = new RegExp(
+  String.raw`(?:^|[ \t])-(?:${FIND_DANGEROUS_FLAG_NAMES.join('|')})\b`,
+)
 
 function normalizeFindFlagFallback(command: string): string {
   return command
@@ -879,8 +888,8 @@ const DOAS_SHORT_OPTIONS_WITH_VALUE = new Set(['a', 'C', 'u'])
 const PKEXEC_LONG_OPTIONS_WITH_VALUE = new Set(['user', 'process'])
 const PKEXEC_SHORT_OPTIONS_WITH_VALUE = new Set(['p', 'u'])
 const EXEC_SHORT_OPTIONS_WITH_VALUE = new Set(['a'])
-const WATCH_LONG_OPTIONS_WITH_VALUE = new Set(['interval'])
-const WATCH_SHORT_OPTIONS_WITH_VALUE = new Set(['n'])
+const WATCH_LONG_OPTIONS_WITH_VALUE = new Set(['interval', 'equexit'])
+const WATCH_SHORT_OPTIONS_WITH_VALUE = new Set(['n', 'q'])
 const IONICE_LONG_OPTIONS_WITH_VALUE = new Set(['class', 'classdata', 'pid'])
 const IONICE_SHORT_OPTIONS_WITH_VALUE = new Set(['c', 'n', 'p'])
 const NO_OPTIONS_WITH_VALUE = new Set<string>()
@@ -970,19 +979,37 @@ function stripExecWrappersForDeny(command: string): string {
             ? [splitCommand, ...tokens.slice(commandStart + 2)].join(' ')
             : command
         }
+        if (/^--split-string=/.test(token)) {
+          return [
+            token.slice('--split-string='.length),
+            ...tokens.slice(commandStart + 1),
+          ].join(' ')
+        }
         if (
           token === '-u' ||
-          /^(?:--(?:unset|ignore-signal|block-signal|default-signal))$/.test(
+          token === '-C' ||
+          token === '-P' ||
+          /^(?:--(?:unset|ignore-signal|block-signal|default-signal|chdir|path))$/.test(
             token,
           )
         ) {
           commandStart += 2
           continue
         }
-        if (token.startsWith('-')) {
+        if (
+          /^-(?:u|C|P).+/.test(token) ||
+          /^--(?:unset|ignore-signal|block-signal|default-signal|chdir|path)=/.test(
+            token,
+          )
+        ) {
           commandStart++
           continue
         }
+        if (token === '-i' || token === '-0' || token === '-v') {
+          commandStart++
+          continue
+        }
+        if (token.startsWith('-')) return command
         if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
           commandStart++
           continue
