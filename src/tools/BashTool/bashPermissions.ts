@@ -775,7 +775,28 @@ export function stripAllLeadingEnvVars(
   return stripped.trim()
 }
 
-const FIND_DANGEROUS_FLAGS = /(?:^|[ \t])\\?-(?:exec|execdir|ok|okdir|delete)\b/
+const FIND_DANGEROUS_FLAGS = new Set([
+  '-exec',
+  '-execdir',
+  '-ok',
+  '-okdir',
+  '-delete',
+])
+const FIND_DANGEROUS_FLAGS_FALLBACK =
+  /(?:^|[ \t])(?:\\?-|['"]-)(?:exec|execdir|ok|okdir|delete)\b/
+
+function findCommandHasDangerousFlag(command: string): boolean {
+  const parsed = tryParseShellCommand(command)
+  if (
+    parsed.success &&
+    parsed.tokens.every(token => typeof token === 'string')
+  ) {
+    return (parsed.tokens as string[]).some(token =>
+      FIND_DANGEROUS_FLAGS.has(token),
+    )
+  }
+  return FIND_DANGEROUS_FLAGS_FALLBACK.test(command)
+}
 
 function stripExecWrappersForDeny(command: string): string {
   const parsed = tryParseShellCommand(command)
@@ -1040,7 +1061,7 @@ function filterRulesByContentsMatchingInput(
                 if (
                   !stripAllEnvVars &&
                   bashRule.prefix === 'find' &&
-                  FIND_DANGEROUS_FLAGS.test(cmdToMatch)
+                  findCommandHasDangerousFlag(cmdToMatch)
                 ) {
                   return false
                 }

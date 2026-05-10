@@ -186,6 +186,7 @@ export const EnterWorktreeTool: Tool<InputSchema, Output> = buildTool({
         originalBranch: await getBranch(),
         originalHeadCommit: existingWorktree.headCommit,
         sessionId: getSessionId(),
+        deleteBranchOnRemove: false,
       }
 
       restoreWorktreeSession(worktreeSession)

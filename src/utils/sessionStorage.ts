@@ -2903,6 +2903,7 @@ export function saveWorktreeState(
         sessionId: worktreeSession.sessionId,
         tmuxSessionName: worktreeSession.tmuxSessionName,
         hookBased: worktreeSession.hookBased,
+        deleteBranchOnRemove: worktreeSession.deleteBranchOnRemove,
       }
     : null
   const project = getProject()

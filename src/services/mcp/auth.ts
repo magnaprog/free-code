@@ -112,9 +112,20 @@ async function withMcpOAuthStorageLock<T>(
       })
       break
     } catch (e: unknown) {
-      if (getErrnoCode(e) !== 'ELOCKED') break
+      if (getErrnoCode(e) !== 'ELOCKED') {
+        throw e
+      }
+      if (retry === MAX_LOCK_RETRIES - 1) {
+        throw new Error(
+          `Failed to acquire MCP OAuth storage lock after ${MAX_LOCK_RETRIES} attempts`,
+        )
+      }
       await sleep(1000 + Math.random() * 1000)
     }
+  }
+
+  if (!release) {
+    throw new Error('Failed to acquire MCP OAuth storage lock')
   }
 
   try {
@@ -608,7 +619,7 @@ export async function revokeServerTokens(
   }
 
   // Always clear local tokens, regardless of server-side revocation result.
-  clearServerTokensFromLocalStorage(serverName, serverConfig)
+  await clearServerTokensFromLocalStorage(serverName, serverConfig)
 
   // When re-authenticating, preserve step-up auth state (scope + discovery)
   // so the next performMCPOAuthFlow can use cached scope instead of
@@ -618,54 +629,59 @@ export async function revokeServerTokens(
     tokenData &&
     (tokenData.stepUpScope || tokenData.discoveryState)
   ) {
-    const freshData = storage.read() || {}
-    const updatedData: SecureStorageData = {
-      ...freshData,
-      mcpOAuth: {
-        ...freshData.mcpOAuth,
-        [serverKey]: {
-          ...freshData.mcpOAuth?.[serverKey],
-          serverName,
-          serverUrl: serverConfig.url,
-          accessToken: freshData.mcpOAuth?.[serverKey]?.accessToken ?? '',
-          expiresAt: freshData.mcpOAuth?.[serverKey]?.expiresAt ?? 0,
-          ...(tokenData.stepUpScope
-            ? { stepUpScope: tokenData.stepUpScope }
-            : {}),
-          ...(tokenData.discoveryState
-            ? {
-                // Strip legacy bulky metadata fields here too so users with
-                // existing overflowed blobs recover on next re-auth (#30337).
-                discoveryState: {
-                  authorizationServerUrl:
-                    tokenData.discoveryState.authorizationServerUrl,
-                  resourceMetadataUrl:
-                    tokenData.discoveryState.resourceMetadataUrl,
-                },
-              }
-            : {}),
+    await withMcpOAuthStorageLock(serverName, () => {
+      const freshStorage = getSecureStorage()
+      const freshData = freshStorage.read() || {}
+      const updatedData: SecureStorageData = {
+        ...freshData,
+        mcpOAuth: {
+          ...freshData.mcpOAuth,
+          [serverKey]: {
+            ...freshData.mcpOAuth?.[serverKey],
+            serverName,
+            serverUrl: serverConfig.url,
+            accessToken: freshData.mcpOAuth?.[serverKey]?.accessToken ?? '',
+            expiresAt: freshData.mcpOAuth?.[serverKey]?.expiresAt ?? 0,
+            ...(tokenData.stepUpScope
+              ? { stepUpScope: tokenData.stepUpScope }
+              : {}),
+            ...(tokenData.discoveryState
+              ? {
+                  // Strip legacy bulky metadata fields here too so users with
+                  // existing overflowed blobs recover on next re-auth (#30337).
+                  discoveryState: {
+                    authorizationServerUrl:
+                      tokenData.discoveryState.authorizationServerUrl,
+                    resourceMetadataUrl:
+                      tokenData.discoveryState.resourceMetadataUrl,
+                  },
+                }
+              : {}),
+          },
         },
-      },
-    }
-    storage.update(updatedData)
+      }
+      freshStorage.update(updatedData)
+    })
     logMCPDebug(serverName, 'Preserved step-up auth state across revocation')
   }
 }
 
-export function clearServerTokensFromLocalStorage(
+export async function clearServerTokensFromLocalStorage(
   serverName: string,
   serverConfig: McpSSEServerConfig | McpHTTPServerConfig,
-): void {
-  const storage = getSecureStorage()
-  const existingData = storage.read()
-  if (!existingData?.mcpOAuth) return
+): Promise<void> {
+  await withMcpOAuthStorageLock(serverName, () => {
+    const storage = getSecureStorage()
+    const existingData = storage.read()
+    if (!existingData?.mcpOAuth) return
 
-  const serverKey = getServerKey(serverName, serverConfig)
-  if (existingData.mcpOAuth[serverKey]) {
-    delete existingData.mcpOAuth[serverKey]
-    storage.update(existingData)
-    logMCPDebug(serverName, 'Cleared stored tokens')
-  }
+    const serverKey = getServerKey(serverName, serverConfig)
+    if (existingData.mcpOAuth[serverKey]) {
+      delete existingData.mcpOAuth[serverKey]
+      storage.update(existingData)
+      logMCPDebug(serverName, 'Cleared stored tokens')
+    }
+  })
 }
 
 type WWWAuthenticateParams = {
@@ -828,33 +844,35 @@ async function performMCPXaaAuth(
     // Save tokens via the same storage path as normal OAuth. We write directly
     // (instead of ClaudeAuthProvider.saveTokens) to avoid instantiating the
     // whole provider just to write the same keys.
-    const storage = getSecureStorage()
-    const existingData = storage.read() || {}
     const serverKey = getServerKey(serverName, serverConfig)
-    const prev = existingData.mcpOAuth?.[serverKey]
-    storage.update({
-      ...existingData,
-      mcpOAuth: {
-        ...existingData.mcpOAuth,
-        [serverKey]: {
-          ...prev,
-          serverName,
-          serverUrl: serverConfig.url,
-          accessToken: tokens.access_token,
-          // AS may omit refresh_token on jwt-bearer — preserve any existing one
-          refreshToken: tokens.refresh_token ?? prev?.refreshToken,
-          expiresAt: Date.now() + (tokens.expires_in || 3600) * 1000,
-          scope: tokens.scope,
-          clientId,
-          clientSecret,
-          // Persist the AS URL so _doRefresh and revokeServerTokens can locate
-          // the token/revocation endpoints when MCP URL ≠ AS URL (the common
-          // XAA topology).
-          discoveryState: {
-            authorizationServerUrl: tokens.authorizationServerUrl,
+    await withMcpOAuthStorageLock(serverName, () => {
+      const storage = getSecureStorage()
+      const existingData = storage.read() || {}
+      const prev = existingData.mcpOAuth?.[serverKey]
+      storage.update({
+        ...existingData,
+        mcpOAuth: {
+          ...existingData.mcpOAuth,
+          [serverKey]: {
+            ...prev,
+            serverName,
+            serverUrl: serverConfig.url,
+            accessToken: tokens.access_token,
+            // AS may omit refresh_token on jwt-bearer — preserve any existing one
+            refreshToken: tokens.refresh_token ?? prev?.refreshToken,
+            expiresAt: Date.now() + (tokens.expires_in || 3600) * 1000,
+            scope: tokens.scope,
+            clientId,
+            clientSecret,
+            // Persist the AS URL so _doRefresh and revokeServerTokens can locate
+            // the token/revocation endpoints when MCP URL ≠ AS URL (the common
+            // XAA topology).
+            discoveryState: {
+              authorizationServerUrl: tokens.authorizationServerUrl,
+            },
           },
         },
-      },
+      })
     })
 
     logMCPDebug(serverName, 'XAA: tokens saved')
@@ -948,7 +966,7 @@ export async function performMCPOAuthFlow(
   // Clear any existing stored credentials to ensure fresh client registration.
   // Note: this deletes the entire entry (including discoveryState/stepUpScope),
   // but we already read the cached values above.
-  clearServerTokensFromLocalStorage(serverName, serverConfig)
+  await clearServerTokensFromLocalStorage(serverName, serverConfig)
 
   // Use cached step-up scope and resource metadata URL if available.
   // The transport-attached auth provider caches these when it receives a
@@ -1342,14 +1360,16 @@ export async function performMCPOAuthFlow(
         error.errorCode === 'invalid_client' &&
         error.message.includes('Client not found')
       ) {
-        const storage = getSecureStorage()
-        const existingData = storage.read() || {}
-        const serverKey = getServerKey(serverName, serverConfig)
-        if (existingData.mcpOAuth?.[serverKey]) {
-          delete existingData.mcpOAuth[serverKey].clientId
-          delete existingData.mcpOAuth[serverKey].clientSecret
-          storage.update(existingData)
-        }
+        await withMcpOAuthStorageLock(serverName, () => {
+          const storage = getSecureStorage()
+          const existingData = storage.read() || {}
+          const serverKey = getServerKey(serverName, serverConfig)
+          if (existingData.mcpOAuth?.[serverKey]) {
+            delete existingData.mcpOAuth[serverKey].clientId
+            delete existingData.mcpOAuth[serverKey].clientSecret
+            storage.update(existingData)
+          }
+        })
       }
     }
 
@@ -1548,28 +1568,30 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
   async saveClientInformation(
     clientInformation: OAuthClientInformationFull,
   ): Promise<void> {
-    const storage = getSecureStorage()
-    const existingData = storage.read() || {}
     const serverKey = getServerKey(this.serverName, this.serverConfig)
 
-    const updatedData: SecureStorageData = {
-      ...existingData,
-      mcpOAuth: {
-        ...existingData.mcpOAuth,
-        [serverKey]: {
-          ...existingData.mcpOAuth?.[serverKey],
-          serverName: this.serverName,
-          serverUrl: this.serverConfig.url,
-          clientId: clientInformation.client_id,
-          clientSecret: clientInformation.client_secret,
-          // Provide default values for required fields if not present
-          accessToken: existingData.mcpOAuth?.[serverKey]?.accessToken || '',
-          expiresAt: existingData.mcpOAuth?.[serverKey]?.expiresAt || 0,
+    await withMcpOAuthStorageLock(this.serverName, () => {
+      const storage = getSecureStorage()
+      const existingData = storage.read() || {}
+      const updatedData: SecureStorageData = {
+        ...existingData,
+        mcpOAuth: {
+          ...existingData.mcpOAuth,
+          [serverKey]: {
+            ...existingData.mcpOAuth?.[serverKey],
+            serverName: this.serverName,
+            serverUrl: this.serverConfig.url,
+            clientId: clientInformation.client_id,
+            clientSecret: clientInformation.client_secret,
+            // Provide default values for required fields if not present
+            accessToken: existingData.mcpOAuth?.[serverKey]?.accessToken || '',
+            expiresAt: existingData.mcpOAuth?.[serverKey]?.expiresAt || 0,
+          },
         },
-      },
-    }
+      }
 
-    storage.update(updatedData)
+      storage.update(updatedData)
+    })
   }
 
   async tokens(): Promise<OAuthTokens | undefined> {

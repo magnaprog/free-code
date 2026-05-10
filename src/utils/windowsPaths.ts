@@ -1,25 +1,20 @@
 import { execFileSync } from 'child_process'
+import { existsSync } from 'fs'
 import memoize from 'lodash-es/memoize.js'
 import * as path from 'path'
 import * as pathWin32 from 'path/win32'
 import { getCwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
-import { execSync_DEPRECATED } from './execSyncWrapper.js'
 import { memoizeWithLRU } from './memoize.js'
 import { getPlatform } from './platform.js'
 
 /**
- * Check if a file or directory exists on Windows using the dir command
+ * Check if a file or directory exists without invoking a shell.
  * @param path - The path to check
  * @returns true if the path exists, false otherwise
  */
 function checkPathExists(path: string): boolean {
-  try {
-    execSync_DEPRECATED(`dir "${path}"`, { stdio: 'pipe' })
-    return true
-  } catch {
-    return false
-  }
+  return existsSync(path)
 }
 
 function isInvalidCommandName(command: string): boolean {

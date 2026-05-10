@@ -147,6 +147,8 @@ export type WorktreeSession = {
   sessionId: string
   tmuxSessionName?: string
   hookBased?: boolean
+  /** False for user-owned worktrees entered by path; keep their branch on remove. */
+  deleteBranchOnRemove?: boolean
   /** How long worktree creation took (unset when resuming an existing worktree). */
   creationDurationMs?: number
   /** True if git sparse-checkout was applied via settings.worktree.sparsePaths. */
@@ -818,8 +820,13 @@ export async function cleanupWorktree(): Promise<void> {
   }
 
   try {
-    const { worktreePath, originalCwd, worktreeBranch, hookBased } =
-      currentWorktreeSession
+    const {
+      worktreePath,
+      originalCwd,
+      worktreeBranch,
+      hookBased,
+      deleteBranchOnRemove,
+    } = currentWorktreeSession
 
     // Change back to original directory first
     process.chdir(originalCwd)
@@ -865,8 +872,8 @@ export async function cleanupWorktree(): Promise<void> {
       activeWorktreeSession: undefined,
     }))
 
-    // Delete the temporary worktree branch (git-based only)
-    if (!hookBased && worktreeBranch) {
+    // Delete only branches created for this session's managed worktrees.
+    if (!hookBased && worktreeBranch && deleteBranchOnRemove !== false) {
       // Wait a bit to ensure git has released all locks
       await sleep(100)
 
