@@ -2309,8 +2309,12 @@ export function normalizeMessagesForAPI(
   // response and its retry). Without this, consecutive assistant messages with
   // mismatched thinking block signatures cause API 400 errors.
   const withFilteredOrphans = filterOrphanedThinkingOnlyMessages(relocated)
+  const withFilteredPostToolUseThinking = filterThinkingAfterToolUse(
+    withFilteredOrphans,
+  )
 
-  // Order matters: strip trailing thinking first, THEN filter whitespace-only
+  // Order matters: strip invalid post-tool-use thinking, then trailing
+  // thinking, THEN filter whitespace-only
   // messages. The reverse order has a bug: a message like [text("\n\n"), thinking("...")]
   // survives the whitespace filter (has a non-text block), then thinking stripping
   // removes the thinking block, leaving [text("\n\n")] — which the API rejects.
@@ -2318,8 +2322,9 @@ export function normalizeMessagesForAPI(
   // These multi-pass normalizations are inherently fragile — each pass can create
   // conditions a prior pass was meant to handle. Consider unifying into a single
   // pass that cleans content, then validates in one shot.
-  const withFilteredThinking =
-    filterTrailingThinkingFromLastAssistant(withFilteredOrphans)
+  const withFilteredThinking = filterTrailingThinkingFromLastAssistant(
+    withFilteredPostToolUseThinking,
+  )
   const withFilteredWhitespace =
     filterWhitespaceOnlyAssistantMessages(withFilteredThinking)
   const withNonEmpty = ensureNonEmptyAssistantContent(withFilteredWhitespace)
@@ -4778,6 +4783,38 @@ function isThinkingBlock(
  * Filter trailing thinking blocks from the last message if it's an assistant message.
  * The API doesn't allow assistant messages to end with thinking/redacted_thinking blocks.
  */
+function filterThinkingAfterToolUse(
+  messages: (UserMessage | AssistantMessage)[],
+): (UserMessage | AssistantMessage)[] {
+  return messages.map(message => {
+    if (message.type !== 'assistant') return message
+
+    const content = message.message.content
+    let lastToolUseIndex = -1
+    for (let i = content.length - 1; i >= 0; i--) {
+      if (content[i]?.type === 'tool_use') {
+        lastToolUseIndex = i
+        break
+      }
+    }
+    if (lastToolUseIndex === -1) return message
+
+    const filtered = content.filter((block, index) => {
+      if (index <= lastToolUseIndex) return true
+      return !isThinkingBlock(block)
+    })
+    if (filtered.length === content.length) return message
+
+    return {
+      ...message,
+      message: {
+        ...message.message,
+        content: filtered,
+      },
+    }
+  })
+}
+
 function filterTrailingThinkingFromLastAssistant(
   messages: (UserMessage | AssistantMessage)[],
 ): (UserMessage | AssistantMessage)[] {
