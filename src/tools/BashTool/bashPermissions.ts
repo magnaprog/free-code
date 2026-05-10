@@ -864,6 +864,8 @@ const SUDO_SHORT_OPTIONS_WITH_VALUE = new Set([
   'u',
   'U',
   'g',
+  // sudo -h is ambiguous across implementations (host vs help). Treat it as
+  // value-taking so `sudo -h host cmd` exposes cmd; bare help does not execute.
   'h',
   'C',
   'D',
@@ -873,8 +875,9 @@ const SUDO_SHORT_OPTIONS_WITH_VALUE = new Set([
   'T',
 ])
 const DOAS_LONG_OPTIONS_WITH_VALUE = new Set(['config', 'user'])
-const DOAS_SHORT_OPTIONS_WITH_VALUE = new Set(['C', 'u'])
+const DOAS_SHORT_OPTIONS_WITH_VALUE = new Set(['a', 'C', 'u'])
 const PKEXEC_LONG_OPTIONS_WITH_VALUE = new Set(['user', 'process'])
+const PKEXEC_SHORT_OPTIONS_WITH_VALUE = new Set(['p', 'u'])
 const EXEC_SHORT_OPTIONS_WITH_VALUE = new Set(['a'])
 const WATCH_LONG_OPTIONS_WITH_VALUE = new Set(['interval'])
 const WATCH_SHORT_OPTIONS_WITH_VALUE = new Set(['n'])
@@ -882,6 +885,11 @@ const IONICE_LONG_OPTIONS_WITH_VALUE = new Set(['class', 'classdata', 'pid'])
 const IONICE_SHORT_OPTIONS_WITH_VALUE = new Set(['c', 'n', 'p'])
 const NO_OPTIONS_WITH_VALUE = new Set<string>()
 
+// Scope: strip simple argv-preserving exec wrappers for deny/ask matching.
+// stripSafeWrappers handles time/timeout/nice/stdbuf/nohup separately.
+// Intentionally out of scope: shell/script/remote interpreters (`sh -c`,
+// `bash -c`, `ssh host cmd`, `xargs -I`, `busybox cmd`, `script`, `firejail`),
+// where safely extracting the executed command requires tool-specific parsing.
 function stripExecWrappersForDeny(command: string): string {
   const parsed = tryParseShellCommand(command)
   if (
@@ -920,7 +928,7 @@ function stripExecWrappersForDeny(command: string): string {
         tokens,
         commandStart,
         PKEXEC_LONG_OPTIONS_WITH_VALUE,
-        NO_OPTIONS_WITH_VALUE,
+        PKEXEC_SHORT_OPTIONS_WITH_VALUE,
       )
       break
     }

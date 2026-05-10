@@ -312,16 +312,31 @@ type HookInputContext = {
 }
 
 function getHookEffort(context?: HookInputContext): { level: string } {
+  let effortValue: EffortValue | undefined
   try {
-    const effortValue = context?.getAppState?.().effortValue
+    effortValue = context?.getAppState?.().effortValue
+  } catch {
+    effortValue = undefined
+  }
+
+  let initialEffort: EffortValue | undefined
+  if (effortValue === undefined) {
+    try {
+      initialEffort = getInitialEffortSetting()
+    } catch {
+      initialEffort = undefined
+    }
+  }
+
+  try {
     return {
       level: getCurrentEffortLevel(
         context?.options?.mainLoopModel ?? getMainLoopModel(),
-        effortValue ?? getInitialEffortSetting(),
+        effortValue ?? initialEffort,
       ),
     }
   } catch {
-    return { level: 'high' }
+    return { level: 'unknown' }
   }
 }
 
