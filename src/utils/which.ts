@@ -1,55 +1,35 @@
+import { execFileSync } from 'child_process'
 import { execa } from 'execa'
-import { execSync_DEPRECATED } from './execSyncWrapper.js'
+
+function isInvalidCommandName(command: string): boolean {
+  return command.length === 0 || command.includes('\0') || /[\r\n]/.test(command)
+}
 
 async function whichNodeAsync(command: string): Promise<string | null> {
-  if (process.platform === 'win32') {
-    // On Windows, use where.exe and return the first result
-    const result = await execa(`where.exe ${command}`, {
-      shell: true,
-      stderr: 'ignore',
-      reject: false,
-    })
-    if (result.exitCode !== 0 || !result.stdout) {
-      return null
-    }
-    // where.exe returns multiple paths separated by newlines, return the first
-    return result.stdout.trim().split(/\r?\n/)[0] || null
-  }
+  if (isInvalidCommandName(command)) return null
 
-  // On POSIX systems (macOS, Linux, WSL), use which
-  // Cross-platform safe: Windows is handled above
-  // eslint-disable-next-line custom-rules/no-cross-platform-process-issues
-  const result = await execa(`which ${command}`, {
-    shell: true,
+  const bin = process.platform === 'win32' ? 'where.exe' : 'which'
+  const result = await execa(bin, [command], {
+    shell: false,
     stderr: 'ignore',
     reject: false,
   })
   if (result.exitCode !== 0 || !result.stdout) {
     return null
   }
-  return result.stdout.trim()
+  return result.stdout.trim().split(/\r?\n/)[0] || null
 }
 
 function whichNodeSync(command: string): string | null {
-  if (process.platform === 'win32') {
-    try {
-      const result = execSync_DEPRECATED(`where.exe ${command}`, {
-        encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      })
-      const output = result.toString().trim()
-      return output.split(/\r?\n/)[0] || null
-    } catch {
-      return null
-    }
-  }
+  if (isInvalidCommandName(command)) return null
 
+  const bin = process.platform === 'win32' ? 'where.exe' : 'which'
   try {
-    const result = execSync_DEPRECATED(`which ${command}`, {
+    const result = execFileSync(bin, [command], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
     })
-    return result.toString().trim() || null
+    return result.toString().trim().split(/\r?\n/)[0] || null
   } catch {
     return null
   }
@@ -69,7 +49,7 @@ const bunWhich =
  * @returns The full path to the command, or null if not found
  */
 export const which: (command: string) => Promise<string | null> = bunWhich
-  ? async command => bunWhich(command)
+  ? async command => (isInvalidCommandName(command) ? null : bunWhich(command))
   : whichNodeAsync
 
 /**
@@ -78,5 +58,6 @@ export const which: (command: string) => Promise<string | null> = bunWhich
  * @param command - The command name to look up
  * @returns The full path to the command, or null if not found
  */
-export const whichSync: (command: string) => string | null =
-  bunWhich ?? whichNodeSync
+export const whichSync: (command: string) => string | null = bunWhich
+  ? command => (isInvalidCommandName(command) ? null : bunWhich(command))
+  : whichNodeSync

@@ -1,3 +1,4 @@
+import { execFileSync } from 'child_process'
 import memoize from 'lodash-es/memoize.js'
 import * as path from 'path'
 import * as pathWin32 from 'path/win32'
@@ -19,6 +20,10 @@ function checkPathExists(path: string): boolean {
   } catch {
     return false
   }
+}
+
+function isInvalidCommandName(command: string): boolean {
+  return command.length === 0 || command.includes('\0') || /[\r\n]/.test(command)
 }
 
 /**
@@ -44,16 +49,18 @@ function findExecutable(executable: string): string | null {
     }
   }
 
+  if (isInvalidCommandName(executable)) return null
+
   // Fall back to where.exe
   try {
-    const result = execSync_DEPRECATED(`where.exe ${executable}`, {
+    const result = execFileSync('where.exe', [executable], {
       stdio: 'pipe',
       encoding: 'utf8',
     }).trim()
 
     // SECURITY: Filter out any results from the current directory
     // to prevent executing malicious git.bat/cmd/exe files
-    const paths = result.split('\r\n').filter(Boolean)
+    const paths = result.split(/\r?\n/).filter(Boolean)
     const cwd = getCwd().toLowerCase()
 
     for (const candidatePath of paths) {
