@@ -1599,11 +1599,6 @@ async function checkPermissionsAndCallTool(
       if ('updatedToolOutput' in hookResult) {
         toolOutput = hookResult.updatedToolOutput
         toolOutputWasUpdatedByHook = true
-      } else if ('updatedMCPToolOutput' in hookResult) {
-        if (isMcpTool(tool)) {
-          toolOutput = hookResult.updatedMCPToolOutput
-          toolOutputWasUpdatedByHook = true
-        }
       } else {
         hookResults.push(hookResult)
         if (hookResult.message.type === 'attachment') {
@@ -1804,6 +1799,7 @@ async function checkPermissionsAndCallTool(
       requestId,
       mcpServerType,
       mcpServerBaseUrl,
+      durationMs,
     )) {
       hookMessages.push(hookResult)
     }

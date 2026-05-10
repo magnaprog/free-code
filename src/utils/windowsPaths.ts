@@ -6,6 +6,7 @@ import * as pathWin32 from 'path/win32'
 import { getCwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
 import { memoizeWithLRU } from './memoize.js'
+import { isInvalidCommandName } from './which.js'
 import { getPlatform } from './platform.js'
 
 /**
@@ -15,10 +16,6 @@ import { getPlatform } from './platform.js'
  */
 function checkPathExists(path: string): boolean {
   return existsSync(path)
-}
-
-function isInvalidCommandName(command: string): boolean {
-  return command.length === 0 || command.includes('\0') || /[\r\n]/.test(command)
 }
 
 /**

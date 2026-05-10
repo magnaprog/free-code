@@ -1,7 +1,7 @@
 import { execFileSync } from 'child_process'
 import { execa } from 'execa'
 
-function isInvalidCommandName(command: string): boolean {
+export function isInvalidCommandName(command: string): boolean {
   return command.length === 0 || command.includes('\0') || /[\r\n]/.test(command)
 }
 
