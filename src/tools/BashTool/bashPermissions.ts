@@ -775,6 +775,144 @@ export function stripAllLeadingEnvVars(
   return stripped.trim()
 }
 
+function stripExecWrappersForDeny(command: string): string {
+  const parsed = tryParseShellCommand(command)
+  if (
+    !parsed.success ||
+    parsed.tokens.some(token => typeof token !== 'string')
+  ) {
+    return command
+  }
+
+  const tokens = parsed.tokens as string[]
+  if (tokens.length < 2) return command
+
+  let commandStart = 1
+
+  switch (tokens[0]) {
+    case 'sudo': {
+      while (commandStart < tokens.length) {
+        const token = tokens[commandStart]!
+        if (token === '--') {
+          commandStart++
+          break
+        }
+        if (!token.startsWith('-') || token === '-') break
+        if (
+          /^(?:--(?:user|group|host|chdir|role|type|prompt|login-class|close-from|command-timeout))$/.test(
+            token,
+          ) || /^-[A-Za-z]*[uUgghCDprtT]$/.test(token)
+        ) {
+          commandStart += 2
+          continue
+        }
+        commandStart++
+      }
+      break
+    }
+    case 'env': {
+      while (commandStart < tokens.length) {
+        const token = tokens[commandStart]!
+        if (token === '--') {
+          commandStart++
+          break
+        }
+        if (token === '-S' || token === '--split-string') {
+          const splitCommand = tokens[commandStart + 1]
+          return splitCommand
+            ? [splitCommand, ...tokens.slice(commandStart + 2)].join(' ')
+            : command
+        }
+        if (
+          token === '-u' ||
+          /^(?:--(?:unset|ignore-signal|block-signal|default-signal))$/.test(
+            token,
+          )
+        ) {
+          commandStart += 2
+          continue
+        }
+        if (token.startsWith('-')) {
+          commandStart++
+          continue
+        }
+        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
+          commandStart++
+          continue
+        }
+        break
+      }
+      break
+    }
+    case 'watch': {
+      while (commandStart < tokens.length) {
+        const token = tokens[commandStart]!
+        if (token === '--') {
+          commandStart++
+          break
+        }
+        if (token === '-n' || token === '--interval') {
+          commandStart += 2
+          continue
+        }
+        if (token.startsWith('-')) {
+          commandStart++
+          continue
+        }
+        break
+      }
+      break
+    }
+    case 'ionice': {
+      while (commandStart < tokens.length) {
+        const token = tokens[commandStart]!
+        if (token === '--') {
+          commandStart++
+          break
+        }
+        if (
+          token === '-c' ||
+          token === '--class' ||
+          token === '-n' ||
+          token === '--classdata' ||
+          token === '-p' ||
+          token === '--pid'
+        ) {
+          commandStart += 2
+          continue
+        }
+        if (token.startsWith('-')) {
+          commandStart++
+          continue
+        }
+        break
+      }
+      break
+    }
+    case 'setsid': {
+      while (commandStart < tokens.length) {
+        const token = tokens[commandStart]!
+        if (token === '--') {
+          commandStart++
+          break
+        }
+        if (token.startsWith('-')) {
+          commandStart++
+          continue
+        }
+        break
+      }
+      break
+    }
+    default:
+      return command
+  }
+
+  return commandStart < tokens.length
+    ? tokens.slice(commandStart).join(' ')
+    : command
+}
+
 function filterRulesByContentsMatchingInput(
   input: z.infer<typeof BashTool.inputSchema>,
   rules: Map<string, PermissionRule>,
@@ -846,6 +984,12 @@ function filterRulesByContentsMatchingInput(
         if (!seen.has(wrapperStripped)) {
           commandsToTry.push(wrapperStripped)
           seen.add(wrapperStripped)
+        }
+        // Try stripping exec wrappers for deny/ask matching only
+        const execStripped = stripExecWrappersForDeny(cmd)
+        if (!seen.has(execStripped)) {
+          commandsToTry.push(execStripped)
+          seen.add(execStripped)
         }
       }
       startIdx = endIdx
