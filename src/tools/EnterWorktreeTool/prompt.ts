@@ -1,5 +1,5 @@
 export function getEnterWorktreeToolPrompt(): string {
-  return `Use this tool ONLY when the user explicitly asks to work in a worktree. This tool creates an isolated git worktree and switches the current session into it.
+  return `Use this tool ONLY when the user explicitly asks to work in a worktree. This tool creates an isolated git worktree or switches into an existing worktree and moves the current session into it.
 
 ## When to Use
 
@@ -18,13 +18,14 @@ export function getEnterWorktreeToolPrompt(): string {
 
 ## Behavior
 
-- In a git repository: creates a new git worktree inside \`.claude/worktrees/\` with a new branch based on HEAD
-- Outside a git repository: delegates to WorktreeCreate/WorktreeRemove hooks for VCS-agnostic isolation
-- Switches the session's working directory to the new worktree
+- In a git repository: creates a new git worktree inside \`.claude/worktrees/\` with a new branch based on HEAD, or switches into an existing git worktree when \`path\` is provided
+- Outside a git repository: delegates to WorktreeCreate/WorktreeRemove hooks for VCS-agnostic isolation when creating a new worktree
+- Switches the session's working directory to the worktree
 - Use ExitWorktree to leave the worktree mid-session (keep or remove). On session exit, if still in the worktree, the user will be prompted to keep or remove it
 
 ## Parameters
 
 - \`name\` (optional): A name for the worktree. If not provided, a random name is generated.
+- \`path\` (optional): Absolute path to an existing git worktree of this repository. Specify \`name\` or \`path\`, not both.
 `
 }
