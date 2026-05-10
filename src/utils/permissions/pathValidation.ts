@@ -1,6 +1,6 @@
 import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
-import { dirname, isAbsolute, resolve } from 'path'
+import { basename, dirname, isAbsolute, resolve } from 'path'
 import type { ToolPermissionContext } from '../../Tool.js'
 import { getPlatform } from '../../utils/platform.js'
 import {
@@ -360,6 +360,13 @@ export function isDangerousRemovalPath(resolvedPath: string): boolean {
   }
 
   if (WINDOWS_DRIVE_CHILD_REGEX.test(normalizedPath)) {
+    return true
+  }
+
+  if (
+    parentDir === '/private' &&
+    ['etc', 'var', 'tmp'].includes(basename(normalizedPath))
+  ) {
     return true
   }
 
