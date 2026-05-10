@@ -113,6 +113,7 @@ const MAX_URL_LENGTH = 2000
 // memory, and network usage for the Web Fetch tool can prevent a single
 // request or user from overwhelming the system."
 const MAX_HTTP_CONTENT_LENGTH = 10 * 1024 * 1024
+const MAX_HTML_LENGTH_FOR_MARKDOWN = 2 * 1024 * 1024
 
 // Timeout for the main HTTP fetch request (60 seconds).
 // Prevents hanging indefinitely on slow/unresponsive servers.
@@ -465,7 +466,15 @@ export async function getURLMarkdownContent(
   let markdownContent: string
   let contentBytes: number
   if (contentType.includes('text/html')) {
-    markdownContent = (await getTurndownService()).turndown(htmlContent)
+    const cleanedHtml = htmlContent
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+    const htmlForConversion =
+      cleanedHtml.length > MAX_HTML_LENGTH_FOR_MARKDOWN
+        ? cleanedHtml.slice(0, MAX_HTML_LENGTH_FOR_MARKDOWN)
+        : cleanedHtml
+
+    markdownContent = (await getTurndownService()).turndown(htmlForConversion)
     contentBytes = Buffer.byteLength(markdownContent)
   } else {
     // It's not HTML - just use it raw. The decoded string's UTF-8 byte
