@@ -944,6 +944,17 @@ function validateOutputRedirections(
     }
   }
   for (const { target } of redirections) {
+    if (target.startsWith('/dev/tcp/') || target.startsWith('/dev/udp/')) {
+      return {
+        behavior: 'ask',
+        message: 'Redirect to network pseudo-device requires approval',
+        decisionReason: {
+          type: 'safetyCheck',
+          reason: 'Network pseudo-device redirect',
+        },
+      }
+    }
+
     // /dev/null is always safe - it discards output
     if (target === '/dev/null') {
       continue
