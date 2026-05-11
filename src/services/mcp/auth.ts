@@ -39,7 +39,10 @@ import * as lockfile from '../../utils/lockfile.js'
 import { logMCPDebug } from '../../utils/log.js'
 import { getPlatform } from '../../utils/platform.js'
 import { getSecureStorage } from '../../utils/secureStorage/index.js'
-import { clearKeychainCache } from '../../utils/secureStorage/macOsKeychainHelpers.js'
+import {
+  clearKeychainCache,
+  withStrictKeychainReadFailures,
+} from '../../utils/secureStorage/macOsKeychainHelpers.js'
 import type { SecureStorageData } from '../../utils/secureStorage/types.js'
 import { sleep } from '../../utils/sleep.js'
 import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
@@ -93,10 +96,12 @@ type MCPOAuthFlowErrorReason =
 
 const MAX_LOCK_RETRIES = 5
 
+type SyncOAuthStorageMutation<T> = T extends PromiseLike<unknown> ? never : T
+
 async function withMcpOAuthStorageLock<T>(
   serverName: string,
-  fn: () => T | Promise<T>,
-): Promise<T> {
+  fn: () => SyncOAuthStorageMutation<T>,
+): Promise<SyncOAuthStorageMutation<T>> {
   const claudeDir = getClaudeConfigHomeDir()
   await mkdir(claudeDir, { recursive: true })
   const lockfilePath = join(claudeDir, 'mcp-oauth-storage.lock')
@@ -130,9 +135,10 @@ async function withMcpOAuthStorageLock<T>(
 
   try {
     // Locked read-modify-write paths must bypass macOS's 30s keychain read
-    // cache, or a later locked writer can merge against stale data.
+    // cache, or a later locked writer can merge against stale data. If that
+    // fresh read fails, fail closed instead of merging against fallback `{}`.
     clearKeychainCache()
-    return await fn()
+    return withStrictKeychainReadFailures(fn)
   } finally {
     if (release) {
       await release().catch(() => {

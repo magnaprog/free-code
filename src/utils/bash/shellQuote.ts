@@ -21,6 +21,162 @@ export type ShellQuoteResult =
   | { success: true; quoted: string }
   | { success: false; error: string }
 
+export function decodeBashAnsiCString(content: string): string | null {
+  let decoded = ''
+  for (let i = 0; i < content.length; i++) {
+    const char = content[i]!
+    if (char !== '\\') {
+      decoded += char
+      continue
+    }
+    const next = content[++i]
+    if (next === undefined) return null
+    switch (next) {
+      case 'a':
+        decoded += '\x07'
+        break
+      case 'b':
+        decoded += '\b'
+        break
+      case 'e':
+      case 'E':
+        decoded += '\x1b'
+        break
+      case 'f':
+        decoded += '\f'
+        break
+      case 'n':
+        decoded += '\n'
+        break
+      case 'r':
+        decoded += '\r'
+        break
+      case 't':
+        decoded += '\t'
+        break
+      case 'v':
+        decoded += '\v'
+        break
+      case '\\':
+      case "'":
+      case '"':
+      case '?':
+        decoded += next
+        break
+      case 'x': {
+        const hex = content.slice(i + 1).match(/^[0-9a-fA-F]{1,2}/)?.[0]
+        if (!hex) {
+          decoded += '\\x'
+          break
+        }
+        const charCode = Number.parseInt(hex, 16)
+        if (charCode === 0) return decoded
+        decoded += String.fromCharCode(charCode)
+        i += hex.length
+        break
+      }
+      case 'u':
+      case 'U': {
+        const maxLength = next === 'u' ? 4 : 8
+        const hex = content.slice(i + 1).match(/^[0-9a-fA-F]+/)?.[0]
+        if (!hex) {
+          decoded += `\\${next}`
+          break
+        }
+        const consumed = hex.slice(0, maxLength)
+        const codePoint = Number.parseInt(consumed, 16)
+        if (!Number.isSafeInteger(codePoint) || codePoint > 0x10ffff) {
+          decoded += `\\${next}${consumed}`
+          i += consumed.length
+          break
+        }
+        if (codePoint === 0) return decoded
+        decoded += String.fromCodePoint(codePoint)
+        i += consumed.length
+        break
+      }
+      case 'c': {
+        const control = content[++i]
+        if (control === undefined) {
+          decoded += '\\c'
+          break
+        }
+        decoded +=
+          control === '?'
+            ? '\x7f'
+            : String.fromCharCode(control.toUpperCase().charCodeAt(0) & 0x1f)
+        break
+      }
+      default: {
+        if (/[0-7]/.test(next)) {
+          const octalTail = content.slice(i + 1).match(/^[0-7]{0,2}/)?.[0] ?? ''
+          const octal = next + octalTail
+          const charCode = Number.parseInt(octal, 8) & 0xff
+          if (charCode === 0) return decoded
+          decoded += String.fromCharCode(charCode)
+          i += octalTail.length
+        } else {
+          decoded += `\\${next}`
+        }
+      }
+    }
+  }
+  return decoded
+}
+
+export function normalizeStaticDollarQuotesForShell(
+  command: string,
+): string | null {
+  if (!command.includes("$'") && !command.includes('$"')) return command
+
+  let normalized = ''
+  let quoteState: 'single' | 'double' | null = null
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i]!
+    if (char === '\\' && quoteState !== 'single') {
+      normalized += char
+      const next = command[++i]
+      if (next !== undefined) normalized += next
+      continue
+    }
+    if (char === "'" && quoteState !== 'double') {
+      quoteState = quoteState === 'single' ? null : 'single'
+      normalized += char
+      continue
+    }
+    if (char === '"' && quoteState !== 'single') {
+      quoteState = quoteState === 'double' ? null : 'double'
+      normalized += char
+      continue
+    }
+    if (quoteState === null && char === '$' && command[i + 1] === "'") {
+      let content = ''
+      i += 2
+      for (; i < command.length; i++) {
+        const nested = command[i]!
+        if (nested === "'") break
+        content += nested
+        if (nested === '\\' && i + 1 < command.length) {
+          content += command[++i]!
+        }
+      }
+      if (command[i] !== "'") return null
+      const decoded = decodeBashAnsiCString(content)
+      if (decoded === null) return null
+      normalized += quote([decoded])
+      continue
+    }
+    if (quoteState === null && char === '$' && command[i + 1] === '"') {
+      quoteState = 'double'
+      normalized += '"'
+      i++
+      continue
+    }
+    normalized += char
+  }
+  return normalized
+}
+
 export function tryParseShellCommand(
   cmd: string,
   env?:

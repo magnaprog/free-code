@@ -7,7 +7,10 @@ import {
   extractOutputRedirections,
   splitCommand_DEPRECATED,
 } from '../../utils/bash/commands.js'
-import { tryParseShellCommand } from '../../utils/bash/shellQuote.js'
+import {
+  decodeBashAnsiCString,
+  tryParseShellCommand,
+} from '../../utils/bash/shellQuote.js'
 import { getDirectoryForPath } from '../../utils/path.js'
 import { allWorkingDirectories } from '../../utils/permissions/filesystem.js'
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js'
@@ -921,6 +924,55 @@ function validateSinglePathCommandArgv(
   return pathChecker(args, cwd, toolPermissionContext, compoundCommandHasCd)
 }
 
+function parseRedirectTargetWord(command: string, start: number): string {
+  let target = ''
+  let quote: 'single' | 'double' | null = null
+
+  for (let i = start; i < command.length; i++) {
+    const char = command[i]!
+    if (char === '$' && quote === null && command[i + 1] === "'") {
+      let content = ''
+      i += 2
+      for (; i < command.length; i++) {
+        const nested = command[i]!
+        if (nested === "'") break
+        content += nested
+        if (nested === '\\' && i + 1 < command.length) {
+          content += command[++i]!
+        }
+      }
+      if (command[i] !== "'") return target + '$'
+      const decoded = decodeBashAnsiCString(content)
+      if (decoded === null) return target + '$'
+      target += decoded
+      continue
+    }
+    if (char === '$' && quote === null && command[i + 1] === '"') {
+      i++
+      quote = 'double'
+      continue
+    }
+    if (char === '\\' && quote !== 'single') {
+      const next = command[++i]
+      if (next === undefined) break
+      target += next
+      continue
+    }
+    if (char === "'" && quote !== 'double') {
+      quote = quote === 'single' ? null : 'single'
+      continue
+    }
+    if (char === '"' && quote !== 'single') {
+      quote = quote === 'double' ? null : 'double'
+      continue
+    }
+    if (quote === null && /[\s;&|()<>]/.test(char)) break
+    target += char
+  }
+
+  return target
+}
+
 function hasNetworkInputRedirect(command: string): boolean {
   let quote: 'single' | 'double' | null = null
   for (let i = 0; i < command.length; i++) {
@@ -948,8 +1000,10 @@ function hasNetworkInputRedirect(command: string): boolean {
     let targetStart = i + 1
     if (next === '>') targetStart++
     while (/\s/.test(command[targetStart] ?? '')) targetStart++
-    const target = command.slice(targetStart)
-    if (/^(?:['"])?\/dev\/(?:tcp|udp)\//.test(target)) return true
+    const target = parseRedirectTargetWord(command, targetStart)
+    if (target.startsWith('/dev/tcp/') || target.startsWith('/dev/udp/')) {
+      return true
+    }
   }
   return false
 }
@@ -1199,15 +1253,16 @@ function astRedirectsToOutputRedirections(redirects: Redirect[]): {
         }
         break
       case '<':
-      case '<<':
-      case '<&':
-      case '<<<':
         if (
           r.target.startsWith('/dev/tcp/') ||
           r.target.startsWith('/dev/udp/')
         ) {
           hasNetworkInputRedirection = true
         }
+        break
+      case '<<':
+      case '<&':
+      case '<<<':
         break
     }
   }

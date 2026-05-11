@@ -262,13 +262,74 @@ function getNextImagePasteId(messages: Message[]): number {
   return maxId + 1
 }
 
-function messageContainsMediaPayload(message: Message): boolean {
-  if (message.type !== 'user') return false
-  const content = message.message.content
-  return (
-    Array.isArray(content) &&
-    content.some(block => block.type === 'image' || block.type === 'document')
-  )
+function removeMediaFromContent(content: unknown): unknown {
+  if (!Array.isArray(content)) return content
+
+  const filtered: unknown[] = []
+  for (const block of content) {
+    if (typeof block !== 'object' || block === null || !('type' in block)) {
+      filtered.push(block)
+      continue
+    }
+    const typedBlock = block as { type?: unknown; content?: unknown }
+    if (typedBlock.type === 'image' || typedBlock.type === 'document') {
+      continue
+    }
+    if (typedBlock.type === 'tool_result') {
+      const nestedContent = removeMediaFromContent(typedBlock.content)
+      if (Array.isArray(nestedContent) && nestedContent.length === 0) {
+        continue
+      }
+      filtered.push({ ...typedBlock, content: nestedContent })
+      continue
+    }
+    filtered.push(block)
+  }
+  return filtered
+}
+
+function removeMediaFromMessage(message: Message): Message | null {
+  if (message.type === 'user') {
+    const content = removeMediaFromContent(message.message.content)
+    if (Array.isArray(content) && content.length === 0) return null
+    if (content === message.message.content) return message
+    return {
+      ...message,
+      message: {
+        ...message.message,
+        content: content as typeof message.message.content,
+      },
+    }
+  }
+
+  if (message.type === 'attachment') {
+    const attachment = message.attachment
+    if (attachment.type === 'queued_command') {
+      const prompt = removeMediaFromContent(attachment.prompt)
+      if (Array.isArray(prompt) && prompt.length === 0) return null
+      if (prompt === attachment.prompt) return message
+      return {
+        ...message,
+        attachment: {
+          ...attachment,
+          prompt: prompt as typeof attachment.prompt,
+        },
+      } as AttachmentMessage
+    }
+    if (attachment.type === 'file') {
+      const content = attachment.content as { type?: unknown }
+      if (
+        content.type === 'image' ||
+        content.type === 'pdf' ||
+        content.type === 'parts' ||
+        content.type === 'notebook'
+      ) {
+        return null
+      }
+    }
+  }
+
+  return message
 }
 
 export type MessageUpdateLazy<M extends Message = Message> = {
@@ -1663,14 +1724,15 @@ async function checkPermissionsAndCallTool(
     }
 
     // PostToolUse output replacement is the model-visible redaction boundary.
-    // Filter only supplemental media payloads; text newMessages can carry
-    // required follow-up context such as injected skill prompts.
+    // Strip supplemental media payloads; text newMessages can carry required
+    // follow-up context such as injected skill prompts.
     if (result.newMessages && result.newMessages.length > 0) {
       for (const message of result.newMessages) {
-        if (toolOutputWasUpdatedByHook && messageContainsMediaPayload(message)) {
-          continue
-        }
-        resultingMessages.push({ message })
+        const filteredMessage = toolOutputWasUpdatedByHook
+          ? removeMediaFromMessage(message)
+          : message
+        if (!filteredMessage) continue
+        resultingMessages.push({ message: filteredMessage })
       }
     }
     // If hook indicated to prevent continuation after successful execution, yield a stop reason message

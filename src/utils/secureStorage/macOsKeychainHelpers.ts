@@ -78,16 +78,33 @@ export const keychainCacheState: {
   // one subprocess, not N. Cleared on invalidation so fresh reads don't join
   // a stale in-flight promise.
   readInFlight: Promise<SecureStorageData | null> | null
+  strictReadFailureDepth: number
 } = {
   cache: { data: null, cachedAt: 0 },
   generation: 0,
   readInFlight: null,
+  strictReadFailureDepth: 0,
 }
 
 export function clearKeychainCache(): void {
   keychainCacheState.cache = { data: null, cachedAt: 0 }
   keychainCacheState.generation++
   keychainCacheState.readInFlight = null
+}
+
+type SyncResult<T> = T extends PromiseLike<unknown> ? never : T
+
+export function withStrictKeychainReadFailures<T>(fn: () => SyncResult<T>): SyncResult<T> {
+  keychainCacheState.strictReadFailureDepth++
+  try {
+    return fn()
+  } finally {
+    keychainCacheState.strictReadFailureDepth--
+  }
+}
+
+export function shouldThrowOnKeychainReadFailure(): boolean {
+  return keychainCacheState.strictReadFailureDepth > 0
 }
 
 /**

@@ -10,6 +10,7 @@ import {
   getUsername,
   KEYCHAIN_CACHE_TTL_MS,
   keychainCacheState,
+  shouldThrowOnKeychainReadFailure,
 } from './macOsKeychainHelpers.js'
 import type { SecureStorage, SecureStorageData } from './types.js'
 
@@ -23,6 +24,35 @@ import type { SecureStorage, SecureStorageData } from './types.js'
 // accounting differences.
 const SECURITY_STDIN_LINE_LIMIT = 4096 - 64
 
+function isKeychainItemNotFound(exitCode: number): boolean {
+  return exitCode === 44
+}
+
+function handleKeychainReadFailure(prev: {
+  data: SecureStorageData | null
+  cachedAt: number
+}): SecureStorageData | null {
+  // Stale-while-error: if we had a value before and the refresh failed,
+  // keep serving the stale value rather than caching null. Since #23192
+  // clears the upstream memoize on every API request (macOS path), a
+  // single transient `security` spawn failure would otherwise poison the
+  // cache and surface as "Not logged in" across all subsystems until the
+  // next user interaction. clearKeychainCache() sets data=null, so
+  // explicit invalidation (logout, delete) still reads through.
+  if (prev.data !== null) {
+    logForDebugging('[keychain] read failed; serving stale cache', {
+      level: 'warn',
+    })
+    keychainCacheState.cache = { data: prev.data, cachedAt: Date.now() }
+    return prev.data
+  }
+  if (shouldThrowOnKeychainReadFailure()) {
+    throw new Error('Failed to read macOS keychain secure storage')
+  }
+  keychainCacheState.cache = { data: null, cachedAt: Date.now() }
+  return null
+}
+
 export const macOsKeychainStorage = {
   name: 'keychain',
   read(): SecureStorageData | null {
@@ -31,38 +61,37 @@ export const macOsKeychainStorage = {
       return prev.data
     }
 
+    const storageServiceName = getMacOsKeychainStorageServiceName(
+      CREDENTIALS_SERVICE_SUFFIX,
+    )
+    const username = getUsername()
+
     try {
-      const storageServiceName = getMacOsKeychainStorageServiceName(
-        CREDENTIALS_SERVICE_SUFFIX,
+      const result = execaSync(
+        'security',
+        [
+          'find-generic-password',
+          '-a',
+          username,
+          '-w',
+          '-s',
+          storageServiceName,
+        ],
+        { stdio: ['ignore', 'pipe', 'pipe'], reject: false },
       )
-      const username = getUsername()
-      const result = execSyncWithDefaults_DEPRECATED(
-        `security find-generic-password -a "${username}" -w -s "${storageServiceName}"`,
-      )
-      if (result) {
-        const data = jsonParse(result)
+      if (result.exitCode === 0 && result.stdout) {
+        const data = jsonParse(result.stdout.trim())
         keychainCacheState.cache = { data, cachedAt: Date.now() }
         return data
+      }
+      if (isKeychainItemNotFound(result.exitCode)) {
+        keychainCacheState.cache = { data: null, cachedAt: Date.now() }
+        return null
       }
     } catch (_e) {
       // fall through
     }
-    // Stale-while-error: if we had a value before and the refresh failed,
-    // keep serving the stale value rather than caching null. Since #23192
-    // clears the upstream memoize on every API request (macOS path), a
-    // single transient `security` spawn failure would otherwise poison the
-    // cache and surface as "Not logged in" across all subsystems until the
-    // next user interaction. clearKeychainCache() sets data=null, so
-    // explicit invalidation (logout, delete) still reads through.
-    if (prev.data !== null) {
-      logForDebugging('[keychain] read failed; serving stale cache', {
-        level: 'warn',
-      })
-      keychainCacheState.cache = { data: prev.data, cachedAt: Date.now() }
-      return prev.data
-    }
-    keychainCacheState.cache = { data: null, cachedAt: Date.now() }
-    return null
+    return handleKeychainReadFailure(prev)
   },
   async readAsync(): Promise<SecureStorageData | null> {
     const prev = keychainCacheState.cache
