@@ -1113,10 +1113,6 @@ function isEnvOperandAssignment(token: string): boolean {
   return token.includes('=')
 }
 
-function envShortOptionClusterHasNull(token: string): boolean {
-  return /^-[iv]*0[iv0]*(?:S.*)?$/.test(token)
-}
-
 function stripExecWrappersForDeny(command: string): string[] {
   let scan = command.trimStart()
   for (;;) {
@@ -1210,12 +1206,16 @@ function stripExecWrappersForDeny(command: string): string[] {
       break
     }
     case 'env': {
-      let splitExpansions = 0
       let parsingOperands = false
-      while (commandStart < tokens.length) {
+      const seenEnvStates = new Set<string>()
+      envLoop: while (commandStart < tokens.length) {
+        const state = `${commandStart}\0${tokens.join('\0')}`
+        if (seenEnvStates.has(state)) return [command]
+        seenEnvStates.add(state)
+
         const token = tokens[commandStart]!
         if (parsingOperands) {
-          if (isEnvOperandAssignment(token)) {
+          if (token === '-' || isEnvOperandAssignment(token)) {
             commandStart++
             continue
           }
@@ -1226,54 +1226,17 @@ function stripExecWrappersForDeny(command: string): string[] {
           commandStart++
           continue
         }
-        if (envShortOptionClusterHasNull(token)) return [command]
-        if (token === '-S') {
-          const splitCommand = tokens[commandStart + 1]
-          if (splitCommand === undefined) return [command]
-          if (++splitExpansions > 8) return [command]
-          const expanded = expandEnvSplitToken(
-            tokens,
-            commandStart,
-            splitCommand,
-            2,
-            splitEnv,
-          )
-          if (!expanded) return [command]
-          tokens = expanded
-          continue
-        }
         const longOption = resolveEnvLongOption(token)
         if (longOption?.kind === 'splitString') {
           const splitCommand = longOption.hasValue
             ? longOption.value!
             : tokens[commandStart + 1]
           if (splitCommand === undefined) return [command]
-          if (++splitExpansions > 8) return [command]
           const expanded = expandEnvSplitToken(
             tokens,
             commandStart,
             splitCommand,
             longOption.hasValue ? 1 : 2,
-            splitEnv,
-          )
-          if (!expanded) return [command]
-          tokens = expanded
-          continue
-        }
-        const splitCluster = token.match(/^-[i0v]*S(.*)$/)
-        if (splitCluster) {
-          const inlineSplitCommand = splitCluster[1]!
-          const splitCommand =
-            inlineSplitCommand === ''
-              ? tokens[commandStart + 1]
-              : inlineSplitCommand
-          if (splitCommand === undefined) return [command]
-          if (++splitExpansions > 8) return [command]
-          const expanded = expandEnvSplitToken(
-            tokens,
-            commandStart,
-            splitCommand,
-            inlineSplitCommand === '' ? 2 : 1,
             splitEnv,
           )
           if (!expanded) return [command]
@@ -1294,20 +1257,41 @@ function stripExecWrappersForDeny(command: string): string[] {
           continue
         }
         if (longOption?.kind === 'terminal') return [command]
-        if (
-          token === '-u' ||
-          token === '-C' ||
-          token === '-P' ||
-          token === '--path'
-        ) {
-          commandStart += 2
-          continue
-        }
-        if (/^-(?:u|C|P).+/.test(token) || token.startsWith('--path=')) {
+        if (token === '-') {
           commandStart++
           continue
         }
-        if (token === '-' || /^-[i0v]+$/.test(token)) {
+        if (token.startsWith('-') && !token.startsWith('--')) {
+          for (let optionIndex = 1; optionIndex < token.length; optionIndex++) {
+            const option = token[optionIndex]!
+            if (option === 'i' || option === 'v') {
+              continue
+            }
+            if (option === '0') return [command]
+            if (option === 'u' || option === 'C') {
+              commandStart += optionIndex + 1 < token.length ? 1 : 2
+              continue envLoop
+            }
+            if (option === 'S') {
+              const inlineSplitCommand = token.slice(optionIndex + 1)
+              const splitCommand =
+                inlineSplitCommand === ''
+                  ? tokens[commandStart + 1]
+                  : inlineSplitCommand
+              if (splitCommand === undefined) return [command]
+              const expanded = expandEnvSplitToken(
+                tokens,
+                commandStart,
+                splitCommand,
+                inlineSplitCommand === '' ? 2 : 1,
+                splitEnv,
+              )
+              if (!expanded) return [command]
+              tokens = expanded
+              continue envLoop
+            }
+            return [command]
+          }
           commandStart++
           continue
         }
