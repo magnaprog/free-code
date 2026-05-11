@@ -938,6 +938,7 @@ const ENV_LONG_OPTION_NAMES = Object.keys(
 const ENV_SPLIT_EXPANSION_LIMIT = 64
 const ENV_SPLIT_TOKEN_LIMIT = 256
 const ENV_SPLIT_TOKEN_CHARS_LIMIT = 8192
+const EXEC_WRAPPER_UNSAFE_RECURSION_LIMIT = 64
 
 function envSplitTokensExceedLimit(tokens: string[]): boolean {
   if (tokens.length > ENV_SPLIT_TOKEN_LIMIT) return true
@@ -1131,6 +1132,53 @@ type ExecWrapperStripResult = {
   unsafeForRuleAllow: boolean
 }
 
+function splitTokensOnShellWhitespace(tokens: string[]): string[] | null {
+  const splitTokens: string[] = []
+  let changed = false
+
+  for (const token of tokens) {
+    if (!/[ \t\n\r]/.test(token)) {
+      splitTokens.push(token)
+      continue
+    }
+
+    const parts = token.split(/[ \t\n\r]+/).filter(Boolean)
+    if (parts.length === 0) {
+      changed = true
+      continue
+    }
+    changed = true
+    splitTokens.push(...parts)
+  }
+
+  return changed ? splitTokens : null
+}
+
+function shellExpandedCandidatesForDeny(command: string): string[] {
+  const normalizedCommand = normalizeStaticDollarQuotesForShell(command)
+  const parsed = tryParseShellCommand(
+    normalizedCommand ?? command,
+    key => process.env[key],
+  )
+  if (
+    !parsed.success ||
+    parsed.tokens.some(token => typeof token !== 'string')
+  ) {
+    return []
+  }
+
+  const tokens = parsed.tokens as string[]
+  if (tokens.length === 0) return []
+
+  const candidates = [quote(tokens)]
+  const wordSplitTokens = splitTokensOnShellWhitespace(tokens)
+  if (wordSplitTokens && wordSplitTokens.length > 0) {
+    const wordSplitCommand = quote(wordSplitTokens)
+    if (wordSplitCommand !== candidates[0]) candidates.push(wordSplitCommand)
+  }
+  return candidates.filter(candidate => candidate !== command)
+}
+
 function stripExecWrappersForDenyDetailed(
   command: string,
 ): ExecWrapperStripResult {
@@ -1151,7 +1199,10 @@ function stripExecWrappersForDenyDetailed(
   }
 
   const normalizedCommand = normalizeStaticDollarQuotesForShell(command)
-  const parsed = tryParseShellCommand(normalizedCommand ?? command)
+  const parsed = tryParseShellCommand(
+    normalizedCommand ?? command,
+    key => process.env[key],
+  )
   if (
     !parsed.success ||
     parsed.tokens.some(token => typeof token !== 'string')
@@ -1234,6 +1285,7 @@ function stripExecWrappersForDenyDetailed(
       let splitExpansions = 0
       let parsingOperands = false
       let dashMarkerConsumed = false
+      let envOperandAssignmentsStarted = false
       const seenEnvStates = new Set<string>()
       envLoop: while (commandStart < tokens.length) {
         const state = `${commandStart}\0${tokens.join('\0')}`
@@ -1242,12 +1294,17 @@ function stripExecWrappersForDenyDetailed(
 
         const token = tokens[commandStart]!
         if (parsingOperands) {
-          if (token === '-' && !dashMarkerConsumed) {
+          if (
+            token === '-' &&
+            !dashMarkerConsumed &&
+            !envOperandAssignmentsStarted
+          ) {
             dashMarkerConsumed = true
             commandStart++
             continue
           }
           if (isEnvOperandAssignment(token)) {
+            envOperandAssignmentsStarted = true
             commandStart++
             continue
           }
@@ -1342,6 +1399,7 @@ function stripExecWrappersForDenyDetailed(
         if (token.startsWith('-')) return unchanged()
         if (isEnvOperandAssignment(token)) {
           parsingOperands = true
+          envOperandAssignmentsStarted = true
           commandStart++
           continue
         }
@@ -1384,7 +1442,13 @@ function stripExecWrappersForDenyDetailed(
   if (commandStart >= tokens.length) return unchanged()
   const tail = tokens.slice(commandStart)
   if (!shellCommandTail) {
-    return { commands: [quote(tail)], unsafeForRuleAllow: false }
+    const commands = [quote(tail)]
+    const wordSplitTail = splitTokensOnShellWhitespace(tail)
+    if (wordSplitTail && wordSplitTail.length > 0) {
+      const wordSplitCommand = quote(wordSplitTail)
+      if (wordSplitCommand !== commands[0]) commands.push(wordSplitCommand)
+    }
+    return { commands, unsafeForRuleAllow: false }
   }
   const shellTail = tail.join(' ')
   const shellSubcommands = splitCommand(shellTail)
@@ -1399,7 +1463,27 @@ function stripExecWrappersForDeny(command: string): string[] {
 }
 
 function execWrapperUnsafeForRuleAllow(command: string): boolean {
-  return stripExecWrappersForDenyDetailed(command).unsafeForRuleAllow
+  const seen = new Set<string>()
+  const stack = [command]
+  let inspected = 0
+
+  while (stack.length > 0) {
+    const current = stack.pop()!
+    if (seen.has(current)) continue
+    seen.add(current)
+    if (++inspected > EXEC_WRAPPER_UNSAFE_RECURSION_LIMIT) return true
+
+    const safeStripped = stripSafeWrappers(current)
+    if (safeStripped !== current) stack.push(safeStripped)
+
+    const stripped = stripExecWrappersForDenyDetailed(current)
+    if (stripped.unsafeForRuleAllow) return true
+    for (const strippedCommand of stripped.commands) {
+      if (strippedCommand !== current) stack.push(strippedCommand)
+    }
+  }
+
+  return false
 }
 
 function filterRulesByContentsMatchingInput(
@@ -1421,12 +1505,16 @@ function filterRulesByContentsMatchingInput(
   const commandWithoutRedirections =
     extractOutputRedirections(command).commandWithoutRedirections
 
-  // For exact matching, try both the original command (to preserve quotes)
-  // and the command without redirections (to allow rules without redirections to match)
-  // For prefix matching, only use the command without redirections
+  // For exact matching and deny/ask prefix matching, try the original command
+  // to preserve quote semantics. Also try the command without redirections so
+  // rules without redirections can match.
+  // For allow prefix matching, only use the command without redirections; path
+  // validation handles redirection targets before prefix allow is applied.
   const commandsForMatching =
-    matchMode === 'exact'
-      ? [command, commandWithoutRedirections]
+    matchMode === 'exact' || stripAllEnvVars
+      ? command === commandWithoutRedirections
+        ? [command]
+        : [command, commandWithoutRedirections]
       : [commandWithoutRedirections]
 
   // Strip safe wrapper commands (timeout, time, nice, nohup) and env vars for matching
@@ -1476,6 +1564,13 @@ function filterRulesByContentsMatchingInput(
           commandsToTry.push(wrapperStripped)
           seen.add(wrapperStripped)
         }
+        // Try expanding shell variables for deny/ask matching only
+        for (const expanded of shellExpandedCandidatesForDeny(cmd)) {
+          if (!seen.has(expanded)) {
+            commandsToTry.push(expanded)
+            seen.add(expanded)
+          }
+        }
         // Try stripping exec wrappers for deny/ask matching only
         for (const execStripped of stripExecWrappersForDeny(cmd)) {
           if (!seen.has(execStripped)) {
@@ -1523,6 +1618,17 @@ function filterRulesByContentsMatchingInput(
     return result
   }
 
+  let originalCommandUnsafeForRuleAllow: boolean | undefined
+  function inputHasUnsafeExecWrapperForRuleAllow(): boolean {
+    if (originalCommandUnsafeForRuleAllow === undefined) {
+      originalCommandUnsafeForRuleAllow =
+        hasUnsafeExecWrapperForRuleAllow(command) ||
+        (commandWithoutRedirections !== command &&
+          hasUnsafeExecWrapperForRuleAllow(commandWithoutRedirections))
+    }
+    return originalCommandUnsafeForRuleAllow
+  }
+
   return Array.from(rules.entries())
     .filter(([ruleContent]) => {
       const bashRule = bashPermissionRule(ruleContent)
@@ -1549,7 +1655,8 @@ function filterRulesByContentsMatchingInput(
                 }
                 if (
                   !stripAllEnvVars &&
-                  hasUnsafeExecWrapperForRuleAllow(cmdToMatch)
+                  (inputHasUnsafeExecWrapperForRuleAllow() ||
+                    hasUnsafeExecWrapperForRuleAllow(cmdToMatch))
                 ) {
                   return false
                 }
@@ -1603,7 +1710,8 @@ function filterRulesByContentsMatchingInput(
             }
             if (
               !stripAllEnvVars &&
-              hasUnsafeExecWrapperForRuleAllow(cmdToMatch)
+              (inputHasUnsafeExecWrapperForRuleAllow() ||
+                hasUnsafeExecWrapperForRuleAllow(cmdToMatch))
             ) {
               return false
             }
