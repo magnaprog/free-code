@@ -935,6 +935,19 @@ type EnvLongOptionKind = (typeof ENV_LONG_OPTION_KINDS)[EnvLongOptionName]
 const ENV_LONG_OPTION_NAMES = Object.keys(
   ENV_LONG_OPTION_KINDS,
 ) as EnvLongOptionName[]
+const ENV_SPLIT_EXPANSION_LIMIT = 64
+const ENV_SPLIT_TOKEN_LIMIT = 256
+const ENV_SPLIT_TOKEN_CHARS_LIMIT = 8192
+
+function envSplitTokensExceedLimit(tokens: string[]): boolean {
+  if (tokens.length > ENV_SPLIT_TOKEN_LIMIT) return true
+  let totalLength = 0
+  for (const token of tokens) {
+    totalLength += token.length
+    if (totalLength > ENV_SPLIT_TOKEN_CHARS_LIMIT) return true
+  }
+  return false
+}
 
 function resolveEnvLongOption(token: string):
   | {
@@ -1113,7 +1126,19 @@ function isEnvOperandAssignment(token: string): boolean {
   return token.includes('=')
 }
 
-function stripExecWrappersForDeny(command: string): string[] {
+type ExecWrapperStripResult = {
+  commands: string[]
+  unsafeForRuleAllow: boolean
+}
+
+function stripExecWrappersForDenyDetailed(
+  command: string,
+): ExecWrapperStripResult {
+  const unchanged = (unsafeForRuleAllow = false): ExecWrapperStripResult => ({
+    commands: [command],
+    unsafeForRuleAllow,
+  })
+
   let scan = command.trimStart()
   for (;;) {
     const word = scan.match(/^[^ \t\n\r;&|()<>]+/)?.[0]
@@ -1122,7 +1147,7 @@ function stripExecWrappersForDeny(command: string): string[] {
   }
   const firstWord = scan.match(/^[^ \t\n\r;&|()<>]+/)?.[0]
   if (firstWord && !/[\\'"]/.test(firstWord) && !EXEC_WRAPPER_NAMES.has(firstWord)) {
-    return [command]
+    return unchanged()
   }
 
   const normalizedCommand = normalizeStaticDollarQuotesForShell(command)
@@ -1131,7 +1156,7 @@ function stripExecWrappersForDeny(command: string): string[] {
     !parsed.success ||
     parsed.tokens.some(token => typeof token !== 'string')
   ) {
-    return [command]
+    return unchanged()
   }
 
   let tokens = parsed.tokens as string[]
@@ -1147,7 +1172,7 @@ function stripExecWrappersForDeny(command: string): string[] {
       : assignment.value
     wrapperIndex++
   }
-  if (tokens.length - wrapperIndex < 2) return [command]
+  if (tokens.length - wrapperIndex < 2) return unchanged()
 
   let commandStart = wrapperIndex + 1
   let shellCommandTail = false
@@ -1200,22 +1225,29 @@ function stripExecWrappersForDeny(command: string): string[] {
           commandStart++
           continue
         }
-        if (token.startsWith('-')) return [command]
+        if (token.startsWith('-')) return unchanged()
         break
       }
       break
     }
     case 'env': {
+      let splitExpansions = 0
       let parsingOperands = false
+      let dashMarkerConsumed = false
       const seenEnvStates = new Set<string>()
       envLoop: while (commandStart < tokens.length) {
         const state = `${commandStart}\0${tokens.join('\0')}`
-        if (seenEnvStates.has(state)) return [command]
+        if (seenEnvStates.has(state)) return unchanged(true)
         seenEnvStates.add(state)
 
         const token = tokens[commandStart]!
         if (parsingOperands) {
-          if (token === '-' || isEnvOperandAssignment(token)) {
+          if (token === '-' && !dashMarkerConsumed) {
+            dashMarkerConsumed = true
+            commandStart++
+            continue
+          }
+          if (isEnvOperandAssignment(token)) {
             commandStart++
             continue
           }
@@ -1231,7 +1263,10 @@ function stripExecWrappersForDeny(command: string): string[] {
           const splitCommand = longOption.hasValue
             ? longOption.value!
             : tokens[commandStart + 1]
-          if (splitCommand === undefined) return [command]
+          if (splitCommand === undefined) return unchanged()
+          if (++splitExpansions > ENV_SPLIT_EXPANSION_LIMIT) {
+            return unchanged(true)
+          }
           const expanded = expandEnvSplitToken(
             tokens,
             commandStart,
@@ -1239,7 +1274,9 @@ function stripExecWrappersForDeny(command: string): string[] {
             longOption.hasValue ? 1 : 2,
             splitEnv,
           )
-          if (!expanded) return [command]
+          if (!expanded || envSplitTokensExceedLimit(expanded)) {
+            return unchanged(true)
+          }
           tokens = expanded
           continue
         }
@@ -1252,12 +1289,14 @@ function stripExecWrappersForDeny(command: string): string[] {
           continue
         }
         if (longOption?.kind === 'noValue') {
-          if (longOption.hasValue) return [command]
+          if (longOption.hasValue) return unchanged()
           commandStart++
           continue
         }
-        if (longOption?.kind === 'terminal') return [command]
+        if (longOption?.kind === 'terminal') return unchanged()
         if (token === '-') {
+          dashMarkerConsumed = true
+          parsingOperands = true
           commandStart++
           continue
         }
@@ -1267,7 +1306,7 @@ function stripExecWrappersForDeny(command: string): string[] {
             if (option === 'i' || option === 'v') {
               continue
             }
-            if (option === '0') return [command]
+            if (option === '0') return unchanged()
             if (option === 'u' || option === 'C') {
               commandStart += optionIndex + 1 < token.length ? 1 : 2
               continue envLoop
@@ -1278,7 +1317,10 @@ function stripExecWrappersForDeny(command: string): string[] {
                 inlineSplitCommand === ''
                   ? tokens[commandStart + 1]
                   : inlineSplitCommand
-              if (splitCommand === undefined) return [command]
+              if (splitCommand === undefined) return unchanged()
+              if (++splitExpansions > ENV_SPLIT_EXPANSION_LIMIT) {
+                return unchanged(true)
+              }
               const expanded = expandEnvSplitToken(
                 tokens,
                 commandStart,
@@ -1286,16 +1328,18 @@ function stripExecWrappersForDeny(command: string): string[] {
                 inlineSplitCommand === '' ? 2 : 1,
                 splitEnv,
               )
-              if (!expanded) return [command]
+              if (!expanded || envSplitTokensExceedLimit(expanded)) {
+                return unchanged(true)
+              }
               tokens = expanded
               continue envLoop
             }
-            return [command]
+            return unchanged()
           }
           commandStart++
           continue
         }
-        if (token.startsWith('-')) return [command]
+        if (token.startsWith('-')) return unchanged()
         if (isEnvOperandAssignment(token)) {
           parsingOperands = true
           commandStart++
@@ -1334,15 +1378,28 @@ function stripExecWrappersForDeny(command: string): string[] {
       break
     }
     default:
-      return [command]
+      return unchanged()
   }
 
-  if (commandStart >= tokens.length) return [command]
+  if (commandStart >= tokens.length) return unchanged()
   const tail = tokens.slice(commandStart)
-  if (!shellCommandTail) return [quote(tail)]
+  if (!shellCommandTail) {
+    return { commands: [quote(tail)], unsafeForRuleAllow: false }
+  }
   const shellTail = tail.join(' ')
   const shellSubcommands = splitCommand(shellTail)
-  return shellSubcommands.length > 0 ? shellSubcommands : [shellTail]
+  return {
+    commands: shellSubcommands.length > 0 ? shellSubcommands : [shellTail],
+    unsafeForRuleAllow: false,
+  }
+}
+
+function stripExecWrappersForDeny(command: string): string[] {
+  return stripExecWrappersForDenyDetailed(command).commands
+}
+
+function execWrapperUnsafeForRuleAllow(command: string): boolean {
+  return stripExecWrappersForDenyDetailed(command).unsafeForRuleAllow
 }
 
 function filterRulesByContentsMatchingInput(
@@ -1456,6 +1513,16 @@ function filterRulesByContentsMatchingInput(
     return result
   }
 
+  const unsafeExecWrapperForRuleAllow = new Map<string, boolean>()
+  function hasUnsafeExecWrapperForRuleAllow(cmd: string): boolean {
+    let result = unsafeExecWrapperForRuleAllow.get(cmd)
+    if (result === undefined) {
+      result = execWrapperUnsafeForRuleAllow(cmd)
+      unsafeExecWrapperForRuleAllow.set(cmd, result)
+    }
+    return result
+  }
+
   return Array.from(rules.entries())
     .filter(([ruleContent]) => {
       const bashRule = bashPermissionRule(ruleContent)
@@ -1478,6 +1545,12 @@ function filterRulesByContentsMatchingInput(
                 // which then looks like a single command that starts with "cd ".
                 // Re-splitting the candidate here catches those cases.
                 if (isCompoundCommand.get(cmdToMatch)) {
+                  return false
+                }
+                if (
+                  !stripAllEnvVars &&
+                  hasUnsafeExecWrapperForRuleAllow(cmdToMatch)
+                ) {
                   return false
                 }
                 const xargsPrefix = 'xargs ' + bashRule.prefix
@@ -1526,6 +1599,12 @@ function filterRulesByContentsMatchingInput(
             // compound commands in prefix mode. e.g., Bash(cd *) must not match
             // "cd /path && python3 evil.py" even though "cd *" pattern would match it.
             if (isCompoundCommand.get(cmdToMatch)) {
+              return false
+            }
+            if (
+              !stripAllEnvVars &&
+              hasUnsafeExecWrapperForRuleAllow(cmdToMatch)
+            ) {
               return false
             }
             if (
