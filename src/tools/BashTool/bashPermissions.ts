@@ -1132,6 +1132,124 @@ type ExecWrapperStripResult = {
   unsafeForRuleAllow: boolean
 }
 
+function resolveShellParameterForPermission(
+  key: string,
+): string | undefined {
+  if (Object.prototype.hasOwnProperty.call(process.env, key)) {
+    return process.env[key]
+  }
+
+  const match = key.match(/^([A-Za-z_][A-Za-z0-9_]*)(:?[-=?+])(.*)$/)
+  if (!match) return undefined
+
+  const [, name, operator, fallback] = match
+  const hasValue = Object.prototype.hasOwnProperty.call(process.env, name!)
+  const value = hasValue ? process.env[name!] : undefined
+  const isNonEmpty = value !== undefined && value !== ''
+
+  switch (operator) {
+    case ':-':
+    case ':=':
+      return isNonEmpty ? value : fallback
+    case '-':
+    case '=':
+      return hasValue ? value : fallback
+    case ':?':
+      return isNonEmpty ? value : undefined
+    case '?':
+      return hasValue ? value : undefined
+    case ':+':
+      return isNonEmpty ? fallback : undefined
+    case '+':
+      return hasValue ? fallback : undefined
+    default:
+      return undefined
+  }
+}
+
+function normalizeShellParametersForPermission(command: string): {
+  command: string
+  env: Record<string, string | undefined>
+} {
+  const env = Object.create(null) as Record<string, string | undefined>
+  let normalized = ''
+  let quoteState: 'single' | 'double' | null = null
+  let syntheticIndex = 0
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i]!
+    if (char === '\\' && quoteState !== 'single') {
+      normalized += char
+      const next = command[++i]
+      if (next !== undefined) normalized += next
+      continue
+    }
+    if (char === "'" && quoteState !== 'double') {
+      quoteState = quoteState === 'single' ? null : 'single'
+      normalized += char
+      continue
+    }
+    if (char === '"' && quoteState !== 'single') {
+      quoteState = quoteState === 'double' ? null : 'double'
+      normalized += char
+      continue
+    }
+    if (char === '$' && quoteState !== 'single' && command[i + 1] === '{') {
+      const end = command.indexOf('}', i + 2)
+      if (end !== -1) {
+        const key = command.slice(i + 2, end)
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+          const value = resolveShellParameterForPermission(key)
+          if (value !== undefined) {
+            const syntheticKey = `__CLAUDE_PERMISSION_PARAM_${syntheticIndex++}`
+            env[syntheticKey] = value
+            normalized += `\${${syntheticKey}}`
+            i = end
+            continue
+          }
+        }
+      }
+    }
+    normalized += char
+  }
+
+  return { command: normalized, env }
+}
+
+function hasUnquotedShellVariableReference(command: string): boolean {
+  let quoteState: 'single' | 'double' | null = null
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i]!
+    if (char === '\\' && quoteState !== 'single') {
+      i++
+      continue
+    }
+    if (char === "'" && quoteState !== 'double') {
+      quoteState = quoteState === 'single' ? null : 'single'
+      continue
+    }
+    if (char === '"' && quoteState !== 'single') {
+      quoteState = quoteState === 'double' ? null : 'double'
+      continue
+    }
+    if (char !== '$' || quoteState !== null) continue
+
+    const next = command[i + 1]
+    if (next === '{') {
+      const end = command.indexOf('}', i + 2)
+      if (end === -1) continue
+      if (/^[A-Za-z_][A-Za-z0-9_]*/.test(command.slice(i + 2, end))) {
+        return true
+      }
+      continue
+    }
+    if (next !== undefined && /[A-Za-z_]/.test(next)) return true
+  }
+
+  return false
+}
+
 function splitTokensOnShellWhitespace(tokens: string[]): string[] | null {
   const splitTokens: string[] = []
   let changed = false
@@ -1156,9 +1274,15 @@ function splitTokensOnShellWhitespace(tokens: string[]): string[] | null {
 
 function shellExpandedCandidatesForDeny(command: string): string[] {
   const normalizedCommand = normalizeStaticDollarQuotesForShell(command)
-  const parsed = tryParseShellCommand(
+  const shellParameterExpansion = normalizeShellParametersForPermission(
     normalizedCommand ?? command,
-    key => process.env[key],
+  )
+  const parsed = tryParseShellCommand(
+    shellParameterExpansion.command,
+    key =>
+      Object.prototype.hasOwnProperty.call(shellParameterExpansion.env, key)
+        ? shellParameterExpansion.env[key]
+        : resolveShellParameterForPermission(key),
   )
   if (
     !parsed.success ||
@@ -1171,10 +1295,12 @@ function shellExpandedCandidatesForDeny(command: string): string[] {
   if (tokens.length === 0) return []
 
   const candidates = [quote(tokens)]
-  const wordSplitTokens = splitTokensOnShellWhitespace(tokens)
-  if (wordSplitTokens && wordSplitTokens.length > 0) {
-    const wordSplitCommand = quote(wordSplitTokens)
-    if (wordSplitCommand !== candidates[0]) candidates.push(wordSplitCommand)
+  if (hasUnquotedShellVariableReference(normalizedCommand ?? command)) {
+    const wordSplitTokens = splitTokensOnShellWhitespace(tokens)
+    if (wordSplitTokens && wordSplitTokens.length > 0) {
+      const wordSplitCommand = quote(wordSplitTokens)
+      if (wordSplitCommand !== candidates[0]) candidates.push(wordSplitCommand)
+    }
   }
   return candidates.filter(candidate => candidate !== command)
 }
@@ -1199,9 +1325,15 @@ function stripExecWrappersForDenyDetailed(
   }
 
   const normalizedCommand = normalizeStaticDollarQuotesForShell(command)
-  const parsed = tryParseShellCommand(
+  const shellParameterExpansion = normalizeShellParametersForPermission(
     normalizedCommand ?? command,
-    key => process.env[key],
+  )
+  const parsed = tryParseShellCommand(
+    shellParameterExpansion.command,
+    key =>
+      Object.prototype.hasOwnProperty.call(shellParameterExpansion.env, key)
+        ? shellParameterExpansion.env[key]
+        : resolveShellParameterForPermission(key),
   )
   if (
     !parsed.success ||
@@ -1443,10 +1575,12 @@ function stripExecWrappersForDenyDetailed(
   const tail = tokens.slice(commandStart)
   if (!shellCommandTail) {
     const commands = [quote(tail)]
-    const wordSplitTail = splitTokensOnShellWhitespace(tail)
-    if (wordSplitTail && wordSplitTail.length > 0) {
-      const wordSplitCommand = quote(wordSplitTail)
-      if (wordSplitCommand !== commands[0]) commands.push(wordSplitCommand)
+    if (hasUnquotedShellVariableReference(normalizedCommand ?? command)) {
+      const wordSplitTail = splitTokensOnShellWhitespace(tail)
+      if (wordSplitTail && wordSplitTail.length > 0) {
+        const wordSplitCommand = quote(wordSplitTail)
+        if (wordSplitCommand !== commands[0]) commands.push(wordSplitCommand)
+      }
     }
     return { commands, unsafeForRuleAllow: false }
   }
@@ -1502,8 +1636,10 @@ function filterRulesByContentsMatchingInput(
   // Strip output redirections for permission matching
   // This allows rules like Bash(python:*) to match "python script.py > output.txt"
   // Security validation of redirection targets happens separately in checkPathConstraints
+  const outputRedirectionResult = extractOutputRedirections(command)
   const commandWithoutRedirections =
-    extractOutputRedirections(command).commandWithoutRedirections
+    outputRedirectionResult.commandWithoutRedirections
+  const hasOutputRedirections = outputRedirectionResult.redirections.length > 0
 
   // For exact matching and deny/ask prefix matching, try the original command
   // to preserve quote semantics. Also try the command without redirections so
@@ -1512,10 +1648,10 @@ function filterRulesByContentsMatchingInput(
   // validation handles redirection targets before prefix allow is applied.
   const commandsForMatching =
     matchMode === 'exact' || stripAllEnvVars
-      ? command === commandWithoutRedirections
-        ? [command]
-        : [command, commandWithoutRedirections]
-      : [commandWithoutRedirections]
+      ? hasOutputRedirections
+        ? [command, commandWithoutRedirections]
+        : [command]
+      : [hasOutputRedirections ? commandWithoutRedirections : command]
 
   // Strip safe wrapper commands (timeout, time, nice, nohup) and env vars for matching
   // This allows rules like Bash(npm install:*) to match "timeout 10 npm install foo"
