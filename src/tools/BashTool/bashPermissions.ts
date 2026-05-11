@@ -924,7 +924,7 @@ const ENV_LONG_OPTION_KINDS = {
   'ignore-environment': 'noValue',
   'ignore-signal': 'optionalValue',
   'list-signal-handling': 'noValue',
-  null: 'noValue',
+  null: 'terminal',
   'split-string': 'splitString',
   unset: 'requiredValue',
   version: 'terminal',
@@ -1109,6 +1109,14 @@ function getSimpleEnvAssignment(token: string):
   return { name: match[1]!, append: match[2] === '+', value: match[3]! }
 }
 
+function isEnvOperandAssignment(token: string): boolean {
+  return token.includes('=')
+}
+
+function envShortOptionClusterHasNull(token: string): boolean {
+  return /^-[iv]*0[iv0]*(?:S.*)?$/.test(token)
+}
+
 function stripExecWrappersForDeny(command: string): string[] {
   let scan = command.trimStart()
   for (;;) {
@@ -1203,12 +1211,22 @@ function stripExecWrappersForDeny(command: string): string[] {
     }
     case 'env': {
       let splitExpansions = 0
+      let parsingOperands = false
       while (commandStart < tokens.length) {
         const token = tokens[commandStart]!
-        if (token === '--') {
-          commandStart++
+        if (parsingOperands) {
+          if (isEnvOperandAssignment(token)) {
+            commandStart++
+            continue
+          }
           break
         }
+        if (token === '--') {
+          parsingOperands = true
+          commandStart++
+          continue
+        }
+        if (envShortOptionClusterHasNull(token)) return [command]
         if (token === '-S') {
           const splitCommand = tokens[commandStart + 1]
           if (splitCommand === undefined) return [command]
@@ -1294,7 +1312,8 @@ function stripExecWrappersForDeny(command: string): string[] {
           continue
         }
         if (token.startsWith('-')) return [command]
-        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
+        if (isEnvOperandAssignment(token)) {
+          parsingOperands = true
           commandStart++
           continue
         }
