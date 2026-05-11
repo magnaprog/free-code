@@ -915,6 +915,57 @@ const EXEC_WRAPPER_NAMES = new Set([
   'setsid',
 ])
 
+const ENV_LONG_OPTION_KINDS = {
+  'block-signal': 'optionalValue',
+  chdir: 'requiredValue',
+  debug: 'noValue',
+  'default-signal': 'optionalValue',
+  help: 'terminal',
+  'ignore-environment': 'noValue',
+  'ignore-signal': 'optionalValue',
+  'list-signal-handling': 'noValue',
+  null: 'noValue',
+  'split-string': 'splitString',
+  unset: 'requiredValue',
+  version: 'terminal',
+} as const
+
+type EnvLongOptionName = keyof typeof ENV_LONG_OPTION_KINDS
+type EnvLongOptionKind = (typeof ENV_LONG_OPTION_KINDS)[EnvLongOptionName]
+const ENV_LONG_OPTION_NAMES = Object.keys(
+  ENV_LONG_OPTION_KINDS,
+) as EnvLongOptionName[]
+
+function resolveEnvLongOption(token: string):
+  | {
+      name: EnvLongOptionName
+      kind: EnvLongOptionKind
+      value: string | undefined
+      hasValue: boolean
+    }
+  | undefined {
+  if (!token.startsWith('--')) return undefined
+  const optionText = token.slice(2)
+  const equalsIndex = optionText.indexOf('=')
+  const optionName =
+    equalsIndex === -1 ? optionText : optionText.slice(0, equalsIndex)
+  if (optionName.length === 0) return undefined
+
+  const exactMatch = ENV_LONG_OPTION_NAMES.find(name => name === optionName)
+  const matches = exactMatch
+    ? [exactMatch]
+    : ENV_LONG_OPTION_NAMES.filter(name => name.startsWith(optionName))
+  if (matches.length !== 1) return undefined
+
+  const name = matches[0]!
+  return {
+    name,
+    kind: ENV_LONG_OPTION_KINDS[name],
+    value: equalsIndex === -1 ? undefined : optionText.slice(equalsIndex + 1),
+    hasValue: equalsIndex !== -1,
+  }
+}
+
 function splitEnvSplitString(
   splitString: string,
   env: Record<string, string | undefined>,
@@ -1158,9 +1209,9 @@ function stripExecWrappersForDeny(command: string): string[] {
           commandStart++
           break
         }
-        if (token === '-S' || token === '--split-string') {
+        if (token === '-S') {
           const splitCommand = tokens[commandStart + 1]
-          if (!splitCommand) return [command]
+          if (splitCommand === undefined) return [command]
           if (++splitExpansions > 8) return [command]
           const expanded = expandEnvSplitToken(
             tokens,
@@ -1173,13 +1224,18 @@ function stripExecWrappersForDeny(command: string): string[] {
           tokens = expanded
           continue
         }
-        if (token.startsWith('--split-string=')) {
+        const longOption = resolveEnvLongOption(token)
+        if (longOption?.kind === 'splitString') {
+          const splitCommand = longOption.hasValue
+            ? longOption.value!
+            : tokens[commandStart + 1]
+          if (splitCommand === undefined) return [command]
           if (++splitExpansions > 8) return [command]
           const expanded = expandEnvSplitToken(
             tokens,
             commandStart,
-            token.slice('--split-string='.length),
-            1,
+            splitCommand,
+            longOption.hasValue ? 1 : 2,
             splitEnv,
           )
           if (!expanded) return [command]
@@ -1188,46 +1244,52 @@ function stripExecWrappersForDeny(command: string): string[] {
         }
         const splitCluster = token.match(/^-[i0v]*S(.*)$/)
         if (splitCluster) {
-          const splitCommand = splitCluster[1] || tokens[commandStart + 1]
-          if (!splitCommand) return [command]
+          const inlineSplitCommand = splitCluster[1]!
+          const splitCommand =
+            inlineSplitCommand === ''
+              ? tokens[commandStart + 1]
+              : inlineSplitCommand
+          if (splitCommand === undefined) return [command]
           if (++splitExpansions > 8) return [command]
           const expanded = expandEnvSplitToken(
             tokens,
             commandStart,
             splitCommand,
-            splitCluster[1] ? 1 : 2,
+            inlineSplitCommand === '' ? 2 : 1,
             splitEnv,
           )
           if (!expanded) return [command]
           tokens = expanded
           continue
         }
+        if (longOption?.kind === 'requiredValue') {
+          commandStart += longOption.hasValue ? 1 : 2
+          continue
+        }
+        if (longOption?.kind === 'optionalValue') {
+          commandStart++
+          continue
+        }
+        if (longOption?.kind === 'noValue') {
+          if (longOption.hasValue) return [command]
+          commandStart++
+          continue
+        }
+        if (longOption?.kind === 'terminal') return [command]
         if (
           token === '-u' ||
           token === '-C' ||
           token === '-P' ||
-          /^(?:--(?:unset|chdir|path))$/.test(token)
+          token === '--path'
         ) {
           commandStart += 2
           continue
         }
-        if (
-          /^-(?:u|C|P).+/.test(token) ||
-          /^--(?:unset|chdir|path)=/.test(token)
-        ) {
+        if (/^-(?:u|C|P).+/.test(token) || token.startsWith('--path=')) {
           commandStart++
           continue
         }
-        if (
-          token === '-' ||
-          /^-[i0v]+$/.test(token) ||
-          /^(?:--(?:ignore-environment|null|debug|list-signal-handling))$/.test(
-            token,
-          ) ||
-          /^(?:--(?:ignore-signal|block-signal|default-signal))(?:=.*)?$/.test(
-            token,
-          )
-        ) {
+        if (token === '-' || /^-[i0v]+$/.test(token)) {
           commandStart++
           continue
         }
