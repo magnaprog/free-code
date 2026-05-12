@@ -110,6 +110,49 @@ export function checkDangerousRemovalPaths(
   }
 }
 
+const ENV_ASSIGNMENT_ARG_RE = /^[A-Za-z_]\w*(?:\[[^\]]+\])?\+?=/
+
+function stripLeadingEnvAssignmentArgs(argv: string[]): string[] {
+  let i = 0
+  while (i < argv.length && ENV_ASSIGNMENT_ARG_RE.test(argv[i]!)) i++
+  return i === 0 ? argv : argv.slice(i)
+}
+
+function normalizeRemovalArgv(argv: string[]): string[] {
+  let current = argv
+  for (;;) {
+    const next = stripLeadingEnvAssignmentArgs(
+      stripWrappersFromArgv(stripLeadingEnvAssignmentArgs(current)),
+    )
+    if (
+      next.length === current.length &&
+      next.every((arg, index) => arg === current[index])
+    ) {
+      return next
+    }
+    current = next
+  }
+}
+
+export function isRemovalArgv(argv: string[]): boolean {
+  const [command] = normalizeRemovalArgv(argv)
+  return command === 'rm' || command === 'rmdir'
+}
+
+export function checkDangerousRemovalArgv(
+  argv: string[],
+  cwd: string,
+): PermissionResult {
+  const [command, ...args] = normalizeRemovalArgv(argv)
+  if (command !== 'rm' && command !== 'rmdir') {
+    return {
+      behavior: 'passthrough',
+      message: 'No dangerous removals detected',
+    }
+  }
+  return checkDangerousRemovalPaths(command, args, cwd)
+}
+
 /**
  * SECURITY: Extract positional (non-flag) arguments, correctly handling the
  * POSIX `--` end-of-options delimiter.

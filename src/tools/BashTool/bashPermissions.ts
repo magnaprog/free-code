@@ -79,8 +79,9 @@ import {
 } from './bashSecurity.js'
 import { checkPermissionMode } from './modeValidation.js'
 import {
-  checkDangerousRemovalPaths,
+  checkDangerousRemovalArgv,
   checkPathConstraints,
+  isRemovalArgv,
 } from './pathValidation.js'
 import { checkSedConstraints } from './sedValidation.js'
 import { shouldUseSandbox } from './shouldUseSandbox.js'
@@ -2202,9 +2203,85 @@ export async function checkCommandAndSuggestRules(
  *   - allow if no explicit rules (sandbox auto-allow applies)
  *   - passthrough should not occur since we're in auto-allow mode
  */
+/**
+ * Walk exec-wrapper chains and shell parameter expansions on `command`,
+ * looking for `rm`/`rmdir` invocations against critical paths. Exported so
+ * the sandbox auto-allow text-fallback path can be exercised directly in
+ * tests without booting the full bashToolHasPermission stack.
+ */
+export function checkDangerousRemovalText(
+  command: string,
+  cwd: string,
+): { result: PermissionResult; sawRemoval: boolean } {
+  const seen = new Set<string>()
+  const stack = [command]
+  let sawRemoval = false
+  let inspected = 0
+
+  while (stack.length > 0) {
+    const current = stack.pop()!.trim()
+    if (!current || seen.has(current)) continue
+    seen.add(current)
+    if (++inspected > EXEC_WRAPPER_UNSAFE_RECURSION_LIMIT) break
+
+    const stripped = stripSafeWrappers(current)
+    const shellParameterExpansion = normalizeShellParametersForPermission(
+      normalizeStaticDollarQuotesForShell(stripped) ?? stripped,
+    )
+    const parsed = tryParseShellCommand(
+      shellParameterExpansion.command,
+      key =>
+        Object.prototype.hasOwnProperty.call(shellParameterExpansion.env, key)
+          ? shellParameterExpansion.env[key]
+          : resolveShellParameterForPermission(key),
+    )
+    if (
+      parsed.success &&
+      parsed.tokens.every(token => typeof token === 'string')
+    ) {
+      const argv = parsed.tokens as string[]
+      sawRemoval ||= isRemovalArgv(argv)
+      const result = checkDangerousRemovalArgv(argv, cwd)
+      if (result.behavior !== 'passthrough') {
+        return { result, sawRemoval: true }
+      }
+    }
+
+    if (stripped !== current) stack.push(stripped)
+
+    const execStripped = stripExecWrappersForDenyDetailed(current)
+    for (const strippedCommand of execStripped.commands) {
+      if (strippedCommand !== current) stack.push(strippedCommand)
+    }
+  }
+
+  return {
+    sawRemoval,
+    result: {
+      behavior: 'passthrough',
+      message: 'No dangerous removals detected',
+    },
+  }
+}
+
+function askForCdRemovalInSandbox(): PermissionResult {
+  const decisionReason = {
+    type: 'other' as const,
+    reason:
+      'Compound commands that change directories and remove files require approval because removal targets depend on the changed directory',
+  }
+  return {
+    behavior: 'ask',
+    message: createPermissionRequestMessage(BashTool.name, decisionReason),
+    decisionReason,
+    suggestions: [],
+  }
+}
+
 function checkSandboxAutoAllow(
   input: z.infer<typeof BashTool.inputSchema>,
   toolPermissionContext: ToolPermissionContext,
+  astCommands?: SimpleCommand[],
 ): PermissionResult {
   const command = input.command.trim()
 
@@ -2287,19 +2364,45 @@ function checkSandboxAutoAllow(
   // or `rm -rf $HOME` catastrophic, and the user should always be prompted.
   // Scan every subcommand for rm/rmdir targeting critical paths.
   const cwd = getCwd()
-  for (const sub of subcommands.length > 0 ? subcommands : [command]) {
-    const stripped = stripSafeWrappers(sub)
-    const parsed = tryParseShellCommand(stripped)
-    if (!parsed.success) continue
-    const tokens = parsed.tokens.filter(
-      (t): t is string => typeof t === 'string',
-    )
-    const [baseCmd, ...rest] = tokens
-    if (baseCmd !== 'rm' && baseCmd !== 'rmdir') continue
-    const dangerousResult = checkDangerousRemovalPaths(baseCmd, rest, cwd)
-    if (dangerousResult.behavior !== 'passthrough') {
-      return dangerousResult
+  const hasDirectoryChange = astCommands
+    ? astCommands.some(
+        astCommand =>
+          astCommand.argv[0] === 'cd' ||
+          astCommand.argv[0] === 'pushd' ||
+          astCommand.argv[0] === 'popd' ||
+          isNormalizedCdCommand(astCommand.text),
+      )
+    : subcommands.some(sub => isNormalizedCdCommand(sub))
+  let sawRemoval = false
+
+  if (astCommands) {
+    for (const astCommand of astCommands) {
+      const argvSawRemoval = isRemovalArgv(astCommand.argv)
+      sawRemoval ||= argvSawRemoval
+      const dangerousResult = checkDangerousRemovalArgv(astCommand.argv, cwd)
+      if (dangerousResult.behavior !== 'passthrough') {
+        return dangerousResult
+      }
+      if (!argvSawRemoval) {
+        const textCheck = checkDangerousRemovalText(astCommand.text, cwd)
+        sawRemoval ||= textCheck.sawRemoval
+        if (textCheck.result.behavior !== 'passthrough') {
+          return textCheck.result
+        }
+      }
     }
+  } else {
+    for (const sub of subcommands.length > 0 ? subcommands : [command]) {
+      const textCheck = checkDangerousRemovalText(sub, cwd)
+      sawRemoval ||= textCheck.sawRemoval
+      if (textCheck.result.behavior !== 'passthrough') {
+        return textCheck.result
+      }
+    }
+  }
+
+  if (hasDirectoryChange && sawRemoval) {
+    return askForCdRemovalInSandbox()
   }
 
   // No explicit rules and no dangerous-removal hits, so auto-allow with sandbox
@@ -2792,6 +2895,7 @@ export async function bashToolHasPermission(
     const sandboxAutoAllowResult = checkSandboxAutoAllow(
       input,
       appState.toolPermissionContext,
+      astCommands,
     )
     if (sandboxAutoAllowResult.behavior !== 'passthrough') {
       return sandboxAutoAllowResult
