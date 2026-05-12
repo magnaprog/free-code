@@ -1830,14 +1830,30 @@ async function* queryModel(
         // Use raw stream instead of BetaMessageStream to avoid O(n²) partial JSON parsing
         // BetaMessageStream calls partialParse() on every input_json_delta, which we don't need
         // since we handle tool input accumulation ourselves
+        //
+        // Upstream 2.1.139: subagent requests carry X-Claude-Code-Agent-Id so
+        // gateway/OTEL traces can distinguish main-loop traffic from subagent
+        // traffic. Gated behind isAttributionHeaderEnabled() so free-code's
+        // no-attribution default stays clean — opt in with
+        // FREE_CODE_ENABLE_ANTHROPIC_ATTRIBUTION=true.
+        const subagentHeaders: Record<string, string> = {}
+        if (isAttributionHeaderEnabled() && options.agentId) {
+          subagentHeaders['X-Claude-Code-Agent-Id'] = options.agentId
+        }
+        const requestHeaders = {
+          ...(clientRequestId && {
+            [CLIENT_REQUEST_ID_HEADER]: clientRequestId,
+          }),
+          ...subagentHeaders,
+        }
         // biome-ignore lint/plugin: main conversation loop handles attribution separately
         const result = await anthropic.beta.messages
           .create(
             { ...params, stream: true },
             {
               signal,
-              ...(clientRequestId && {
-                headers: { [CLIENT_REQUEST_ID_HEADER]: clientRequestId },
+              ...(Object.keys(requestHeaders).length > 0 && {
+                headers: requestHeaders,
               }),
             },
           )
