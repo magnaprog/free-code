@@ -78,7 +78,10 @@ import {
   stripSafeHeredocSubstitutions,
 } from './bashSecurity.js'
 import { checkPermissionMode } from './modeValidation.js'
-import { checkPathConstraints } from './pathValidation.js'
+import {
+  checkDangerousRemovalPaths,
+  checkPathConstraints,
+} from './pathValidation.js'
 import { checkSedConstraints } from './sedValidation.js'
 import { shouldUseSandbox } from './shouldUseSandbox.js'
 
@@ -2278,7 +2281,28 @@ function checkSandboxAutoAllow(
       },
     }
   }
-  // No explicit rules, so auto-allow with sandbox
+  // SECURITY (upstream 2.1.116): sandbox auto-allow must not bypass the
+  // dangerous-removal check. Even if the sandbox protects the host filesystem,
+  // mis-configured sandboxes (mapped /, network/file leaks) make `rm -rf /`
+  // or `rm -rf $HOME` catastrophic, and the user should always be prompted.
+  // Scan every subcommand for rm/rmdir targeting critical paths.
+  const cwd = getCwd()
+  for (const sub of subcommands.length > 0 ? subcommands : [command]) {
+    const stripped = stripSafeWrappers(sub)
+    const parsed = tryParseShellCommand(stripped)
+    if (!parsed.success) continue
+    const tokens = parsed.tokens.filter(
+      (t): t is string => typeof t === 'string',
+    )
+    const [baseCmd, ...rest] = tokens
+    if (baseCmd !== 'rm' && baseCmd !== 'rmdir') continue
+    const dangerousResult = checkDangerousRemovalPaths(baseCmd, rest, cwd)
+    if (dangerousResult.behavior !== 'passthrough') {
+      return dangerousResult
+    }
+  }
+
+  // No explicit rules and no dangerous-removal hits, so auto-allow with sandbox
 
   return {
     behavior: 'allow',
