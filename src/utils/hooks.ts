@@ -447,6 +447,20 @@ function validateHookJson(
   }
 }
 
+function getSyncHookJson(
+  json: HookJSONOutput | undefined,
+): SyncHookJSONOutput | undefined {
+  return json && !isAsyncHookJSONOutput(json) ? json : undefined
+}
+
+function getBlockedHookOutput(
+  json: SyncHookJSONOutput | undefined,
+  fallback: string,
+): string | undefined {
+  if (json?.decision !== 'block') return undefined
+  return json.reason || json.systemMessage || fallback
+}
+
 function parseHookOutput(stdout: string): {
   json?: HookJSONOutput
   plainText?: string
@@ -1019,13 +1033,17 @@ async function execCommandHook(
   // CLAUDE_PLUGIN_DATA / user_config substitution applies to BOTH command
   // and args, but no shell metacharacters are honored.
   if (hook.args) {
+    // Exec form bypasses every shell (no /bin/sh, no Git Bash, no pwsh -Command).
+    // toHookPath() converts paths to POSIX form on Windows when targeting bash,
+    // which is exactly wrong here — a spawned Windows-native binary expects
+    // `C:\…` and would receive `/c/…` instead. Use the raw project root and
+    // plugin roots in exec form regardless of platform.
     const substituteVars = (s: string): string => {
-      let value = s
+      let value = s.replace(/\$\{CLAUDE_PROJECT_DIR\}/g, () => projectDir)
       if (pluginRoot) {
-        const rootPath = toHookPath(pluginRoot)
-        value = value.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, () => rootPath)
+        value = value.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, () => pluginRoot)
         if (pluginId) {
-          const dataPath = toHookPath(getPluginDataDir(pluginId))
+          const dataPath = getPluginDataDir(pluginId)
           value = value.replace(/\$\{CLAUDE_PLUGIN_DATA\}/g, () => dataPath)
           if (pluginOpts) {
             value = substituteUserConfigVariables(value, pluginOpts)
@@ -3212,14 +3230,14 @@ async function executeHooksOutsideREPL({
             }
           }
 
+          const syncJson = getSyncHookJson(json)
+          const blocked = syncJson?.decision === 'block'
           const output =
-            hookEvent === 'WorktreeCreate' &&
-            isSyncHookJSONOutput(json) &&
-            json.hookSpecificOutput?.hookEventName === 'WorktreeCreate'
-              ? json.hookSpecificOutput.worktreePath
-              : json.systemMessage || ''
-          const blocked =
-            isSyncHookJSONOutput(json) && json.decision === 'block'
+            getBlockedHookOutput(syncJson, '') ??
+            (hookEvent === 'WorktreeCreate' &&
+            syncJson?.hookSpecificOutput?.hookEventName === 'WorktreeCreate'
+              ? syncJson.hookSpecificOutput.worktreePath
+              : syncJson?.systemMessage || '')
 
           logForDebugging(`${hookName} [callback] completed successfully`)
 
@@ -3332,11 +3350,8 @@ async function executeHooksOutsideREPL({
               { level: 'verbose' },
             )
           }
-          const jsonBlocked =
-            httpJson &&
-            !isAsyncHookJSONOutput(httpJson) &&
-            isSyncHookJSONOutput(httpJson) &&
-            httpJson.decision === 'block'
+          const syncHttpJson = getSyncHookJson(httpJson)
+          const jsonBlocked = syncHttpJson?.decision === 'block'
 
           // WorktreeCreate's consumer reads `output` as the bare filesystem
           // path. Command hooks provide it via stdout; http hooks provide it
@@ -3344,13 +3359,13 @@ async function executeHooksOutsideREPL({
           // so the consumer's length filter skips it instead of treating the
           // raw '{}' body as a path.
           const output =
-            hookEvent === 'WorktreeCreate'
-              ? httpJson &&
-                isSyncHookJSONOutput(httpJson) &&
-                httpJson.hookSpecificOutput?.hookEventName === 'WorktreeCreate'
-                ? httpJson.hookSpecificOutput.worktreePath
+            getBlockedHookOutput(syncHttpJson, httpResult.body) ??
+            (hookEvent === 'WorktreeCreate'
+              ? syncHttpJson?.hookSpecificOutput?.hookEventName ===
+                'WorktreeCreate'
+                ? syncHttpJson.hookSpecificOutput.worktreePath
                 : ''
-              : httpResult.body
+              : httpResult.body)
 
           return {
             command: hook.url,
@@ -3425,27 +3440,22 @@ async function executeHooksOutsideREPL({
         }
 
         // Blocked if exit code 2 or JSON decision: 'block'
-        const jsonBlocked =
-          json &&
-          !isAsyncHookJSONOutput(json) &&
-          isSyncHookJSONOutput(json) &&
-          json.decision === 'block'
-        const blocked = result.status === 2 || !!jsonBlocked
+        const syncJson = getSyncHookJson(json)
+        const jsonBlocked = syncJson?.decision === 'block'
+        const blocked = result.status === 2 || jsonBlocked
 
         // For successful hooks (exit code 0), use stdout; for failed hooks, use stderr
         const output =
-          result.status === 0 ? result.stdout || '' : result.stderr || ''
+          getBlockedHookOutput(syncJson, result.stdout || result.stderr || '') ??
+          (result.status === 0 ? result.stdout || '' : result.stderr || '')
 
         const watchPaths =
-          json &&
-          isSyncHookJSONOutput(json) &&
-          json.hookSpecificOutput &&
-          'watchPaths' in json.hookSpecificOutput
-            ? json.hookSpecificOutput.watchPaths
+          syncJson?.hookSpecificOutput &&
+          'watchPaths' in syncJson.hookSpecificOutput
+            ? syncJson.hookSpecificOutput.watchPaths
             : undefined
 
-        const systemMessage =
-          json && isSyncHookJSONOutput(json) ? json.systemMessage : undefined
+        const systemMessage = syncJson?.systemMessage
 
         return {
           command: hook.command,
@@ -4102,7 +4112,10 @@ export async function executePreCompactHooks(
 
   // Extract custom instructions from successful hooks with non-empty output
   const successfulOutputs = results
-    .filter(result => result.succeeded && result.output.trim().length > 0)
+    .filter(
+      result =>
+        !result.blocked && result.succeeded && result.output.trim().length > 0,
+    )
     .map(result => result.output.trim())
 
   // Build user display messages with command info
