@@ -72,7 +72,7 @@ function buildHookSchemas() {
       .boolean()
       .optional()
       .describe(
-        'PostToolUse only: when true, feed the hook\'s rejection reason back to Claude as a user message and continue the turn instead of stopping. Ignored for other events.',
+        'Forward-compatible field; free-code does not gate hook behavior on this. PostToolUse block reasons are always fed back to Claude as a system reminder (equivalent to upstream continueOnBlock=true).',
       ),
   })
 
