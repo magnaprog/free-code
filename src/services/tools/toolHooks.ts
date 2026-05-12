@@ -34,7 +34,7 @@ import type { McpServerType, MessageUpdateLazy } from './toolExecution.js'
 
 export type PostToolUseHooksResult<Output> =
   | MessageUpdateLazy<AttachmentMessage | ProgressMessage<HookProgress>>
-  | { updatedMCPToolOutput: Output }
+  | { updatedToolOutput: Output }
 
 export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
   toolUseContext: ToolUseContext,
@@ -46,6 +46,7 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
   requestId: string | undefined,
   mcpServerType: McpServerType,
   mcpServerBaseUrl: string | undefined,
+  durationMs: number,
 ): AsyncGenerator<PostToolUseHooksResult<Output>> {
   const postToolStartTime = Date.now()
   try {
@@ -59,6 +60,7 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
       toolInput,
       toolOutput,
       toolUseContext,
+      durationMs,
       permissionMode,
       toolUseContext.abortController.signal,
     )) {
@@ -142,11 +144,15 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
           }
         }
 
-        // If hooks provided updatedMCPToolOutput, yield it if this is an MCP tool
-        if (result.updatedMCPToolOutput && isMcpTool(tool)) {
+        if ('updatedToolOutput' in result) {
+          toolOutput = result.updatedToolOutput as Output
+          yield {
+            updatedToolOutput: toolOutput,
+          }
+        } else if ('updatedMCPToolOutput' in result && isMcpTool(tool)) {
           toolOutput = result.updatedMCPToolOutput as Output
           yield {
-            updatedMCPToolOutput: toolOutput,
+            updatedToolOutput: toolOutput,
           }
         }
       } catch (error) {
@@ -201,6 +207,7 @@ export async function* runPostToolUseFailureHooks<Input extends AnyObject>(
   requestId: string | undefined,
   mcpServerType: McpServerType,
   mcpServerBaseUrl: string | undefined,
+  durationMs: number,
 ): AsyncGenerator<
   MessageUpdateLazy<AttachmentMessage | ProgressMessage<HookProgress>>
 > {
@@ -218,6 +225,8 @@ export async function* runPostToolUseFailureHooks<Input extends AnyObject>(
       isInterrupt,
       permissionMode,
       toolUseContext.abortController.signal,
+      undefined,
+      durationMs,
     )) {
       try {
         // Check if we were aborted during hook execution

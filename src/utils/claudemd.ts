@@ -641,10 +641,11 @@ export async function processMemoryFile(
     getFsImplementation(),
     filePath,
   )
+  const normalizedResolvedPath = normalizePathForComparison(resolvedPath)
 
   processedPaths.add(normalizedPath)
   if (isSymlink) {
-    processedPaths.add(normalizePathForComparison(resolvedPath))
+    processedPaths.add(normalizedResolvedPath)
   }
 
   const { info: memoryFile, includePaths: resolvedIncludePaths } =

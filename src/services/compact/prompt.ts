@@ -21,14 +21,15 @@ const NO_TOOLS_PREAMBLE = `CRITICAL: Respond with TEXT ONLY. Do NOT call any too
 - Do NOT use Read, Bash, Grep, Glob, Edit, Write, or ANY other tool.
 - You already have all the context you need in the conversation above.
 - Tool calls will be REJECTED and will waste your only turn — you will fail the task.
-- Your entire response must be plain text: an <analysis> block followed by a <summary> block.
+- Your entire response must be plain text: one <summary> block only.
+- Do NOT include <analysis>, scratchpad, chain-of-thought, or any text outside <summary>.
 
 `
 
 // Two variants: BASE scopes to "the conversation", PARTIAL scopes to "the
-// recent messages". The <analysis> block is a drafting scratchpad that
-// formatCompactSummary() strips before the summary reaches context.
-const DETAILED_ANALYSIS_INSTRUCTION_BASE = `Before providing your final summary, wrap your analysis in <analysis> tags to organize your thoughts and ensure you've covered all necessary points. In your analysis process:
+// recent messages". The model should reason internally; emitted scratchpad
+// burns compact output budget before formatCompactSummary() can strip it.
+const DETAILED_ANALYSIS_INSTRUCTION_BASE = `Before providing your final summary, internally organize your thoughts and ensure you've covered all necessary points. In your analysis process:
 
 1. Chronologically analyze each message and section of the conversation. For each section thoroughly identify:
    - The user's explicit requests and intents
@@ -36,7 +37,7 @@ const DETAILED_ANALYSIS_INSTRUCTION_BASE = `Before providing your final summary,
    - Key decisions, technical concepts and code patterns
    - Specific details like:
      - file names
-     - full code snippets
+     - short code snippets only when essential
      - function signatures
      - file edits
      - project-specific development environment setup, including required runtimes/toolchains, package managers, shell configuration, PATH changes, and environment variables
@@ -44,7 +45,7 @@ const DETAILED_ANALYSIS_INSTRUCTION_BASE = `Before providing your final summary,
    - Pay special attention to specific user feedback that you received, especially if the user told you to do something differently.
 2. Double-check for technical accuracy and completeness, addressing each required element thoroughly.`
 
-const DETAILED_ANALYSIS_INSTRUCTION_PARTIAL = `Before providing your final summary, wrap your analysis in <analysis> tags to organize your thoughts and ensure you've covered all necessary points. In your analysis process:
+const DETAILED_ANALYSIS_INSTRUCTION_PARTIAL = `Before providing your final summary, internally organize your thoughts and ensure you've covered all necessary points. In your analysis process:
 
 1. Analyze the recent messages chronologically. For each section thoroughly identify:
    - The user's explicit requests and intents
@@ -52,7 +53,7 @@ const DETAILED_ANALYSIS_INSTRUCTION_PARTIAL = `Before providing your final summa
    - Key decisions, technical concepts and code patterns
    - Specific details like:
      - file names
-     - full code snippets
+     - short code snippets only when essential
      - function signatures
      - file edits
      - project-specific development environment setup, including required runtimes/toolchains, package managers, shell configuration, PATH changes, and environment variables
@@ -60,32 +61,36 @@ const DETAILED_ANALYSIS_INSTRUCTION_PARTIAL = `Before providing your final summa
    - Pay special attention to specific user feedback that you received, especially if the user told you to do something differently.
 2. Double-check for technical accuracy and completeness, addressing each required element thoroughly.`
 
+const SUMMARY_OUTPUT_BUDGET_INSTRUCTION = `Output constraints:
+- Return exactly one <summary> block and nothing else.
+- Keep the summary under 8,000 tokens.
+- Prefer concise bullets with exact file paths, function names, commands, errors, and decisions.
+- Include code snippets only when essential and short; otherwise point to the transcript for full details.`
+
 const BASE_COMPACT_PROMPT = `Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions.
 This summary should be thorough in capturing technical details, code patterns, and architectural decisions that would be essential for continuing development work without losing context.
 
 ${DETAILED_ANALYSIS_INSTRUCTION_BASE}
 
+${SUMMARY_OUTPUT_BUDGET_INSTRUCTION}
+
 Your summary should include the following sections:
 
 1. Primary Request and Intent: Capture all of the user's explicit requests and intents in detail
 2. Key Technical Concepts: List all important technical concepts, technologies, and frameworks discussed.
-3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. Pay special attention to the most recent messages and include full code snippets where applicable and include a summary of why this file read or edit is important.
+3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. Pay special attention to the most recent messages and include short code snippets only when essential, plus a brief note on why each file mattered.
 4. Errors and fixes: List all errors that you ran into, and how you fixed them. Pay special attention to specific user feedback that you received, especially if the user told you to do something differently.
 5. Environment and workflow setup: Preserve the exact setup needed to continue work in this project, including runtimes, toolchains, package managers, shell configuration, PATH or tool availability, and required environment variables.
 6. Problem Solving: Document problems solved and any ongoing troubleshooting efforts.
-7. All user messages: List ALL user messages that are not tool results. These are critical for understanding the users' feedback and changing intent.
+7. All user messages: List each user message that is not a tool result. Paraphrase long messages; quote exact wording only for short critical instructions.
 8. Pending Tasks: Outline any pending tasks that you have explicitly been asked to work on.
-9. Current Work: Describe in detail precisely what was being worked on immediately before this summary request, paying special attention to the most recent messages from both user and assistant. Include file names and code snippets where applicable.
+9. Current Work: Describe in detail precisely what was being worked on immediately before this summary request, paying special attention to the most recent messages from both user and assistant. Include file names and short code snippets only when essential.
 10. Optional Next Step: List the next step that you will take that is related to the most recent work you were doing. IMPORTANT: ensure that this step is DIRECTLY in line with the user's most recent explicit requests, and the task you were working on immediately before this summary request. If your last task was concluded, then only list next steps if they are explicitly in line with the users request. Do not start on tangential requests or really old requests that were already completed without confirming with the user first.
                        If there is a next step, include direct quotes from the most recent conversation showing exactly what task you were working on and where you left off. This should be verbatim to ensure there's no drift in task interpretation.
 
 Here's an example of how your output should be structured:
 
 <example>
-<analysis>
-[Your thought process, ensuring all points are covered thoroughly and accurately]
-</analysis>
-
 <summary>
 1. Primary Request and Intent:
    [Detailed description]
@@ -99,9 +104,9 @@ Here's an example of how your output should be structured:
    - [File Name 1]
       - [Summary of why this file is important]
       - [Summary of the changes made to this file, if any]
-      - [Important Code Snippet]
+      - [Important short snippet, if essential]
    - [File Name 2]
-      - [Important Code Snippet]
+      - [Important short snippet, if essential]
    - [...]
 
 4. Errors and fixes:
@@ -152,15 +157,17 @@ const PARTIAL_COMPACT_PROMPT = `Your task is to create a detailed summary of the
 
 ${DETAILED_ANALYSIS_INSTRUCTION_PARTIAL}
 
+${SUMMARY_OUTPUT_BUDGET_INSTRUCTION}
+
 Your summary should include the following sections:
 
 1. Primary Request and Intent: Capture the user's explicit requests and intents from the recent messages
 2. Key Technical Concepts: List important technical concepts, technologies, and frameworks discussed recently.
-3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. Include full code snippets where applicable and include a summary of why this file read or edit is important.
+3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. Include short code snippets only when essential, plus a brief note on why each file mattered.
 4. Errors and fixes: List errors encountered and how they were fixed.
 5. Environment and workflow setup: Preserve the exact setup needed to continue work in this project, including runtimes, toolchains, package managers, shell configuration, PATH or tool availability, and required environment variables.
 6. Problem Solving: Document problems solved and any ongoing troubleshooting efforts.
-7. All user messages: List ALL user messages from the recent portion that are not tool results.
+7. All user messages: List each user message from the recent portion that is not a tool result. Paraphrase long messages; quote exact wording only for short critical instructions.
 8. Pending Tasks: Outline any pending tasks from the recent messages.
 9. Current Work: Describe precisely what was being worked on immediately before this summary request.
 10. Optional Next Step: List the next step related to the most recent work. Include direct quotes from the most recent conversation.
@@ -168,10 +175,6 @@ Your summary should include the following sections:
 Here's an example of how your output should be structured:
 
 <example>
-<analysis>
-[Your thought process, ensuring all points are covered thoroughly and accurately]
-</analysis>
-
 <summary>
 1. Primary Request and Intent:
    [Detailed description]
@@ -183,7 +186,7 @@ Here's an example of how your output should be structured:
 3. Files and Code Sections:
    - [File Name 1]
       - [Summary of why this file is important]
-      - [Important Code Snippet]
+      - [Important short snippet, if essential]
 
 4. Errors and fixes:
     - [Error description]:
@@ -219,15 +222,17 @@ const PARTIAL_COMPACT_UP_TO_PROMPT = `Your task is to create a detailed summary 
 
 ${DETAILED_ANALYSIS_INSTRUCTION_BASE}
 
+${SUMMARY_OUTPUT_BUDGET_INSTRUCTION}
+
 Your summary should include the following sections:
 
 1. Primary Request and Intent: Capture the user's explicit requests and intents in detail
 2. Key Technical Concepts: List important technical concepts, technologies, and frameworks discussed.
-3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. Include full code snippets where applicable and include a summary of why this file read or edit is important.
+3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. Include short code snippets only when essential, plus a brief note on why each file mattered.
 4. Errors and fixes: List errors encountered and how they were fixed.
 5. Environment and workflow setup: Preserve the exact setup needed to continue work in this project, including runtimes, toolchains, package managers, shell configuration, PATH or tool availability, and required environment variables.
 6. Problem Solving: Document problems solved and any ongoing troubleshooting efforts.
-7. All user messages: List ALL user messages that are not tool results.
+7. All user messages: List each user message that is not a tool result. Paraphrase long messages; quote exact wording only for short critical instructions.
 8. Pending Tasks: Outline any pending tasks.
 9. Work Completed: Describe what was accomplished by the end of this portion.
 10. Context for Continuing Work: Summarize any context, decisions, or state that would be needed to understand and continue the work in subsequent messages.
@@ -235,10 +240,6 @@ Your summary should include the following sections:
 Here's an example of how your output should be structured:
 
 <example>
-<analysis>
-[Your thought process, ensuring all points are covered thoroughly and accurately]
-</analysis>
-
 <summary>
 1. Primary Request and Intent:
    [Detailed description]
@@ -250,7 +251,7 @@ Here's an example of how your output should be structured:
 3. Files and Code Sections:
    - [File Name 1]
       - [Summary of why this file is important]
-      - [Important Code Snippet]
+      - [Important short snippet, if essential]
 
 4. Errors and fixes:
     - [Error description]:
@@ -282,7 +283,7 @@ Please provide your summary following this structure, ensuring precision and tho
 
 const NO_TOOLS_TRAILER =
   '\n\nREMINDER: Do NOT call any tools. Respond with plain text only — ' +
-  'an <analysis> block followed by a <summary> block. ' +
+  'one <summary> block and nothing else. ' +
   'Tool calls will be rejected and you will fail the task.'
 
 export function getPartialCompactPrompt(
@@ -317,7 +318,7 @@ export function getCompactPrompt(customInstructions?: string): string {
 }
 
 /**
- * Formats the compact summary by stripping the <analysis> drafting scratchpad
+ * Formats the compact summary by stripping any accidental <analysis> scratchpad
  * and replacing <summary> XML tags with readable section headers.
  * @param summary The raw summary string potentially containing <analysis> and <summary> XML tags
  * @returns The formatted summary with analysis stripped and summary tags replaced by headers
@@ -325,8 +326,7 @@ export function getCompactPrompt(customInstructions?: string): string {
 export function formatCompactSummary(summary: string): string {
   let formattedSummary = summary
 
-  // Strip analysis section — it's a drafting scratchpad that improves summary
-  // quality but has no informational value once the summary is written.
+  // Be tolerant of older/misbehaving summaries that still emit scratchpad text.
   formattedSummary = formattedSummary.replace(
     /<analysis>[\s\S]*?<\/analysis>/,
     '',

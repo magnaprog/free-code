@@ -1,17 +1,34 @@
 import { isEnvTruthy } from './envUtils.js'
 
 /**
- * Env vars to strip from subprocess environments when running inside GitHub
- * Actions. This prevents prompt-injection attacks from exfiltrating secrets
- * via shell expansion (e.g., ${ANTHROPIC_API_KEY}) in Bash tool commands.
+ * Env vars to strip from subprocess environments. This prevents
+ * prompt-injection attacks from exfiltrating secrets via shell expansion
+ * (e.g., ${ANTHROPIC_API_KEY}) in Bash tool commands.
  *
  * The parent claude process keeps these vars (needed for API calls, lazy
  * credential reads). Only child processes (bash, shell snapshot, MCP stdio, LSP, hooks) are scrubbed.
  *
- * GITHUB_TOKEN / GH_TOKEN are intentionally NOT scrubbed — wrapper scripts
- * (gh.sh) need them to call the GitHub API. That token is job-scoped and
- * expires when the workflow ends.
+ * GITHUB_TOKEN / GH_TOKEN are intentionally NOT scrubbed in GitHub Actions —
+ * wrapper scripts (gh.sh) need them to call the GitHub API. That token is
+ * job-scoped and expires when the workflow ends.
  */
+const ALWAYS_STRIP_SUBPROCESS_ENV = [
+  // OTLP exporter headers can carry Authorization=Bearer tokens for monitoring
+  // backends; child processes never need them.
+  'OTEL_EXPORTER_OTLP_HEADERS',
+  'OTEL_EXPORTER_OTLP_LOGS_HEADERS',
+  'OTEL_EXPORTER_OTLP_METRICS_HEADERS',
+  'OTEL_EXPORTER_OTLP_TRACES_HEADERS',
+  // OTLP exporter endpoints — if a subprocess is an OTEL-instrumented app,
+  // inheriting these makes it report to the CLI's own collector (double
+  // counting / cross-tenant leak). Strip alongside the headers so the
+  // subprocess uses its own OTEL config or none at all.
+  'OTEL_EXPORTER_OTLP_ENDPOINT',
+  'OTEL_EXPORTER_OTLP_LOGS_ENDPOINT',
+  'OTEL_EXPORTER_OTLP_METRICS_ENDPOINT',
+  'OTEL_EXPORTER_OTLP_TRACES_ENDPOINT',
+] as const
+
 const GHA_SUBPROCESS_SCRUB = [
   // Anthropic auth — claude re-reads these per-request, subprocesses don't need them
   'ANTHROPIC_API_KEY',
@@ -19,13 +36,6 @@ const GHA_SUBPROCESS_SCRUB = [
   'ANTHROPIC_AUTH_TOKEN',
   'ANTHROPIC_FOUNDRY_API_KEY',
   'ANTHROPIC_CUSTOM_HEADERS',
-
-  // OTLP exporter headers — documented to carry Authorization=Bearer tokens
-  // for monitoring backends; read in-process by OTEL SDK, subprocesses never need them
-  'OTEL_EXPORTER_OTLP_HEADERS',
-  'OTEL_EXPORTER_OTLP_LOGS_HEADERS',
-  'OTEL_EXPORTER_OTLP_METRICS_HEADERS',
-  'OTEL_EXPORTER_OTLP_TRACES_HEADERS',
 
   // Cloud provider creds — same pattern (lazy SDK reads)
   'AWS_SECRET_ACCESS_KEY',
@@ -57,9 +67,9 @@ const GHA_SUBPROCESS_SCRUB = [
  * spawning subprocesses (Bash tool, shell snapshot, MCP stdio servers, LSP
  * servers, shell hooks).
  *
- * Gated on CLAUDE_CODE_SUBPROCESS_ENV_SCRUB. claude-code-action sets this
- * automatically when `allowed_non_write_users` is configured — the flag that
- * exposes a workflow to untrusted content (prompt injection surface).
+ * OTLP exporter header and endpoint vars are always stripped. Additional
+ * GitHub Actions secrets are stripped when CLAUDE_CODE_SUBPROCESS_ENV_SCRUB
+ * is enabled.
  */
 // Registered by init.ts after the upstreamproxy module is dynamically imported
 // in CCR sessions. Stays undefined in non-CCR startups so we never pull in the
@@ -83,17 +93,21 @@ export function subprocessEnv(): NodeJS.ProcessEnv {
   // CCR containers.
   const proxyEnv = _getUpstreamProxyEnv?.() ?? {}
 
-  if (!isEnvTruthy(process.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB)) {
-    return Object.keys(proxyEnv).length > 0
-      ? { ...process.env, ...proxyEnv }
-      : process.env
-  }
   const env = { ...process.env, ...proxyEnv }
-  for (const k of GHA_SUBPROCESS_SCRUB) {
+  for (const k of ALWAYS_STRIP_SUBPROCESS_ENV) {
     delete env[k]
     // GitHub Actions auto-creates INPUT_<NAME> for `with:` inputs, duplicating
-    // secrets like INPUT_ANTHROPIC_API_KEY. No-op for vars that aren't action inputs.
+    // secrets like INPUT_OTEL_EXPORTER_OTLP_HEADERS. No-op elsewhere.
     delete env[`INPUT_${k}`]
+  }
+
+  if (isEnvTruthy(process.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB)) {
+    for (const k of GHA_SUBPROCESS_SCRUB) {
+      delete env[k]
+      // GitHub Actions auto-creates INPUT_<NAME> for `with:` inputs, duplicating
+      // secrets like INPUT_ANTHROPIC_API_KEY. No-op for vars that aren't action inputs.
+      delete env[`INPUT_${k}`]
+    }
   }
   return env
 }

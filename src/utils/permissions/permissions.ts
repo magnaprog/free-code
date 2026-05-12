@@ -8,6 +8,7 @@ import {
 import type { Tool, ToolPermissionContext, ToolUseContext } from '../../Tool.js'
 import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import { shouldUseSandbox } from '../../tools/BashTool/shouldUseSandbox.js'
+import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../../tools/ExitPlanModeTool/constants.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import { POWERSHELL_TOOL_NAME } from '../../tools/PowerShellTool/toolName.js'
 import { REPL_TOOL_NAME } from '../../tools/REPLTool/constants.js'
@@ -468,6 +469,30 @@ async function runPermissionRequestHooksForHeadlessAgent(
     )
   }
   return null
+}
+
+function blockPlanModeWrites(
+  tool: Tool,
+  input: { [key: string]: unknown },
+  context: ToolUseContext,
+): PermissionDenyDecision | null {
+  if (context.getAppState().toolPermissionContext.mode !== 'plan') return null
+  if (tool.name === EXIT_PLAN_MODE_V2_TOOL_NAME && !tool.isMcp) return null
+  try {
+    const parsedInput = tool.inputSchema.safeParse(input)
+    if (parsedInput.success && tool.isReadOnly(parsedInput.data)) return null
+  } catch {
+    // Invalid inputs should not bypass plan mode's write block.
+  }
+
+  return {
+    behavior: 'deny',
+    message: `Plan mode is read-only. Exit plan mode before using ${tool.name}.`,
+    decisionReason: {
+      type: 'mode',
+      mode: 'plan',
+    },
+  }
 }
 
 export const hasPermissionsToUseTool: CanUseToolFn = async (
@@ -1063,7 +1088,7 @@ function handleDenialLimitExceeded(
  *
  * Returns a deny/ask decision if a rule blocks the tool, or null if no rule
  * objects. Unlike hasPermissionsToUseTool, this does NOT run the auto mode classifier,
- * mode-based transformations (dontAsk/auto/asyncAgent), PermissionRequest hooks,
+ * mode-based transformations (except plan mode's write block), PermissionRequest hooks,
  * or bypassPermissions / always-allowed checks.
  *
  * Caller must pre-check tool.requiresUserInteraction() — step 1e is not replicated.
@@ -1074,6 +1099,9 @@ export async function checkRuleBasedPermissions(
   context: ToolUseContext,
 ): Promise<PermissionAskDecision | PermissionDenyDecision | null> {
   const appState = context.getAppState()
+
+  const planModeBlock = blockPlanModeWrites(tool, input, context)
+  if (planModeBlock) return planModeBlock
 
   // 1a. Entire tool is denied by rule
   const denyRule = getDenyRuleForTool(appState.toolPermissionContext, tool)
@@ -1165,6 +1193,9 @@ async function hasPermissionsToUseToolInner(
   }
 
   let appState = context.getAppState()
+
+  const planModeBlock = blockPlanModeWrites(tool, input, context)
+  if (planModeBlock) return planModeBlock
 
   // 1. Check if the tool is denied
   // 1a. Entire tool is denied

@@ -147,6 +147,8 @@ export type WorktreeSession = {
   sessionId: string
   tmuxSessionName?: string
   hookBased?: boolean
+  /** False for user-owned worktrees entered by path; ExitWorktree must not remove them. */
+  deleteBranchOnRemove?: boolean
   /** How long worktree creation took (unset when resuming an existing worktree). */
   creationDurationMs?: number
   /** True if git sparse-checkout was applied via settings.worktree.sparsePaths. */
@@ -259,6 +261,7 @@ async function getOrCreateWorktree(
 
   const fetchEnv = { ...process.env, ...GIT_NO_PROMPT_ENV }
 
+  const baseRef = getInitialSettings().worktree?.baseRef ?? 'fresh'
   let baseBranch: string
   let baseSha: string | null = null
   if (options?.prNumber) {
@@ -274,6 +277,8 @@ async function getOrCreateWorktree(
       )
     }
     baseBranch = 'FETCH_HEAD'
+  } else if (baseRef === 'head') {
+    baseBranch = 'HEAD'
   } else {
     // If origin/<branch> already exists locally, skip fetch. In large repos
     // (210k files, 16M objects) fetch burns ~6-8s on a local commit-graph
@@ -302,8 +307,7 @@ async function getOrCreateWorktree(
     }
   }
 
-  // For the fetch/PR-fetch paths we still need the SHA — the fs-only resolveRef
-  // above only covers the "origin/<branch> already exists locally" case.
+  // Resolve the base SHA unless the fs-only origin/<branch> path already did.
   if (!baseSha) {
     const { stdout, code: shaCode } = await execFileNoThrowWithCwd(
       gitExe(),
@@ -816,8 +820,23 @@ export async function cleanupWorktree(): Promise<void> {
   }
 
   try {
-    const { worktreePath, originalCwd, worktreeBranch, hookBased } =
-      currentWorktreeSession
+    const {
+      worktreePath,
+      originalCwd,
+      worktreeBranch,
+      hookBased,
+      deleteBranchOnRemove,
+    } = currentWorktreeSession
+    const canDeleteBranchOnRemove = deleteBranchOnRemove !== false
+
+    if (!canDeleteBranchOnRemove) {
+      logForDebugging(
+        `Refusing to remove user-owned worktree entered by path: ${worktreePath}`,
+        { level: 'warn' },
+      )
+      await keepWorktree()
+      return
+    }
 
     // Change back to original directory first
     process.chdir(originalCwd)
@@ -863,8 +882,8 @@ export async function cleanupWorktree(): Promise<void> {
       activeWorktreeSession: undefined,
     }))
 
-    // Delete the temporary worktree branch (git-based only)
-    if (!hookBased && worktreeBranch) {
+    // Delete only branches created for this session's managed worktrees.
+    if (!hookBased && worktreeBranch && canDeleteBranchOnRemove) {
       // Wait a bit to ensure git has released all locks
       await sleep(100)
 

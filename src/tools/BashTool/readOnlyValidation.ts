@@ -1566,7 +1566,7 @@ const READONLY_COMMAND_REGEXES = new Set([
   // Allow escaped parentheses \( and \) for grouping, but block unescaped ones
   // NOTE: \\[()] must come BEFORE the character class to ensure \( is matched as an escaped paren,
   // not as backslash + paren (which would fail since paren is excluded from the character class)
-  /^find(?:\s+(?:\\[()]|(?!-delete\b|-exec\b|-execdir\b|-ok\b|-okdir\b|-fprint0?\b|-fls\b|-fprintf\b)[^<>()$`|{}&;\n\r\s]|\s)+)?$/,
+  /^find(?:\s+(?:\\[()]|(?!-delete\b|-exec\b|-execdir\b|-ok\b|-okdir\b|-fprint0?\b|-fls\b|-fprintf\b|-files0-from\b)[^<>()$`|{}&;\n\r\s]|\s)+)?$/,
 ])
 
 /**

@@ -262,6 +262,76 @@ function getNextImagePasteId(messages: Message[]): number {
   return maxId + 1
 }
 
+function removeMediaFromContent(content: unknown): unknown {
+  if (!Array.isArray(content)) return content
+
+  const filtered: unknown[] = []
+  for (const block of content) {
+    if (typeof block !== 'object' || block === null || !('type' in block)) {
+      filtered.push(block)
+      continue
+    }
+    const typedBlock = block as { type?: unknown; content?: unknown }
+    if (typedBlock.type === 'image' || typedBlock.type === 'document') {
+      continue
+    }
+    if (typedBlock.type === 'tool_result') {
+      const nestedContent = removeMediaFromContent(typedBlock.content)
+      if (Array.isArray(nestedContent) && nestedContent.length === 0) {
+        continue
+      }
+      filtered.push({ ...typedBlock, content: nestedContent })
+      continue
+    }
+    filtered.push(block)
+  }
+  return filtered
+}
+
+function removeMediaFromMessage(message: Message): Message | null {
+  if (message.type === 'user') {
+    const content = removeMediaFromContent(message.message.content)
+    if (Array.isArray(content) && content.length === 0) return null
+    if (content === message.message.content) return message
+    return {
+      ...message,
+      message: {
+        ...message.message,
+        content: content as typeof message.message.content,
+      },
+    }
+  }
+
+  if (message.type === 'attachment') {
+    const attachment = message.attachment
+    if (attachment.type === 'queued_command') {
+      const prompt = removeMediaFromContent(attachment.prompt)
+      if (Array.isArray(prompt) && prompt.length === 0) return null
+      if (prompt === attachment.prompt) return message
+      return {
+        ...message,
+        attachment: {
+          ...attachment,
+          prompt: prompt as typeof attachment.prompt,
+        },
+      } as AttachmentMessage
+    }
+    if (attachment.type === 'file') {
+      const content = attachment.content as { type?: unknown }
+      if (
+        content.type === 'image' ||
+        content.type === 'pdf' ||
+        content.type === 'parts' ||
+        content.type === 'notebook'
+      ) {
+        return null
+      }
+    }
+  }
+
+  return message
+}
+
 export type MessageUpdateLazy<M extends Message = Message> = {
   message: M
   contextModifier?: {
@@ -1505,6 +1575,7 @@ async function checkPermissionsAndCallTool(
     // Run PostToolUse hooks
     let toolOutput = result.data
     const hookResults = []
+    let toolOutputWasUpdatedByHook = false
     const toolContextModifier = result.contextModifier
     const mcpMeta = result.mcpMeta
 
@@ -1581,11 +1652,6 @@ async function checkPermissionsAndCallTool(
       })
     }
 
-    // TOOD(hackyon): refactor so we don't have different experiences for MCP tools
-    if (!isMcpTool(tool)) {
-      await addToolResult(toolOutput, mappedToolResultBlock)
-    }
-
     const postToolHookInfos: StopHookInfo[] = []
     const postToolHookStart = Date.now()
     for await (const hookResult of runPostToolUseHooks(
@@ -1598,29 +1664,13 @@ async function checkPermissionsAndCallTool(
       requestId,
       mcpServerType,
       mcpServerBaseUrl,
+      durationMs,
     )) {
-      if ('updatedMCPToolOutput' in hookResult) {
-        if (isMcpTool(tool)) {
-          toolOutput = hookResult.updatedMCPToolOutput
-        }
-      } else if (isMcpTool(tool)) {
-        hookResults.push(hookResult)
-        if (hookResult.message.type === 'attachment') {
-          const att = hookResult.message.attachment
-          if (
-            'command' in att &&
-            att.command !== undefined &&
-            'durationMs' in att &&
-            att.durationMs !== undefined
-          ) {
-            postToolHookInfos.push({
-              command: att.command,
-              durationMs: att.durationMs,
-            })
-          }
-        }
+      if ('updatedToolOutput' in hookResult) {
+        toolOutput = hookResult.updatedToolOutput
+        toolOutputWasUpdatedByHook = true
       } else {
-        resultingMessages.push(hookResult)
+        hookResults.push(hookResult)
         if (hookResult.message.type === 'attachment') {
           const att = hookResult.message.attachment
           if (
@@ -1645,9 +1695,12 @@ async function checkPermissionsAndCallTool(
       )
     }
 
-    if (isMcpTool(tool)) {
-      await addToolResult(toolOutput)
-    }
+    await addToolResult(
+      toolOutput,
+      !isMcpTool(tool) && !toolOutputWasUpdatedByHook
+        ? mappedToolResultBlock
+        : undefined,
+    )
 
     // Show PostToolUse hook timing inline below tool result when > 500ms.
     // Use wall-clock time (not sum of individual durations) since hooks run in parallel.
@@ -1670,10 +1723,16 @@ async function checkPermissionsAndCallTool(
       }
     }
 
-    // If the tool provided new messages, add them to the list to return.
+    // PostToolUse output replacement is the model-visible redaction boundary.
+    // Strip supplemental media payloads; text newMessages can carry required
+    // follow-up context such as injected skill prompts.
     if (result.newMessages && result.newMessages.length > 0) {
       for (const message of result.newMessages) {
-        resultingMessages.push({ message })
+        const filteredMessage = toolOutputWasUpdatedByHook
+          ? removeMediaFromMessage(message)
+          : message
+        if (!filteredMessage) continue
+        resultingMessages.push({ message: filteredMessage })
       }
     }
     // If hook indicated to prevent continuation after successful execution, yield a stop reason message
@@ -1816,6 +1875,7 @@ async function checkPermissionsAndCallTool(
       requestId,
       mcpServerType,
       mcpServerBaseUrl,
+      durationMs,
     )) {
       hookMessages.push(hookResult)
     }

@@ -16,6 +16,12 @@ import {
   invalidateSessionEnvCache,
 } from './sessionEnvironment.js'
 import { subprocessEnv } from './subprocessEnv.js'
+import {
+  type EffortValue,
+  getCurrentEffortLevel,
+  getInitialEffortSetting,
+} from './effort.js'
+import { getMainLoopModel } from './model/model.js'
 import { getPlatform } from './platform.js'
 import { findGitBashPath, windowsPathToPosixPath } from './windowsPaths.js'
 import { getCachedPowerShellPath } from './shell/powershellDetection.js'
@@ -298,12 +304,53 @@ export function shouldSkipHookDueToTrust(): boolean {
 /**
  * Creates the base hook input that's common to all hook types
  */
+type HookInputContext = {
+  agentId?: string
+  agentType?: string
+  options?: { mainLoopModel?: string }
+  getAppState?: () => { effortValue?: EffortValue }
+}
+
+function getHookEffort(context?: HookInputContext): { level: string } {
+  let effortValue: EffortValue | undefined
+  try {
+    effortValue = context?.getAppState?.().effortValue
+  } catch {
+    effortValue = undefined
+  }
+
+  let initialEffort: EffortValue | undefined
+  if (effortValue === undefined) {
+    try {
+      initialEffort = getInitialEffortSetting()
+    } catch {
+      initialEffort = undefined
+    }
+  }
+
+  try {
+    return {
+      level: getCurrentEffortLevel(
+        context?.options?.mainLoopModel ?? getMainLoopModel(),
+        effortValue ?? initialEffort,
+      ),
+    }
+  } catch {
+    return { level: 'unknown' }
+  }
+}
+
+function getEffortLevelFromHookInput(hookInput: HookInput): string | undefined {
+  const effort = hookInput.effort
+  if (typeof effort !== 'object' || effort === null) return undefined
+  const level = (effort as { level?: unknown }).level
+  return typeof level === 'string' ? level : undefined
+}
+
 export function createBaseHookInput(
   permissionMode?: string,
   sessionId?: string,
-  // Typed narrowly (not ToolUseContext) so callers can pass toolUseContext
-  // directly via structural typing without this function depending on Tool.ts.
-  agentInfo?: { agentId?: string; agentType?: string },
+  agentInfo?: HookInputContext,
 ): {
   session_id: string
   transcript_path: string
@@ -311,6 +358,7 @@ export function createBaseHookInput(
   permission_mode?: string
   agent_id?: string
   agent_type?: string
+  effort: { level: string }
 } {
   const resolvedSessionId = sessionId ?? getSessionId()
   // agent_type: subagent's type (from toolUseContext) takes precedence over
@@ -324,6 +372,7 @@ export function createBaseHookInput(
     permission_mode: permissionMode,
     agent_id: agentInfo?.agentId,
     agent_type: resolvedAgentType,
+    effort: getHookEffort(agentInfo),
   }
 }
 
@@ -347,6 +396,7 @@ export interface HookResult {
   additionalContext?: string
   initialUserMessage?: string
   updatedInput?: Record<string, unknown>
+  updatedToolOutput?: unknown
   updatedMCPToolOutput?: unknown
   permissionRequestResult?: PermissionRequestResult
   elicitationResponse?: ElicitationResponse
@@ -367,6 +417,7 @@ export type AggregatedHookResult = {
   additionalContexts?: string[]
   initialUserMessage?: string
   updatedInput?: Record<string, unknown>
+  updatedToolOutput?: unknown
   updatedMCPToolOutput?: unknown
   permissionRequestResult?: PermissionRequestResult
   watchPaths?: string[]
@@ -436,6 +487,9 @@ function parseHookOutput(stdout: string): {
           'for PostToolUse': {
             hookEventName: '"PostToolUse"',
             additionalContext: 'string (optional)',
+            updatedToolOutput: 'any (optional) - Modified tool output to use',
+            updatedMCPToolOutput:
+              'any (optional) - Legacy MCP-only modified tool output',
           },
         },
       },
@@ -642,8 +696,9 @@ function processHookJSONOutput({
         break
       case 'PostToolUse':
         result.additionalContext = json.hookSpecificOutput.additionalContext
-        // Extract updatedMCPToolOutput if provided
-        if (json.hookSpecificOutput.updatedMCPToolOutput) {
+        if ('updatedToolOutput' in json.hookSpecificOutput) {
+          result.updatedToolOutput = json.hookSpecificOutput.updatedToolOutput
+        } else if ('updatedMCPToolOutput' in json.hookSpecificOutput) {
           result.updatedMCPToolOutput =
             json.hookSpecificOutput.updatedMCPToolOutput
         }
@@ -749,6 +804,7 @@ async function execCommandHook(
   hookEvent: HookEvent | 'StatusLine' | 'FileSuggestion',
   hookName: string,
   jsonInput: string,
+  effortLevel: string | undefined,
   signal: AbortSignal,
   hookId: string,
   hookIndex?: number,
@@ -882,6 +938,7 @@ async function execCommandHook(
   const envVars: NodeJS.ProcessEnv = {
     ...subprocessEnv(),
     CLAUDE_PROJECT_DIR: toHookPath(projectDir),
+    ...(effortLevel ? { CLAUDE_EFFORT: effortLevel } : {}),
   }
 
   // Plugin and skill hooks both set CLAUDE_PLUGIN_ROOT (skills use the same
@@ -2139,6 +2196,8 @@ async function* executeHooks({
     }
   }
 
+  const effortLevel = getEffortLevelFromHookInput(hookInput)
+
   // Run all hooks in parallel with individual timeouts
   const hookPromises = matchingHooks.map(async function* (
     { hook, pluginRoot, pluginId, skillRoot },
@@ -2450,6 +2509,7 @@ async function* executeHooks({
         hookEvent,
         hookName,
         jsonInput,
+        effortLevel,
         abortSignal,
         hookId,
         hookIndex,
@@ -2807,8 +2867,15 @@ async function* executeHooks({
       }
     }
 
-    // Yield updatedMCPToolOutput if provided (from PostToolUse hooks)
-    if (result.updatedMCPToolOutput) {
+    // Yield updated tool output if provided (from PostToolUse hooks)
+    if ('updatedToolOutput' in result) {
+      logForDebugging(
+        `Hook ${hookEvent} (${getHookDisplayText(result.hook)}) replaced tool output`,
+      )
+      yield {
+        updatedToolOutput: result.updatedToolOutput,
+      }
+    } else if ('updatedMCPToolOutput' in result) {
       logForDebugging(
         `Hook ${hookEvent} (${getHookDisplayText(result.hook)}) replaced MCP tool output`,
       )
@@ -3079,6 +3146,7 @@ async function executeHooksOutsideREPL({
     logError(error)
     return []
   }
+  const effortLevel = getEffortLevelFromHookInput(hookInput)
 
   // Run all hooks in parallel with individual timeouts
   const hookPromises = matchingHooks.map(
@@ -3288,6 +3356,7 @@ async function executeHooksOutsideREPL({
           hookEvent,
           hookName,
           jsonInput,
+          effortLevel,
           abortSignal,
           randomUUID(),
           hookIndex,
@@ -3442,6 +3511,7 @@ export async function* executePreToolHooks<ToolInput>(
  * @param toolInput The input that was passed to the tool
  * @param toolResponse The response from the tool
  * @param toolUseContext ToolUseContext for prompt-based hooks
+ * @param durationMs Tool execution duration in milliseconds
  * @param permissionMode Optional permission mode from toolPermissionContext
  * @param signal Optional AbortSignal to cancel hook execution
  * @param timeoutMs Optional timeout in milliseconds for hook execution
@@ -3453,6 +3523,7 @@ export async function* executePostToolHooks<ToolInput, ToolResponse>(
   toolInput: ToolInput,
   toolResponse: ToolResponse,
   toolUseContext: ToolUseContext,
+  durationMs: number,
   permissionMode?: string,
   signal?: AbortSignal,
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
@@ -3464,6 +3535,7 @@ export async function* executePostToolHooks<ToolInput, ToolResponse>(
     tool_input: toolInput,
     tool_response: toolResponse,
     tool_use_id: toolUseID,
+    duration_ms: durationMs,
   }
 
   yield* executeHooks({
@@ -3487,6 +3559,7 @@ export async function* executePostToolHooks<ToolInput, ToolResponse>(
  * @param permissionMode Optional permission mode from toolPermissionContext
  * @param signal Optional AbortSignal to cancel hook execution
  * @param timeoutMs Optional timeout in milliseconds for hook execution
+ * @param durationMs Tool execution duration in milliseconds
  * @returns Async generator that yields progress messages and blocking errors
  */
 export async function* executePostToolUseFailureHooks<ToolInput>(
@@ -3499,6 +3572,7 @@ export async function* executePostToolUseFailureHooks<ToolInput>(
   permissionMode?: string,
   signal?: AbortSignal,
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+  durationMs?: number,
 ): AsyncGenerator<AggregatedHookResult> {
   const appState = toolUseContext.getAppState()
   const sessionId = toolUseContext.agentId ?? getSessionId()
@@ -3514,6 +3588,7 @@ export async function* executePostToolUseFailureHooks<ToolInput>(
     tool_use_id: toolUseID,
     error,
     is_interrupt: isInterrupt,
+    duration_ms: durationMs ?? 0,
   }
 
   yield* executeHooks({
@@ -3669,7 +3744,7 @@ export async function* executeStopHooks(
 
   const hookInput: StopHookInput | SubagentStopHookInput = subagentId
     ? {
-        ...createBaseHookInput(permissionMode),
+        ...createBaseHookInput(permissionMode, undefined, toolUseContext),
         hook_event_name: 'SubagentStop',
         stop_hook_active: stopHookActive,
         agent_id: subagentId,
@@ -3678,7 +3753,7 @@ export async function* executeStopHooks(
         last_assistant_message: lastAssistantText,
       }
     : {
-        ...createBaseHookInput(permissionMode),
+        ...createBaseHookInput(permissionMode, undefined, toolUseContext),
         hook_event_name: 'Stop',
         stop_hook_active: stopHookActive,
         last_assistant_message: lastAssistantText,
@@ -4626,6 +4701,7 @@ export async function executeStatusLineCommand(
       'StatusLine',
       'statusLine',
       jsonInput,
+      getEffortLevelFromHookInput(statusLineInput),
       abortSignal,
       randomUUID(),
     )
@@ -4717,6 +4793,7 @@ export async function executeFileSuggestionCommand(
       'FileSuggestion',
       'FileSuggestion',
       jsonInput,
+      getEffortLevelFromHookInput(fileSuggestionInput),
       abortSignal,
       randomUUID(),
     )

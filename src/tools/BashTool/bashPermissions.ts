@@ -24,7 +24,11 @@ import {
   splitCommand_DEPRECATED,
 } from '../../utils/bash/commands.js'
 import { parseCommandRaw } from '../../utils/bash/parser.js'
-import { tryParseShellCommand } from '../../utils/bash/shellQuote.js'
+import {
+  normalizeStaticDollarQuotesForShell,
+  quote,
+  tryParseShellCommand,
+} from '../../utils/bash/shellQuote.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
@@ -775,6 +779,847 @@ export function stripAllLeadingEnvVars(
   return stripped.trim()
 }
 
+const FIND_DANGEROUS_FLAG_NAMES = [
+  'exec',
+  'execdir',
+  'ok',
+  'okdir',
+  'delete',
+  'fprint',
+  'fprint0',
+  'fls',
+  'fprintf',
+  'files0-from',
+] as const
+const FIND_DANGEROUS_FLAGS = new Set(
+  FIND_DANGEROUS_FLAG_NAMES.map(flag => `-${flag}`),
+)
+const FIND_DANGEROUS_FLAGS_FALLBACK = new RegExp(
+  String.raw`(?:^|[ \t])-(?:${FIND_DANGEROUS_FLAG_NAMES.join('|')})\b`,
+)
+
+function normalizeFindFlagFallback(command: string): string {
+  return (normalizeStaticDollarQuotesForShell(command) ?? command)
+    .replace(/\\([A-Za-z-])/g, '$1')
+    .replace(
+      /'([^'\r\n]*)'|"([^"\r\n]*)"/g,
+      (_match: string, single?: string, double?: string) =>
+        single ?? double ?? '',
+    )
+}
+
+function findTokenIsDangerousFlag(token: string): boolean {
+  return (
+    FIND_DANGEROUS_FLAGS.has(token) ||
+    (token.startsWith('$-') && FIND_DANGEROUS_FLAGS.has(token.slice(1)))
+  )
+}
+
+function findCommandHasDangerousFlag(command: string): boolean {
+  const normalizedCommand = normalizeStaticDollarQuotesForShell(command)
+  const parsed = tryParseShellCommand(normalizedCommand ?? command)
+  if (
+    parsed.success &&
+    parsed.tokens.every(token => typeof token === 'string')
+  ) {
+    return (parsed.tokens as string[]).some(findTokenIsDangerousFlag)
+  }
+  return FIND_DANGEROUS_FLAGS_FALLBACK.test(normalizeFindFlagFallback(command))
+}
+
+function skipWrapperOptions(
+  tokens: string[],
+  start: number,
+  longOptionsWithValue: ReadonlySet<string>,
+  shortOptionsWithValue: ReadonlySet<string>,
+): number {
+  let commandStart = start
+  while (commandStart < tokens.length) {
+    const token = tokens[commandStart]!
+    if (token === '--') {
+      return commandStart + 1
+    }
+    if (!token.startsWith('-') || token === '-') {
+      return commandStart
+    }
+    if (token.startsWith('--')) {
+      const equalsIndex = token.indexOf('=')
+      const optionName = token.slice(
+        2,
+        equalsIndex === -1 ? undefined : equalsIndex,
+      )
+      commandStart++
+      if (equalsIndex === -1 && longOptionsWithValue.has(optionName)) {
+        commandStart++
+      }
+      continue
+    }
+
+    let consumesNext = false
+    for (let i = 1; i < token.length; i++) {
+      if (shortOptionsWithValue.has(token[i]!)) {
+        consumesNext = i === token.length - 1
+        break
+      }
+    }
+    commandStart += consumesNext ? 2 : 1
+  }
+  return commandStart
+}
+
+const SUDO_LONG_OPTIONS_WITH_VALUE = new Set([
+  'user',
+  'group',
+  'host',
+  'chdir',
+  'role',
+  'type',
+  'prompt',
+  'login-class',
+  'close-from',
+  'command-timeout',
+])
+const SUDO_SHORT_OPTIONS_WITH_VALUE = new Set([
+  'u',
+  'U',
+  'g',
+  // sudo -h is ambiguous across implementations (host vs help). Treat it as
+  // value-taking so `sudo -h host cmd` exposes cmd; bare help does not execute.
+  'h',
+  'C',
+  'D',
+  'p',
+  'r',
+  't',
+  'T',
+])
+const DOAS_LONG_OPTIONS_WITH_VALUE = new Set(['config', 'user'])
+const DOAS_SHORT_OPTIONS_WITH_VALUE = new Set(['a', 'C', 'u'])
+const PKEXEC_LONG_OPTIONS_WITH_VALUE = new Set(['user', 'process'])
+const PKEXEC_SHORT_OPTIONS_WITH_VALUE = new Set(['p', 'u'])
+const EXEC_SHORT_OPTIONS_WITH_VALUE = new Set(['a'])
+const WATCH_LONG_OPTIONS_WITH_VALUE = new Set(['interval', 'equexit'])
+const WATCH_SHORT_OPTIONS_WITH_VALUE = new Set(['n', 'q'])
+const IONICE_LONG_OPTIONS_WITH_VALUE = new Set(['class', 'classdata', 'pid'])
+const IONICE_SHORT_OPTIONS_WITH_VALUE = new Set(['c', 'n', 'p'])
+const NO_OPTIONS_WITH_VALUE = new Set<string>()
+const EXEC_WRAPPER_NAMES = new Set([
+  'sudo',
+  'doas',
+  'pkexec',
+  'exec',
+  'command',
+  'env',
+  'watch',
+  'ionice',
+  'setsid',
+])
+
+const ENV_LONG_OPTION_KINDS = {
+  'block-signal': 'optionalValue',
+  chdir: 'requiredValue',
+  debug: 'noValue',
+  'default-signal': 'optionalValue',
+  help: 'terminal',
+  'ignore-environment': 'noValue',
+  'ignore-signal': 'optionalValue',
+  'list-signal-handling': 'noValue',
+  null: 'terminal',
+  'split-string': 'splitString',
+  unset: 'requiredValue',
+  version: 'terminal',
+} as const
+
+type EnvLongOptionName = keyof typeof ENV_LONG_OPTION_KINDS
+type EnvLongOptionKind = (typeof ENV_LONG_OPTION_KINDS)[EnvLongOptionName]
+const ENV_LONG_OPTION_NAMES = Object.keys(
+  ENV_LONG_OPTION_KINDS,
+) as EnvLongOptionName[]
+const ENV_SPLIT_EXPANSION_LIMIT = 64
+const ENV_SPLIT_TOKEN_LIMIT = 256
+const ENV_SPLIT_TOKEN_CHARS_LIMIT = 8192
+const EXEC_WRAPPER_UNSAFE_RECURSION_LIMIT = 64
+
+function envSplitTokensExceedLimit(tokens: string[]): boolean {
+  if (tokens.length > ENV_SPLIT_TOKEN_LIMIT) return true
+  let totalLength = 0
+  for (const token of tokens) {
+    totalLength += token.length
+    if (totalLength > ENV_SPLIT_TOKEN_CHARS_LIMIT) return true
+  }
+  return false
+}
+
+function resolveEnvLongOption(token: string):
+  | {
+      name: EnvLongOptionName
+      kind: EnvLongOptionKind
+      value: string | undefined
+      hasValue: boolean
+    }
+  | undefined {
+  if (!token.startsWith('--')) return undefined
+  const optionText = token.slice(2)
+  const equalsIndex = optionText.indexOf('=')
+  const optionName =
+    equalsIndex === -1 ? optionText : optionText.slice(0, equalsIndex)
+  if (optionName.length === 0) return undefined
+
+  const exactMatch = ENV_LONG_OPTION_NAMES.find(name => name === optionName)
+  const matches = exactMatch
+    ? [exactMatch]
+    : ENV_LONG_OPTION_NAMES.filter(name => name.startsWith(optionName))
+  if (matches.length !== 1) return undefined
+
+  const name = matches[0]!
+  return {
+    name,
+    kind: ENV_LONG_OPTION_KINDS[name],
+    value: equalsIndex === -1 ? undefined : optionText.slice(equalsIndex + 1),
+    hasValue: equalsIndex !== -1,
+  }
+}
+
+function splitEnvSplitString(
+  splitString: string,
+  env: Record<string, string | undefined>,
+): string[] | null {
+  const tokens: string[] = []
+  let current = ''
+  let quote: 'single' | 'double' | null = null
+  let hasCurrent = false
+
+  function pushCurrent(): void {
+    if (!hasCurrent) return
+    tokens.push(current)
+    current = ''
+    hasCurrent = false
+  }
+
+  for (let i = 0; i < splitString.length; i++) {
+    const char = splitString[i]!
+    if (char === '\\' && quote === 'single' && splitString[i + 1] === "'") {
+      current += "'"
+      hasCurrent = true
+      i++
+      continue
+    }
+    if (char === "'" && quote !== 'double') {
+      quote = quote === 'single' ? null : 'single'
+      hasCurrent = true
+      continue
+    }
+    if (char === '"' && quote !== 'single') {
+      quote = quote === 'double' ? null : 'double'
+      hasCurrent = true
+      continue
+    }
+    if (char === '$' && quote !== 'single') {
+      if (splitString[i + 1] !== '{') return null
+      const end = splitString.indexOf('}', i + 2)
+      if (end === -1) return null
+      const varName = splitString.slice(i + 2, end)
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(varName)) return null
+      const value = Object.prototype.hasOwnProperty.call(env, varName)
+        ? env[varName]
+        : Object.prototype.hasOwnProperty.call(process.env, varName)
+          ? process.env[varName]
+          : undefined
+      if (value !== undefined) {
+        current += value
+        hasCurrent = true
+      }
+      i = end
+      continue
+    }
+    if (char === '#' && quote === null && !hasCurrent) return tokens
+    if (char === '\\' && quote !== 'single') {
+      const next = splitString[++i]
+      if (next === undefined) return null
+      switch (next) {
+        case '_':
+          if (quote) {
+            current += ' '
+            hasCurrent = true
+          } else {
+            pushCurrent()
+          }
+          break
+        case 'n':
+          current += '\n'
+          hasCurrent = true
+          break
+        case 't':
+          current += '\t'
+          hasCurrent = true
+          break
+        case 'r':
+          current += '\r'
+          hasCurrent = true
+          break
+        case 'f':
+          current += '\f'
+          hasCurrent = true
+          break
+        case 'v':
+          current += '\v'
+          hasCurrent = true
+          break
+        case 'c':
+          pushCurrent()
+          return tokens
+        case '\\':
+        case '"':
+        case "'":
+        case '#':
+        case '$':
+          current += next
+          hasCurrent = true
+          break
+        default:
+          return null
+      }
+      continue
+    }
+    if (quote === null && /[ \t\n\r]/.test(char)) {
+      pushCurrent()
+      continue
+    }
+    current += char
+    hasCurrent = true
+  }
+
+  if (quote !== null) return null
+  pushCurrent()
+  return tokens
+}
+
+function expandEnvSplitToken(
+  tokens: string[],
+  commandStart: number,
+  splitCommand: string,
+  removeCount: number,
+  env: Record<string, string | undefined>,
+): string[] | null {
+  const split = splitEnvSplitString(splitCommand, env)
+  if (split === null) return null
+  return [
+    ...tokens.slice(0, commandStart),
+    ...split,
+    ...tokens.slice(commandStart + removeCount),
+  ]
+}
+
+// Scope: strip simple argv-preserving exec wrappers for deny/ask matching.
+// stripSafeWrappers handles time/timeout/nice/stdbuf/nohup separately.
+// Intentionally out of scope: shell/script/remote interpreters (`sh -c`,
+// `bash -c`, `ssh host cmd`, `xargs -I`, `busybox cmd`, `script`, `firejail`),
+// where safely extracting the executed command requires tool-specific parsing.
+function getSimpleEnvAssignment(token: string):
+  | { name: string; append: boolean; value: string }
+  | undefined {
+  const match = token.match(/^([A-Za-z_][A-Za-z0-9_]*)(\+?)=(.*)$/)
+  if (!match) return undefined
+  return { name: match[1]!, append: match[2] === '+', value: match[3]! }
+}
+
+function isEnvOperandAssignment(token: string): boolean {
+  return token.includes('=')
+}
+
+type ExecWrapperStripResult = {
+  commands: string[]
+  unsafeForRuleAllow: boolean
+}
+
+function resolveShellParameterForPermission(
+  key: string,
+): string | undefined {
+  if (Object.prototype.hasOwnProperty.call(process.env, key)) {
+    return process.env[key]
+  }
+
+  const match = key.match(/^([A-Za-z_][A-Za-z0-9_]*)(:?[-=?+])(.*)$/)
+  if (!match) return undefined
+
+  const [, name, operator, fallback] = match
+  const hasValue = Object.prototype.hasOwnProperty.call(process.env, name!)
+  const value = hasValue ? process.env[name!] : undefined
+  const isNonEmpty = value !== undefined && value !== ''
+
+  switch (operator) {
+    case ':-':
+    case ':=':
+      return isNonEmpty ? value : fallback
+    case '-':
+    case '=':
+      return hasValue ? value : fallback
+    case ':?':
+      return isNonEmpty ? value : undefined
+    case '?':
+      return hasValue ? value : undefined
+    case ':+':
+      return isNonEmpty ? fallback : undefined
+    case '+':
+      return hasValue ? fallback : undefined
+    default:
+      return undefined
+  }
+}
+
+function normalizeShellParametersForPermission(command: string): {
+  command: string
+  env: Record<string, string | undefined>
+} {
+  const env = Object.create(null) as Record<string, string | undefined>
+  let normalized = ''
+  let quoteState: 'single' | 'double' | null = null
+  let syntheticIndex = 0
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i]!
+    if (char === '\\' && quoteState !== 'single') {
+      normalized += char
+      const next = command[++i]
+      if (next !== undefined) normalized += next
+      continue
+    }
+    if (char === "'" && quoteState !== 'double') {
+      quoteState = quoteState === 'single' ? null : 'single'
+      normalized += char
+      continue
+    }
+    if (char === '"' && quoteState !== 'single') {
+      quoteState = quoteState === 'double' ? null : 'double'
+      normalized += char
+      continue
+    }
+    if (char === '$' && quoteState !== 'single' && command[i + 1] === '{') {
+      const end = command.indexOf('}', i + 2)
+      if (end !== -1) {
+        const key = command.slice(i + 2, end)
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+          const value = resolveShellParameterForPermission(key)
+          if (value !== undefined) {
+            const syntheticKey = `__CLAUDE_PERMISSION_PARAM_${syntheticIndex++}`
+            env[syntheticKey] = value
+            normalized += `\${${syntheticKey}}`
+            i = end
+            continue
+          }
+        }
+      }
+    }
+    normalized += char
+  }
+
+  return { command: normalized, env }
+}
+
+function hasUnquotedShellVariableReference(command: string): boolean {
+  let quoteState: 'single' | 'double' | null = null
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i]!
+    if (char === '\\' && quoteState !== 'single') {
+      i++
+      continue
+    }
+    if (char === "'" && quoteState !== 'double') {
+      quoteState = quoteState === 'single' ? null : 'single'
+      continue
+    }
+    if (char === '"' && quoteState !== 'single') {
+      quoteState = quoteState === 'double' ? null : 'double'
+      continue
+    }
+    if (char !== '$' || quoteState !== null) continue
+
+    const next = command[i + 1]
+    if (next === '{') {
+      const end = command.indexOf('}', i + 2)
+      if (end === -1) continue
+      if (/^[A-Za-z_][A-Za-z0-9_]*/.test(command.slice(i + 2, end))) {
+        return true
+      }
+      continue
+    }
+    if (next !== undefined && /[A-Za-z_]/.test(next)) return true
+  }
+
+  return false
+}
+
+function splitTokensOnShellWhitespace(tokens: string[]): string[] | null {
+  const splitTokens: string[] = []
+  let changed = false
+
+  for (const token of tokens) {
+    if (!/[ \t\n\r]/.test(token)) {
+      splitTokens.push(token)
+      continue
+    }
+
+    const parts = token.split(/[ \t\n\r]+/).filter(Boolean)
+    if (parts.length === 0) {
+      changed = true
+      continue
+    }
+    changed = true
+    splitTokens.push(...parts)
+  }
+
+  return changed ? splitTokens : null
+}
+
+function shellExpandedCandidatesForDeny(command: string): string[] {
+  const normalizedCommand = normalizeStaticDollarQuotesForShell(command)
+  const shellParameterExpansion = normalizeShellParametersForPermission(
+    normalizedCommand ?? command,
+  )
+  const parsed = tryParseShellCommand(
+    shellParameterExpansion.command,
+    key =>
+      Object.prototype.hasOwnProperty.call(shellParameterExpansion.env, key)
+        ? shellParameterExpansion.env[key]
+        : resolveShellParameterForPermission(key),
+  )
+  if (
+    !parsed.success ||
+    parsed.tokens.some(token => typeof token !== 'string')
+  ) {
+    return []
+  }
+
+  const tokens = parsed.tokens as string[]
+  if (tokens.length === 0) return []
+
+  const candidates = [quote(tokens)]
+  if (hasUnquotedShellVariableReference(normalizedCommand ?? command)) {
+    const wordSplitTokens = splitTokensOnShellWhitespace(tokens)
+    if (wordSplitTokens && wordSplitTokens.length > 0) {
+      const wordSplitCommand = quote(wordSplitTokens)
+      if (wordSplitCommand !== candidates[0]) candidates.push(wordSplitCommand)
+    }
+  }
+  return candidates.filter(candidate => candidate !== command)
+}
+
+function stripExecWrappersForDenyDetailed(
+  command: string,
+): ExecWrapperStripResult {
+  const unchanged = (unsafeForRuleAllow = false): ExecWrapperStripResult => ({
+    commands: [command],
+    unsafeForRuleAllow,
+  })
+
+  let scan = command.trimStart()
+  for (;;) {
+    const word = scan.match(/^[^ \t\n\r;&|()<>]+/)?.[0]
+    if (!word || /[\\'"]/.test(word) || !getSimpleEnvAssignment(word)) break
+    scan = scan.slice(word.length).trimStart()
+  }
+  const firstWord = scan.match(/^[^ \t\n\r;&|()<>]+/)?.[0]
+  if (firstWord && !/[\\'"]/.test(firstWord) && !EXEC_WRAPPER_NAMES.has(firstWord)) {
+    return unchanged()
+  }
+
+  const normalizedCommand = normalizeStaticDollarQuotesForShell(command)
+  const shellParameterExpansion = normalizeShellParametersForPermission(
+    normalizedCommand ?? command,
+  )
+  const parsed = tryParseShellCommand(
+    shellParameterExpansion.command,
+    key =>
+      Object.prototype.hasOwnProperty.call(shellParameterExpansion.env, key)
+        ? shellParameterExpansion.env[key]
+        : resolveShellParameterForPermission(key),
+  )
+  if (
+    !parsed.success ||
+    parsed.tokens.some(token => typeof token !== 'string')
+  ) {
+    return unchanged()
+  }
+
+  let tokens = parsed.tokens as string[]
+  const splitEnv = Object.create(null) as Record<string, string | undefined>
+  let wrapperIndex = 0
+  while (wrapperIndex < tokens.length) {
+    const assignment = getSimpleEnvAssignment(tokens[wrapperIndex]!)
+    if (!assignment) break
+    splitEnv[assignment.name] = assignment.append
+      ? (Object.prototype.hasOwnProperty.call(splitEnv, assignment.name)
+          ? splitEnv[assignment.name]
+          : process.env[assignment.name] || '') + assignment.value
+      : assignment.value
+    wrapperIndex++
+  }
+  if (tokens.length - wrapperIndex < 2) return unchanged()
+
+  let commandStart = wrapperIndex + 1
+  let shellCommandTail = false
+
+  switch (tokens[wrapperIndex]) {
+    case 'sudo': {
+      commandStart = skipWrapperOptions(
+        tokens,
+        commandStart,
+        SUDO_LONG_OPTIONS_WITH_VALUE,
+        SUDO_SHORT_OPTIONS_WITH_VALUE,
+      )
+      break
+    }
+    case 'doas': {
+      commandStart = skipWrapperOptions(
+        tokens,
+        commandStart,
+        DOAS_LONG_OPTIONS_WITH_VALUE,
+        DOAS_SHORT_OPTIONS_WITH_VALUE,
+      )
+      break
+    }
+    case 'pkexec': {
+      commandStart = skipWrapperOptions(
+        tokens,
+        commandStart,
+        PKEXEC_LONG_OPTIONS_WITH_VALUE,
+        PKEXEC_SHORT_OPTIONS_WITH_VALUE,
+      )
+      break
+    }
+    case 'exec': {
+      commandStart = skipWrapperOptions(
+        tokens,
+        commandStart,
+        NO_OPTIONS_WITH_VALUE,
+        EXEC_SHORT_OPTIONS_WITH_VALUE,
+      )
+      break
+    }
+    case 'command': {
+      while (commandStart < tokens.length) {
+        const token = tokens[commandStart]!
+        if (token === '--') {
+          commandStart++
+          break
+        }
+        if (token === '-p') {
+          commandStart++
+          continue
+        }
+        if (token.startsWith('-')) return unchanged()
+        break
+      }
+      break
+    }
+    case 'env': {
+      let splitExpansions = 0
+      let parsingOperands = false
+      let dashMarkerConsumed = false
+      let envOperandAssignmentsStarted = false
+      const seenEnvStates = new Set<string>()
+      envLoop: while (commandStart < tokens.length) {
+        const state = `${commandStart}\0${tokens.join('\0')}`
+        if (seenEnvStates.has(state)) return unchanged(true)
+        seenEnvStates.add(state)
+
+        const token = tokens[commandStart]!
+        if (parsingOperands) {
+          if (
+            token === '-' &&
+            !dashMarkerConsumed &&
+            !envOperandAssignmentsStarted
+          ) {
+            dashMarkerConsumed = true
+            commandStart++
+            continue
+          }
+          if (isEnvOperandAssignment(token)) {
+            envOperandAssignmentsStarted = true
+            commandStart++
+            continue
+          }
+          break
+        }
+        if (token === '--') {
+          parsingOperands = true
+          commandStart++
+          continue
+        }
+        const longOption = resolveEnvLongOption(token)
+        if (longOption?.kind === 'splitString') {
+          const splitCommand = longOption.hasValue
+            ? longOption.value!
+            : tokens[commandStart + 1]
+          if (splitCommand === undefined) return unchanged()
+          if (++splitExpansions > ENV_SPLIT_EXPANSION_LIMIT) {
+            return unchanged(true)
+          }
+          const expanded = expandEnvSplitToken(
+            tokens,
+            commandStart,
+            splitCommand,
+            longOption.hasValue ? 1 : 2,
+            splitEnv,
+          )
+          if (!expanded || envSplitTokensExceedLimit(expanded)) {
+            return unchanged(true)
+          }
+          tokens = expanded
+          continue
+        }
+        if (longOption?.kind === 'requiredValue') {
+          commandStart += longOption.hasValue ? 1 : 2
+          continue
+        }
+        if (longOption?.kind === 'optionalValue') {
+          commandStart++
+          continue
+        }
+        if (longOption?.kind === 'noValue') {
+          if (longOption.hasValue) return unchanged()
+          commandStart++
+          continue
+        }
+        if (longOption?.kind === 'terminal') return unchanged()
+        if (token === '-') {
+          dashMarkerConsumed = true
+          parsingOperands = true
+          commandStart++
+          continue
+        }
+        if (token.startsWith('-') && !token.startsWith('--')) {
+          for (let optionIndex = 1; optionIndex < token.length; optionIndex++) {
+            const option = token[optionIndex]!
+            if (option === 'i' || option === 'v') {
+              continue
+            }
+            if (option === '0') return unchanged()
+            if (option === 'u' || option === 'C') {
+              commandStart += optionIndex + 1 < token.length ? 1 : 2
+              continue envLoop
+            }
+            if (option === 'S') {
+              const inlineSplitCommand = token.slice(optionIndex + 1)
+              const splitCommand =
+                inlineSplitCommand === ''
+                  ? tokens[commandStart + 1]
+                  : inlineSplitCommand
+              if (splitCommand === undefined) return unchanged()
+              if (++splitExpansions > ENV_SPLIT_EXPANSION_LIMIT) {
+                return unchanged(true)
+              }
+              const expanded = expandEnvSplitToken(
+                tokens,
+                commandStart,
+                splitCommand,
+                inlineSplitCommand === '' ? 2 : 1,
+                splitEnv,
+              )
+              if (!expanded || envSplitTokensExceedLimit(expanded)) {
+                return unchanged(true)
+              }
+              tokens = expanded
+              continue envLoop
+            }
+            return unchanged()
+          }
+          commandStart++
+          continue
+        }
+        if (token.startsWith('-')) return unchanged()
+        if (isEnvOperandAssignment(token)) {
+          parsingOperands = true
+          envOperandAssignmentsStarted = true
+          commandStart++
+          continue
+        }
+        break
+      }
+      break
+    }
+    case 'watch': {
+      commandStart = skipWrapperOptions(
+        tokens,
+        commandStart,
+        WATCH_LONG_OPTIONS_WITH_VALUE,
+        WATCH_SHORT_OPTIONS_WITH_VALUE,
+      )
+      shellCommandTail = true
+      break
+    }
+    case 'ionice': {
+      commandStart = skipWrapperOptions(
+        tokens,
+        commandStart,
+        IONICE_LONG_OPTIONS_WITH_VALUE,
+        IONICE_SHORT_OPTIONS_WITH_VALUE,
+      )
+      break
+    }
+    case 'setsid': {
+      commandStart = skipWrapperOptions(
+        tokens,
+        commandStart,
+        NO_OPTIONS_WITH_VALUE,
+        NO_OPTIONS_WITH_VALUE,
+      )
+      break
+    }
+    default:
+      return unchanged()
+  }
+
+  if (commandStart >= tokens.length) return unchanged()
+  const tail = tokens.slice(commandStart)
+  if (!shellCommandTail) {
+    const commands = [quote(tail)]
+    if (hasUnquotedShellVariableReference(normalizedCommand ?? command)) {
+      const wordSplitTail = splitTokensOnShellWhitespace(tail)
+      if (wordSplitTail && wordSplitTail.length > 0) {
+        const wordSplitCommand = quote(wordSplitTail)
+        if (wordSplitCommand !== commands[0]) commands.push(wordSplitCommand)
+      }
+    }
+    return { commands, unsafeForRuleAllow: false }
+  }
+  const shellTail = tail.join(' ')
+  const shellSubcommands = splitCommand(shellTail)
+  return {
+    commands: shellSubcommands.length > 0 ? shellSubcommands : [shellTail],
+    unsafeForRuleAllow: false,
+  }
+}
+
+function stripExecWrappersForDeny(command: string): string[] {
+  return stripExecWrappersForDenyDetailed(command).commands
+}
+
+function execWrapperUnsafeForRuleAllow(command: string): boolean {
+  const seen = new Set<string>()
+  const stack = [command]
+  let inspected = 0
+
+  while (stack.length > 0) {
+    const current = stack.pop()!
+    if (seen.has(current)) continue
+    seen.add(current)
+    if (++inspected > EXEC_WRAPPER_UNSAFE_RECURSION_LIMIT) return true
+
+    const safeStripped = stripSafeWrappers(current)
+    if (safeStripped !== current) stack.push(safeStripped)
+
+    const stripped = stripExecWrappersForDenyDetailed(current)
+    if (stripped.unsafeForRuleAllow) return true
+    for (const strippedCommand of stripped.commands) {
+      if (strippedCommand !== current) stack.push(strippedCommand)
+    }
+  }
+
+  return false
+}
+
 function filterRulesByContentsMatchingInput(
   input: z.infer<typeof BashTool.inputSchema>,
   rules: Map<string, PermissionRule>,
@@ -784,21 +1629,29 @@ function filterRulesByContentsMatchingInput(
     skipCompoundCheck = false,
   }: { stripAllEnvVars?: boolean; skipCompoundCheck?: boolean } = {},
 ): PermissionRule[] {
+  if (rules.size === 0) return []
+
   const command = input.command.trim()
 
   // Strip output redirections for permission matching
   // This allows rules like Bash(python:*) to match "python script.py > output.txt"
   // Security validation of redirection targets happens separately in checkPathConstraints
+  const outputRedirectionResult = extractOutputRedirections(command)
   const commandWithoutRedirections =
-    extractOutputRedirections(command).commandWithoutRedirections
+    outputRedirectionResult.commandWithoutRedirections
+  const hasOutputRedirections = outputRedirectionResult.redirections.length > 0
 
-  // For exact matching, try both the original command (to preserve quotes)
-  // and the command without redirections (to allow rules without redirections to match)
-  // For prefix matching, only use the command without redirections
+  // For exact matching and deny/ask prefix matching, try the original command
+  // to preserve quote semantics. Also try the command without redirections so
+  // rules without redirections can match.
+  // For allow prefix matching, only use the command without redirections; path
+  // validation handles redirection targets before prefix allow is applied.
   const commandsForMatching =
-    matchMode === 'exact'
-      ? [command, commandWithoutRedirections]
-      : [commandWithoutRedirections]
+    matchMode === 'exact' || stripAllEnvVars
+      ? hasOutputRedirections
+        ? [command, commandWithoutRedirections]
+        : [command]
+      : [hasOutputRedirections ? commandWithoutRedirections : command]
 
   // Strip safe wrapper commands (timeout, time, nice, nohup) and env vars for matching
   // This allows rules like Bash(npm install:*) to match "timeout 10 npm install foo"
@@ -847,6 +1700,20 @@ function filterRulesByContentsMatchingInput(
           commandsToTry.push(wrapperStripped)
           seen.add(wrapperStripped)
         }
+        // Try expanding shell variables for deny/ask matching only
+        for (const expanded of shellExpandedCandidatesForDeny(cmd)) {
+          if (!seen.has(expanded)) {
+            commandsToTry.push(expanded)
+            seen.add(expanded)
+          }
+        }
+        // Try stripping exec wrappers for deny/ask matching only
+        for (const execStripped of stripExecWrappersForDeny(cmd)) {
+          if (!seen.has(execStripped)) {
+            commandsToTry.push(execStripped)
+            seen.add(execStripped)
+          }
+        }
       }
       startIdx = endIdx
     }
@@ -865,6 +1732,37 @@ function filterRulesByContentsMatchingInput(
         isCompoundCommand.set(cmd, splitCommand(cmd).length > 1)
       }
     }
+  }
+
+  const dangerousFindFlags = new Map<string, boolean>()
+  function hasDangerousFindFlag(cmd: string): boolean {
+    let result = dangerousFindFlags.get(cmd)
+    if (result === undefined) {
+      result = findCommandHasDangerousFlag(cmd)
+      dangerousFindFlags.set(cmd, result)
+    }
+    return result
+  }
+
+  const unsafeExecWrapperForRuleAllow = new Map<string, boolean>()
+  function hasUnsafeExecWrapperForRuleAllow(cmd: string): boolean {
+    let result = unsafeExecWrapperForRuleAllow.get(cmd)
+    if (result === undefined) {
+      result = execWrapperUnsafeForRuleAllow(cmd)
+      unsafeExecWrapperForRuleAllow.set(cmd, result)
+    }
+    return result
+  }
+
+  let originalCommandUnsafeForRuleAllow: boolean | undefined
+  function inputHasUnsafeExecWrapperForRuleAllow(): boolean {
+    if (originalCommandUnsafeForRuleAllow === undefined) {
+      originalCommandUnsafeForRuleAllow =
+        hasUnsafeExecWrapperForRuleAllow(command) ||
+        (commandWithoutRedirections !== command &&
+          hasUnsafeExecWrapperForRuleAllow(commandWithoutRedirections))
+    }
+    return originalCommandUnsafeForRuleAllow
   }
 
   return Array.from(rules.entries())
@@ -891,6 +1789,27 @@ function filterRulesByContentsMatchingInput(
                 if (isCompoundCommand.get(cmdToMatch)) {
                   return false
                 }
+                if (
+                  !stripAllEnvVars &&
+                  (inputHasUnsafeExecWrapperForRuleAllow() ||
+                    hasUnsafeExecWrapperForRuleAllow(cmdToMatch))
+                ) {
+                  return false
+                }
+                const xargsPrefix = 'xargs ' + bashRule.prefix
+                const isFindPrefix =
+                  bashRule.prefix === 'find' || bashRule.prefix.startsWith('find ')
+                if (
+                  !stripAllEnvVars &&
+                  isFindPrefix &&
+                  (cmdToMatch === 'find' ||
+                    cmdToMatch.startsWith('find ') ||
+                    cmdToMatch === xargsPrefix ||
+                    cmdToMatch.startsWith(xargsPrefix + ' ')) &&
+                  hasDangerousFindFlag(cmdToMatch)
+                ) {
+                  return false
+                }
                 // Ensure word boundary: prefix must be followed by space or end of string
                 // This prevents "ls:*" from matching "lsof" or "lsattr"
                 if (cmdToMatch === bashRule.prefix) {
@@ -904,7 +1823,6 @@ function filterRulesByContentsMatchingInput(
                 // and deny rules like Bash(rm:*) to block "xargs rm file".
                 // Natural word-boundary: "xargs -n1 grep" does NOT start with
                 // "xargs grep " so flagged xargs invocations are not matched.
-                const xargsPrefix = 'xargs ' + bashRule.prefix
                 if (cmdToMatch === xargsPrefix) {
                   return true
                 }
@@ -924,6 +1842,20 @@ function filterRulesByContentsMatchingInput(
             // compound commands in prefix mode. e.g., Bash(cd *) must not match
             // "cd /path && python3 evil.py" even though "cd *" pattern would match it.
             if (isCompoundCommand.get(cmdToMatch)) {
+              return false
+            }
+            if (
+              !stripAllEnvVars &&
+              (inputHasUnsafeExecWrapperForRuleAllow() ||
+                hasUnsafeExecWrapperForRuleAllow(cmdToMatch))
+            ) {
+              return false
+            }
+            if (
+              !stripAllEnvVars &&
+              (cmdToMatch === 'find' || cmdToMatch.startsWith('find ')) &&
+              hasDangerousFindFlag(cmdToMatch)
+            ) {
               return false
             }
             // In prefix mode (after splitting), wildcards can safely match subcommands

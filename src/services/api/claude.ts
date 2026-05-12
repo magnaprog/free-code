@@ -181,6 +181,7 @@ import { calculateUSDCost } from 'src/utils/modelCost.js'
 import { endQueryProfile, queryCheckpoint } from 'src/utils/queryProfiler.js'
 import {
   modelSupportsAdaptiveThinking,
+  modelSupportsBudgetThinking,
   modelSupportsThinking,
   type ThinkingConfig,
 } from 'src/utils/thinking.js'
@@ -392,6 +393,11 @@ export function getCacheControl({
  * TTLs when GrowthBook's disk cache updates mid-request.
  */
 function should1hCacheTTL(querySource?: QuerySource): boolean {
+  // General opt-in for providers/users managing their own cache TTL costs.
+  if (isEnvTruthy(process.env.ENABLE_PROMPT_CACHING_1H)) {
+    return true
+  }
+
   // 3P Bedrock users get 1h TTL when opted in via env var — they manage their own billing
   // No GrowthBook gating needed since 3P users don't have GrowthBook configured
   if (
@@ -1617,7 +1623,7 @@ async function* queryModel(
         thinking = {
           type: 'adaptive',
         } satisfies BetaMessageStreamParams['thinking']
-      } else {
+      } else if (modelSupportsBudgetThinking(options.model)) {
         // For models that do not support adaptive thinking, use the default
         // thinking budget unless explicitly specified.
         let thinkingBudget = getMaxThinkingTokensForModel(options.model)

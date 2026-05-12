@@ -1,24 +1,21 @@
+import { execFileSync } from 'child_process'
+import { existsSync } from 'fs'
 import memoize from 'lodash-es/memoize.js'
 import * as path from 'path'
 import * as pathWin32 from 'path/win32'
 import { getCwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
-import { execSync_DEPRECATED } from './execSyncWrapper.js'
 import { memoizeWithLRU } from './memoize.js'
+import { isInvalidCommandName } from './which.js'
 import { getPlatform } from './platform.js'
 
 /**
- * Check if a file or directory exists on Windows using the dir command
+ * Check if a file or directory exists without invoking a shell.
  * @param path - The path to check
  * @returns true if the path exists, false otherwise
  */
 function checkPathExists(path: string): boolean {
-  try {
-    execSync_DEPRECATED(`dir "${path}"`, { stdio: 'pipe' })
-    return true
-  } catch {
-    return false
-  }
+  return existsSync(path)
 }
 
 /**
@@ -44,16 +41,18 @@ function findExecutable(executable: string): string | null {
     }
   }
 
+  if (isInvalidCommandName(executable)) return null
+
   // Fall back to where.exe
   try {
-    const result = execSync_DEPRECATED(`where.exe ${executable}`, {
+    const result = execFileSync('where.exe', [executable], {
       stdio: 'pipe',
       encoding: 'utf8',
     }).trim()
 
     // SECURITY: Filter out any results from the current directory
     // to prevent executing malicious git.bat/cmd/exe files
-    const paths = result.split('\r\n').filter(Boolean)
+    const paths = result.split(/\r?\n/).filter(Boolean)
     const cwd = getCwd().toLowerCase()
 
     for (const candidatePath of paths) {

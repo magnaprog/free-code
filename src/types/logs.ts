@@ -156,6 +156,7 @@ export type PersistedWorktreeSession = {
   sessionId: string
   tmuxSessionName?: string
   hookBased?: boolean
+  deleteBranchOnRemove?: boolean
 }
 
 /**

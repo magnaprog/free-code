@@ -32,7 +32,7 @@ const inputSchema = lazySchema(() =>
     action: z
       .enum(['keep', 'remove'])
       .describe(
-        '"keep" leaves the worktree and branch on disk; "remove" deletes both.',
+        '"keep" leaves the worktree and branch on disk; "remove" deletes EnterWorktree-managed worktrees and their branches.',
       ),
     discard_changes: z
       .boolean()
@@ -173,10 +173,10 @@ export const ExitWorktreeTool: Tool<InputSchema, Output> = buildTool({
   },
   async validateInput(input) {
     // Scope guard: getCurrentWorktreeSession() is null unless EnterWorktree
-    // (specifically createWorktreeForSession) ran in THIS session. Worktrees
-    // created by `git worktree add`, or by EnterWorktree in a previous
-    // session, do not populate it. This is the sole entry gate — everything
-    // past this point operates on a path EnterWorktree created.
+    // created or entered a worktree in THIS session. Worktrees created by
+    // `git worktree add`, or by EnterWorktree in a previous session, do not
+    // populate it. Existing user-owned worktrees entered by path are guarded
+    // below so ExitWorktree can leave them but not remove them.
     const session = getCurrentWorktreeSession()
     if (!session) {
       return {
@@ -184,6 +184,14 @@ export const ExitWorktreeTool: Tool<InputSchema, Output> = buildTool({
         message:
           'No-op: there is no active EnterWorktree session to exit. This tool only operates on worktrees created by EnterWorktree in the current session — it will not touch worktrees created manually or in a previous session. No filesystem changes were made.',
         errorCode: 1,
+      }
+    }
+
+    if (input.action === 'remove' && session.deleteBranchOnRemove === false) {
+      return {
+        result: false,
+        message: `Refusing to remove existing user-owned worktree at ${session.worktreePath}. Use action: "keep" to leave it intact, or remove it manually outside ExitWorktree.`,
+        errorCode: 4,
       }
     }
 

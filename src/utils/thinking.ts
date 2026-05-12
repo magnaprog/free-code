@@ -117,7 +117,11 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
   }
   const canonical = getCanonicalName(model)
   // Supported by a subset of Claude 4 models
-  if (canonical.includes('opus-4-6') || canonical.includes('sonnet-4-6')) {
+  if (
+    canonical.includes('opus-4-7') ||
+    canonical.includes('opus-4-6') ||
+    canonical.includes('sonnet-4-6')
+  ) {
     return true
   }
   // Exclude any other known legacy models (allowlist above catches 4-6 variants first)
@@ -141,6 +145,14 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
   // for their model strings.
   const provider = getAPIProvider()
   return provider === 'firstParty' || provider === 'foundry'
+}
+
+export function modelSupportsBudgetThinking(model: string): boolean {
+  // Opus 4.7 uses adaptive thinking only; manual budget thinking is unsupported.
+  if (getCanonicalName(model).includes('opus-4-7')) {
+    return false
+  }
+  return modelSupportsThinking(model)
 }
 
 export function shouldEnableThinkingByDefault(): boolean {

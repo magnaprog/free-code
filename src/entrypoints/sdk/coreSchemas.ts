@@ -71,7 +71,7 @@ export const ThinkingAdaptiveSchema = lazySchema(() =>
     .object({
       type: z.literal('adaptive'),
     })
-    .describe('Claude decides when and how much to think (Opus 4.6+).'),
+    .describe('Claude decides when and how much to think (Opus 4.7/4.6 and Sonnet 4.6).'),
 )
 
 export const ThinkingEnabledSchema = lazySchema(() =>
@@ -390,6 +390,7 @@ export const BaseHookInputSchema = lazySchema(() =>
     transcript_path: z.string(),
     cwd: z.string(),
     permission_mode: z.string().optional(),
+    effort: z.object({ level: z.string() }),
     agent_id: z
       .string()
       .optional()
@@ -441,6 +442,7 @@ export const PostToolUseHookInputSchema = lazySchema(() =>
       tool_input: z.unknown(),
       tool_response: z.unknown(),
       tool_use_id: z.string(),
+      duration_ms: z.number(),
     }),
   ),
 )
@@ -454,6 +456,7 @@ export const PostToolUseFailureHookInputSchema = lazySchema(() =>
       tool_use_id: z.string(),
       error: z.string(),
       is_interrupt: z.boolean().optional(),
+      duration_ms: z.number(),
     }),
   ),
 )
@@ -847,6 +850,7 @@ export const PostToolUseHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('PostToolUse'),
     additionalContext: z.string().optional(),
+    updatedToolOutput: z.unknown().optional(),
     updatedMCPToolOutput: z.unknown().optional(),
   }),
 )
@@ -1057,7 +1061,7 @@ export const ModelInfoSchema = lazySchema(() =>
         .optional()
         .describe('Whether this model supports effort levels'),
       supportedEffortLevels: z
-        .array(z.enum(['low', 'medium', 'high', 'max']))
+        .array(z.enum(['low', 'medium', 'high', 'xhigh', 'max']))
         .optional()
         .describe('Available effort levels for this model'),
       supportsAdaptiveThinking: z
@@ -1166,7 +1170,7 @@ export const AgentDefinitionSchema = lazySchema(() =>
           "Scope for auto-loading agent memory files. 'user' - ~/.claude/agent-memory/<agentType>/, 'project' - .claude/agent-memory/<agentType>/, 'local' - .claude/agent-memory-local/<agentType>/",
         ),
       effort: z
-        .union([z.enum(['low', 'medium', 'high', 'max']), z.number().int()])
+        .union([z.enum(['low', 'medium', 'high', 'xhigh', 'max']), z.number().int()])
         .optional()
         .describe(
           'Reasoning effort level for this agent. Either a named level or an integer',

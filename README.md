@@ -85,7 +85,7 @@ Use Anthropic's first-party API directly.
 
 | Model | ID |
 |---|---|
-| Claude Opus 4.6 | `claude-opus-4-6` |
+| Claude Opus 4.7 | `claude-opus-4-7` |
 | Claude Sonnet 4.6 | `claude-sonnet-4-6` |
 | Claude Haiku 4.5 | `claude-haiku-4-5` |
 
@@ -130,7 +130,7 @@ export AWS_REGION="us-east-1"   # or AWS_DEFAULT_REGION
 free-code
 ```
 
-Uses your standard AWS credentials (environment variables, `~/.aws/config`, or IAM role). Claude models are mapped to Bedrock ARN format automatically (e.g., `us.anthropic.claude-opus-4-6-v1`). Non-Claude Bedrock models should be provided as Bedrock model IDs or inference profile IDs.
+Uses your standard AWS credentials (environment variables, `~/.aws/config`, or IAM role). Claude models are mapped to Bedrock format automatically (e.g., `anthropic.claude-opus-4-7`). Non-Claude Bedrock models should be provided as Bedrock model IDs or inference profile IDs.
 
 | Variable | Purpose |
 |---|---|
@@ -151,7 +151,7 @@ export CLAUDE_CODE_USE_VERTEX=1
 free-code
 ```
 
-Uses Google Cloud Application Default Credentials (`gcloud auth application-default login`). Models are mapped to Vertex format automatically (e.g., `claude-opus-4-6@latest`).
+Uses Google Cloud Application Default Credentials (`gcloud auth application-default login`). Models are mapped to Vertex format automatically (e.g., `claude-opus-4-7`).
 
 ### Anthropic Foundry
 
@@ -234,7 +234,7 @@ bun run ./scripts/build.ts --dev --feature=BRIDGE_MODE
 ./cli -p "what files are in this directory?"
 
 # Specify a model
-./cli --model claude-opus-4-6
+./cli --model claude-opus-4-7
 
 # Run from source (slower startup)
 bun run dev

@@ -1763,6 +1763,8 @@ export const fetchToolsForClient = memoizeWithLRU(
       const skipPrefix =
         client.config.type === 'sdk' &&
         isEnvTruthy(process.env.CLAUDE_AGENT_SDK_MCP_NO_PREFIX)
+      const serverAlwaysLoad =
+        'alwaysLoad' in client.config && client.config.alwaysLoad === true
 
       // Convert MCP tools to our Tool format
       return toolsToProcess
@@ -1784,7 +1786,8 @@ export const fetchToolsForClient = memoizeWithLRU(
                     .replace(/\s+/g, ' ')
                     .trim() || undefined
                 : undefined,
-            alwaysLoad: tool._meta?.['anthropic/alwaysLoad'] === true,
+            alwaysLoad:
+              serverAlwaysLoad || tool._meta?.['anthropic/alwaysLoad'] === true,
             async description() {
               return tool.description ?? ''
             },
