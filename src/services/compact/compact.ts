@@ -224,6 +224,11 @@ export function stripReinjectedAttachments(messages: Message[]): Message[] {
 
 export const ERROR_MESSAGE_NOT_ENOUGH_MESSAGES =
   'Not enough messages to compact.'
+// Sentinel for PreCompact-hook blocked compaction (upstream 2.1.105).
+// Callers (autoCompact, manual /compact) detect this prefix to surface the
+// hook's reason and short-circuit without throwing a generic error.
+export const ERROR_MESSAGE_PRECOMPACT_BLOCKED =
+  'Compaction blocked by PreCompact hook'
 const MAX_PTL_RETRIES = 3
 const PTL_RETRY_MARKER = '[earlier conversation truncated for compaction retry]'
 
@@ -417,6 +422,12 @@ export async function compactConversation(
       },
       context.abortController.signal,
     )
+    if (hookResult.blocked) {
+      const reason = hookResult.blockedReason
+        ? `: ${hookResult.blockedReason}`
+        : ''
+      throw new Error(`${ERROR_MESSAGE_PRECOMPACT_BLOCKED}${reason}`)
+    }
     customInstructions = mergeHookInstructions(
       customInstructions,
       hookResult.newCustomInstructions,
@@ -823,6 +834,12 @@ export async function partialCompactConversation(
       },
       context.abortController.signal,
     )
+    if (hookResult.blocked) {
+      const reason = hookResult.blockedReason
+        ? `: ${hookResult.blockedReason}`
+        : ''
+      throw new Error(`${ERROR_MESSAGE_PRECOMPACT_BLOCKED}${reason}`)
+    }
 
     // Merge hook instructions with user feedback
     let customInstructions: string | undefined

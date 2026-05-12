@@ -1012,7 +1012,37 @@ async function execCommandHook(
   // startup, which will exit first. Relaxing that is phase 1 of the
   // design's implementation order (separate PR).
   let child: ChildProcessWithoutNullStreams
-  if (shellType === 'powershell') {
+  // Upstream 2.1.139: exec form — when hook.args is provided, spawn the
+  // command directly with the given argv instead of going through a shell.
+  // Path placeholders (e.g. ${CLAUDE_PROJECT_DIR}/script.sh) never need
+  // quoting because no shell parses the argv. CLAUDE_PLUGIN_ROOT /
+  // CLAUDE_PLUGIN_DATA / user_config substitution applies to BOTH command
+  // and args, but no shell metacharacters are honored.
+  if (hook.args) {
+    const substituteVars = (s: string): string => {
+      let value = s
+      if (pluginRoot) {
+        const rootPath = toHookPath(pluginRoot)
+        value = value.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, () => rootPath)
+        if (pluginId) {
+          const dataPath = toHookPath(getPluginDataDir(pluginId))
+          value = value.replace(/\$\{CLAUDE_PLUGIN_DATA\}/g, () => dataPath)
+          if (pluginOpts) {
+            value = substituteUserConfigVariables(value, pluginOpts)
+          }
+        }
+      }
+      return value
+    }
+    const execCommand = substituteVars(hook.command)
+    const execArgs = hook.args.map(substituteVars)
+    child = spawn(execCommand, execArgs, {
+      env: envVars,
+      cwd: safeCwd,
+      shell: false,
+      windowsHide: true,
+    }) as ChildProcessWithoutNullStreams
+  } else if (shellType === 'powershell') {
     const pwshPath = await getCachedPowerShellPath()
     if (!pwshPath) {
       throw new Error(
@@ -4043,6 +4073,8 @@ export async function executePreCompactHooks(
 ): Promise<{
   newCustomInstructions?: string
   userDisplayMessage?: string
+  blocked?: boolean
+  blockedReason?: string
 }> {
   const hookInput: PreCompactHookInput = {
     ...createBaseHookInput(undefined),
@@ -4062,6 +4094,12 @@ export async function executePreCompactHooks(
     return {}
   }
 
+  // Upstream 2.1.105: any blocking PreCompact hook (exit code 2 or JSON
+  // `{"decision":"block"}`) cancels compaction. Use the first blocking hook's
+  // output as the reason shown to the user. Build the full display message
+  // separately so users can still see all hook results.
+  const blockingResult = results.find(result => result.blocked)
+
   // Extract custom instructions from successful hooks with non-empty output
   const successfulOutputs = results
     .filter(result => result.succeeded && result.output.trim().length > 0)
@@ -4070,6 +4108,11 @@ export async function executePreCompactHooks(
   // Build user display messages with command info
   const displayMessages: string[] = []
   for (const result of results) {
+    if (result.blocked) {
+      const reason = result.output.trim() || 'no reason given'
+      displayMessages.push(`PreCompact [${result.command}] blocked: ${reason}`)
+      continue
+    }
     if (result.succeeded) {
       if (result.output.trim()) {
         displayMessages.push(
@@ -4096,6 +4139,8 @@ export async function executePreCompactHooks(
       successfulOutputs.length > 0 ? successfulOutputs.join('\n\n') : undefined,
     userDisplayMessage:
       displayMessages.length > 0 ? displayMessages.join('\n') : undefined,
+    blocked: blockingResult !== undefined,
+    blockedReason: blockingResult?.output.trim() || undefined,
   }
 }
 
