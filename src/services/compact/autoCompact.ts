@@ -20,6 +20,7 @@ import {
   type CompactionResult,
   compactConversation,
   ERROR_MESSAGE_USER_ABORT,
+  isPreCompactBlockedError,
   type RecompactionInfo,
 } from './compact.js'
 import { runPostCompactCleanup } from './postCompactCleanup.js'
@@ -325,6 +326,10 @@ async function runAutoCompact(
       consecutiveFailures: 0,
     }
   } catch (error) {
+    if (isPreCompactBlockedError(error)) {
+      logForDebugging(`autocompact: ${error.message}`)
+      return { wasCompacted: false }
+    }
     if (!hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT)) {
       logError(error)
     }

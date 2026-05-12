@@ -11,7 +11,9 @@ import {
   ERROR_MESSAGE_INCOMPLETE_RESPONSE,
   ERROR_MESSAGE_NOT_ENOUGH_MESSAGES,
   ERROR_MESSAGE_USER_ABORT,
+  isPreCompactBlockedError,
   mergeHookInstructions,
+  throwIfPreCompactBlocked,
 } from '../../services/compact/compact.js'
 import { suppressCompactWarning } from '../../services/compact/compactWarningState.js'
 import { microcompactMessages } from '../../services/compact/microCompact.js'
@@ -129,6 +131,8 @@ export const call: LocalCommandCall = async (args, context) => {
       throw new Error(ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)
     } else if (hasExactErrorMessage(error, ERROR_MESSAGE_INCOMPLETE_RESPONSE)) {
       throw new Error(ERROR_MESSAGE_INCOMPLETE_RESPONSE)
+    } else if (isPreCompactBlockedError(error)) {
+      throw error
     } else {
       logError(error)
       throw new Error(`Error during compaction: ${error}`)
@@ -163,6 +167,7 @@ async function compactViaReactive(
       ),
       getCacheSharingParams(context, messages),
     ])
+    throwIfPreCompactBlocked(hookResult)
     const mergedInstructions = mergeHookInstructions(
       customInstructions,
       hookResult.newCustomInstructions,

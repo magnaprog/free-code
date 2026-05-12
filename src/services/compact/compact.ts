@@ -224,11 +224,37 @@ export function stripReinjectedAttachments(messages: Message[]): Message[] {
 
 export const ERROR_MESSAGE_NOT_ENOUGH_MESSAGES =
   'Not enough messages to compact.'
-// Sentinel for PreCompact-hook blocked compaction (upstream 2.1.105).
-// Callers (autoCompact, manual /compact) detect this prefix to surface the
-// hook's reason and short-circuit without throwing a generic error.
 export const ERROR_MESSAGE_PRECOMPACT_BLOCKED =
   'Compaction blocked by PreCompact hook'
+
+export class PreCompactBlockedError extends Error {
+  readonly reason?: string
+  constructor(reason?: string) {
+    super(
+      reason
+        ? `${ERROR_MESSAGE_PRECOMPACT_BLOCKED}: ${reason}`
+        : ERROR_MESSAGE_PRECOMPACT_BLOCKED,
+    )
+    this.name = 'PreCompactBlockedError'
+    this.reason = reason
+  }
+}
+
+export function isPreCompactBlockedError(
+  error: unknown,
+): error is PreCompactBlockedError {
+  return error instanceof PreCompactBlockedError
+}
+
+export function throwIfPreCompactBlocked(hookResult: {
+  blocked?: boolean
+  blockedReason?: string
+}): void {
+  if (hookResult.blocked) {
+    throw new PreCompactBlockedError(hookResult.blockedReason)
+  }
+}
+
 const MAX_PTL_RETRIES = 3
 const PTL_RETRY_MARKER = '[earlier conversation truncated for compaction retry]'
 
@@ -422,12 +448,7 @@ export async function compactConversation(
       },
       context.abortController.signal,
     )
-    if (hookResult.blocked) {
-      const reason = hookResult.blockedReason
-        ? `: ${hookResult.blockedReason}`
-        : ''
-      throw new Error(`${ERROR_MESSAGE_PRECOMPACT_BLOCKED}${reason}`)
-    }
+    throwIfPreCompactBlocked(hookResult)
     customInstructions = mergeHookInstructions(
       customInstructions,
       hookResult.newCustomInstructions,
@@ -834,12 +855,7 @@ export async function partialCompactConversation(
       },
       context.abortController.signal,
     )
-    if (hookResult.blocked) {
-      const reason = hookResult.blockedReason
-        ? `: ${hookResult.blockedReason}`
-        : ''
-      throw new Error(`${ERROR_MESSAGE_PRECOMPACT_BLOCKED}${reason}`)
-    }
+    throwIfPreCompactBlocked(hookResult)
 
     // Merge hook instructions with user feedback
     let customInstructions: string | undefined
@@ -1130,7 +1146,8 @@ function addErrorNotificationIfNeeded(
 ) {
   if (
     !hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT) &&
-    !hasExactErrorMessage(error, ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)
+    !hasExactErrorMessage(error, ERROR_MESSAGE_NOT_ENOUGH_MESSAGES) &&
+    !isPreCompactBlockedError(error)
   ) {
     context.addNotification?.({
       key: 'error-compacting-conversation',
