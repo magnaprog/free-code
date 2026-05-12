@@ -37,11 +37,6 @@ describe('dangerous removal argv checks', () => {
 })
 
 describe('checkDangerousRemovalText text-fallback path', () => {
-  // The argv helper alone does NOT know about exec wrappers like sudo/doas/
-  // pkexec/exec/command/watch/ionice/setsid — those are stripped by
-  // stripExecWrappersForDenyDetailed during the sandbox auto-allow text
-  // fallback, which is what checkDangerousRemovalText drives. These cases
-  // would slip past argv-level checks but must still be caught.
   test('catches dangerous removals wrapped by privilege/exec wrappers', () => {
     const cases = [
       'sudo rm -rf /',
@@ -64,10 +59,17 @@ describe('checkDangerousRemovalText text-fallback path', () => {
   })
 
   test('shell parameter expansion still resolves through the text path', () => {
-    // ${RM:-rm} resolves to "rm" via resolveShellParameterForPermission's
-    // default-value handling, so the danger check must still fire.
     const { result, sawRemoval } = checkDangerousRemovalText(
       '${RM:-rm} -rf /',
+      cwd,
+    )
+    expect(sawRemoval).toBe(true)
+    expect(result.behavior).toBe('ask')
+  })
+
+  test('word-splits unquoted shell parameter expansion', () => {
+    const { result, sawRemoval } = checkDangerousRemovalText(
+      '${CMD:-rm -rf /}',
       cwd,
     )
     expect(sawRemoval).toBe(true)

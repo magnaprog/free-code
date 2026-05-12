@@ -2191,23 +2191,8 @@ export async function checkCommandAndSuggestRules(
 }
 
 /**
- * Checks if a command should be auto-allowed when sandboxed.
- * Returns early if there are explicit deny/ask rules that should be respected.
- *
- * NOTE: This function should only be called when sandboxing and auto-allow are enabled.
- *
- * @param input - The bash tool input
- * @param toolPermissionContext - The permission context
- * @returns PermissionResult with:
- *   - deny/ask if explicit rule exists (exact or prefix)
- *   - allow if no explicit rules (sandbox auto-allow applies)
- *   - passthrough should not occur since we're in auto-allow mode
- */
-/**
  * Walk exec-wrapper chains and shell parameter expansions on `command`,
- * looking for `rm`/`rmdir` invocations against critical paths. Exported so
- * the sandbox auto-allow text-fallback path can be exercised directly in
- * tests without booting the full bashToolHasPermission stack.
+ * looking for `rm`/`rmdir` invocations against critical paths.
  */
 export function checkDangerousRemovalText(
   command: string,
@@ -2249,6 +2234,10 @@ export function checkDangerousRemovalText(
 
     if (stripped !== current) stack.push(stripped)
 
+    for (const expanded of shellExpandedCandidatesForDeny(current)) {
+      stack.push(expanded)
+    }
+
     const execStripped = stripExecWrappersForDenyDetailed(current)
     for (const strippedCommand of execStripped.commands) {
       if (strippedCommand !== current) stack.push(strippedCommand)
@@ -2278,6 +2267,12 @@ function askForCdRemovalInSandbox(): PermissionResult {
   }
 }
 
+/**
+ * Checks if a command should be auto-allowed when sandboxed.
+ * Returns early if there are explicit deny/ask rules that should be respected.
+ *
+ * NOTE: This function should only be called when sandboxing and auto-allow are enabled.
+ */
 function checkSandboxAutoAllow(
   input: z.infer<typeof BashTool.inputSchema>,
   toolPermissionContext: ToolPermissionContext,

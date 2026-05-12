@@ -4,7 +4,6 @@ import mapValues from 'lodash-es/mapValues.js'
 import memoize from 'lodash-es/memoize.js'
 import { dirname, join, parse } from 'path'
 import { getPlatform } from 'src/utils/platform.js'
-import { getProjectRoot } from '../../bootstrap/state.js'
 import type { PluginError } from '../../types/plugin.js'
 import { getPluginErrorMessage } from '../../types/plugin.js'
 import { isClaudeInChromeMCPServer } from '../../utils/claudeInChrome/common.js'
@@ -42,7 +41,10 @@ import {
   logEvent,
 } from '../analytics/index.js'
 import { fetchClaudeAIMcpConfigsIfEligible } from './claudeai.js'
-import { expandEnvVarsInString } from './envExpansion.js'
+import {
+  expandEnvVarsInString,
+  getEnvExpansionExtraEnv,
+} from './envExpansion.js'
 import {
   type ConfigScope,
   type McpHTTPServerConfig,
@@ -560,7 +562,7 @@ function expandEnvVars(config: McpServerConfig): {
 } {
   const missingVars: string[] = []
 
-  const extraEnv = { CLAUDE_PROJECT_DIR: getProjectRoot() }
+  const extraEnv = getEnvExpansionExtraEnv()
 
   function expandString(str: string): string {
     const { expanded, missingVars: vars } = expandEnvVarsInString(str, extraEnv)

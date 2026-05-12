@@ -1,18 +1,20 @@
+import { getProjectRoot } from '../../bootstrap/state.js'
+
 /**
- * Shared utilities for expanding environment variables in MCP server configurations
+ * Shared utilities for expanding environment variables in server configurations
  */
+
+export function getEnvExpansionExtraEnv(): Record<
+  string,
+  string | undefined
+> {
+  return { CLAUDE_PROJECT_DIR: getProjectRoot() }
+}
 
 /**
  * Expand environment variables in a string value.
- * Handles ${VAR} and ${VAR:-default} syntax.
- *
- * `extraEnv` provides synthetic values for variables the user is unlikely
- * to set themselves (notably CLAUDE_PROJECT_DIR for MCP server config).
- * Entries in `extraEnv` take precedence over `process.env`, matching how
- * hooks receive these variables — `getProjectRoot()` is the stable project
- * root and should win over any inherited shell var of the same name.
- *
- * @returns Object with expanded string and list of missing variables
+ * Handles ${VAR} and ${VAR:-default} syntax. `extraEnv` takes precedence over
+ * `process.env` for synthetic values like CLAUDE_PROJECT_DIR.
  */
 export function expandEnvVarsInString(
   value: string,

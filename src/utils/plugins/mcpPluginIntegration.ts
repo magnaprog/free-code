@@ -1,5 +1,8 @@
 import { join } from 'path'
-import { expandEnvVarsInString } from '../../services/mcp/envExpansion.js'
+import {
+  expandEnvVarsInString,
+  getEnvExpansionExtraEnv,
+} from '../../services/mcp/envExpansion.js'
 import {
   type McpServerConfig,
   McpServerConfigSchema,
@@ -471,6 +474,7 @@ export function resolvePluginMcpEnvironment(
   serverName?: string,
 ): McpServerConfig {
   const allMissingVars: string[] = []
+  const extraEnv = getEnvExpansionExtraEnv()
 
   const resolveValue = (value: string): string => {
     // First substitute plugin-specific variables
@@ -483,7 +487,7 @@ export function resolvePluginMcpEnvironment(
 
     // Finally expand general environment variables
     // This is done last so plugin-specific and user config vars take precedence
-    const { expanded, missingVars } = expandEnvVarsInString(resolved)
+    const { expanded, missingVars } = expandEnvVarsInString(resolved, extraEnv)
     allMissingVars.push(...missingVars)
 
     return expanded

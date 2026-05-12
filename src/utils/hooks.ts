@@ -450,7 +450,7 @@ function validateHookJson(
 function getSyncHookJson(
   json: HookJSONOutput | undefined,
 ): SyncHookJSONOutput | undefined {
-  return json && !isAsyncHookJSONOutput(json) ? json : undefined
+  return json && isSyncHookJSONOutput(json) ? json : undefined
 }
 
 function getBlockedHookOutput(
@@ -948,19 +948,21 @@ async function execCommandHook(
     ? hook.timeout * 1000
     : TOOL_HOOK_EXECUTION_TIMEOUT_MS
 
-  // Build env vars — all paths go through toHookPath for Windows POSIX conversion
+  const toHookEnvPath = hook.args ? (p: string) => p : toHookPath
+
+  // Shell-form bash hooks get POSIX paths on Windows; exec form gets native paths.
   const envVars: NodeJS.ProcessEnv = {
     ...subprocessEnv(),
-    CLAUDE_PROJECT_DIR: toHookPath(projectDir),
+    CLAUDE_PROJECT_DIR: toHookEnvPath(projectDir),
     ...(effortLevel ? { CLAUDE_EFFORT: effortLevel } : {}),
   }
 
   // Plugin and skill hooks both set CLAUDE_PLUGIN_ROOT (skills use the same
   // name for consistency — skills can migrate to plugins without code changes)
   if (pluginRoot) {
-    envVars.CLAUDE_PLUGIN_ROOT = toHookPath(pluginRoot)
+    envVars.CLAUDE_PLUGIN_ROOT = toHookEnvPath(pluginRoot)
     if (pluginId) {
-      envVars.CLAUDE_PLUGIN_DATA = toHookPath(getPluginDataDir(pluginId))
+      envVars.CLAUDE_PLUGIN_DATA = toHookEnvPath(getPluginDataDir(pluginId))
     }
   }
   // Expose plugin options as env vars too, so hooks can read them without
@@ -976,7 +978,7 @@ async function execCommandHook(
     }
   }
   if (skillRoot) {
-    envVars.CLAUDE_PLUGIN_ROOT = toHookPath(skillRoot)
+    envVars.CLAUDE_PLUGIN_ROOT = toHookEnvPath(skillRoot)
   }
 
   // CLAUDE_ENV_FILE points to a .sh file that the hook writes env var
@@ -1033,11 +1035,7 @@ async function execCommandHook(
   // CLAUDE_PLUGIN_DATA / user_config substitution applies to BOTH command
   // and args, but no shell metacharacters are honored.
   if (hook.args) {
-    // Exec form bypasses every shell (no /bin/sh, no Git Bash, no pwsh -Command).
-    // toHookPath() converts paths to POSIX form on Windows when targeting bash,
-    // which is exactly wrong here — a spawned Windows-native binary expects
-    // `C:\…` and would receive `/c/…` instead. Use the raw project root and
-    // plugin roots in exec form regardless of platform.
+    // Exec form bypasses shells, so path placeholders must be raw argv strings.
     const substituteVars = (s: string): string => {
       let value = s.replace(/\$\{CLAUDE_PROJECT_DIR\}/g, () => projectDir)
       if (pluginRoot) {
