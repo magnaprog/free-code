@@ -19,6 +19,14 @@ const ALWAYS_STRIP_SUBPROCESS_ENV = [
   'OTEL_EXPORTER_OTLP_LOGS_HEADERS',
   'OTEL_EXPORTER_OTLP_METRICS_HEADERS',
   'OTEL_EXPORTER_OTLP_TRACES_HEADERS',
+  // OTLP exporter endpoints — if a subprocess is an OTEL-instrumented app,
+  // inheriting these makes it report to the CLI's own collector (double
+  // counting / cross-tenant leak). Strip alongside the headers so the
+  // subprocess uses its own OTEL config or none at all.
+  'OTEL_EXPORTER_OTLP_ENDPOINT',
+  'OTEL_EXPORTER_OTLP_LOGS_ENDPOINT',
+  'OTEL_EXPORTER_OTLP_METRICS_ENDPOINT',
+  'OTEL_EXPORTER_OTLP_TRACES_ENDPOINT',
 ] as const
 
 const GHA_SUBPROCESS_SCRUB = [
@@ -59,8 +67,9 @@ const GHA_SUBPROCESS_SCRUB = [
  * spawning subprocesses (Bash tool, shell snapshot, MCP stdio servers, LSP
  * servers, shell hooks).
  *
- * OTEL exporter header secrets are always stripped. Additional GitHub Actions
- * secrets are stripped when CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is enabled.
+ * OTLP exporter header and endpoint vars are always stripped. Additional
+ * GitHub Actions secrets are stripped when CLAUDE_CODE_SUBPROCESS_ENV_SCRUB
+ * is enabled.
  */
 // Registered by init.ts after the upstreamproxy module is dynamically imported
 // in CCR sessions. Stays undefined in non-CCR startups so we never pull in the

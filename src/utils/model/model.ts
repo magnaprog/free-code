@@ -108,10 +108,18 @@ export function getBestModel(): ModelName {
   return getDefaultOpusModel()
 }
 
-// @[MODEL LAUNCH]: Update the default Opus model.
+// @[MODEL LAUNCH]: Update the default Opus model (3P providers may lag so keep defaults unchanged).
 export function getDefaultOpusModel(): ModelName {
   if (process.env.ANTHROPIC_DEFAULT_OPUS_MODEL) {
     return process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
+  }
+  // 3P providers (Bedrock, Vertex, Foundry) lag firstParty launches. The Opus
+  // 4.7 Bedrock ID in CLAUDE_OPUS_4_7_CONFIG (`anthropic.claude-opus-4-7`) is
+  // a placeholder, not the published Bedrock inference profile string. Default
+  // 3P users to Opus 4.6 — known-good across all three providers — and let the
+  // model picker offer 4.7 explicitly for users whose provider has it.
+  if (getAPIProvider() !== 'firstParty') {
+    return getModelStrings().opus46
   }
   return getModelStrings().opus47
 }

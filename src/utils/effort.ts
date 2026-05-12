@@ -44,7 +44,6 @@ export function modelSupportsEffort(model: string): boolean {
   if (
     m.includes('opus-4-7') ||
     m.includes('opus-4-6') ||
-    m.includes('opus-4-5') ||
     m.includes('sonnet-4-6')
   ) {
     return true
@@ -65,7 +64,9 @@ export function modelSupportsEffort(model: string): boolean {
 }
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports 'max' effort.
-// Per Anthropic API docs, 'max' is available on Opus 4.7, Opus 4.6, and Sonnet 4.6.
+// Per Anthropic API docs, 'max' is Opus-only for public Claude models (Opus 4.7
+// and Opus 4.6). Sonnet 4.6 supports effort but not the 'max' level — the API
+// rejects `output_config.effort: max` for it.
 // OpenAI reasoning models use `xhigh`; the Codex adapter maps free-code's
 // `max` value to OpenAI's wire value.
 export function modelSupportsMaxEffort(model: string): boolean {
@@ -77,11 +78,7 @@ export function modelSupportsMaxEffort(model: string): boolean {
     return true
   }
   const m = model.toLowerCase()
-  if (
-    m.includes('opus-4-7') ||
-    m.includes('opus-4-6') ||
-    m.includes('sonnet-4-6')
-  ) {
+  if (m.includes('opus-4-7') || m.includes('opus-4-6')) {
     return true
   }
   if (process.env.USER_TYPE === 'ant' && resolveAntModel(model)) {
@@ -289,7 +286,7 @@ export function getEffortLevelDescription(level: EffortLevel): string {
     case 'xhigh':
       return 'Extended capability for long-horizon work (Opus 4.7 and OpenAI)'
     case 'max':
-      return 'Maximum capability with deepest reasoning (Opus 4.7/4.6, Sonnet 4.6, or xhigh for OpenAI)'
+      return 'Maximum capability with deepest reasoning (Opus 4.7, Opus 4.6, or xhigh for OpenAI)'
   }
 }
 
