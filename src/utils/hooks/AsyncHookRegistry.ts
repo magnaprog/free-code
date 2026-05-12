@@ -225,6 +225,22 @@ export async function checkForAsyncHookResponses(): Promise<
       hook.responseAttachmentSent = true
       await finalizeHook(hook, exitCode, exitCode === 0 ? 'success' : 'error')
 
+      // Upstream 2.1.119: async PostToolUse hooks that emit no JSON response
+      // payload would still produce an empty `async_hook_response` attachment
+      // and a zero-content transcript entry. Drop the response in that case so
+      // the transcript only carries actionable hook output. Other events
+      // (SessionStart/FileChanged/CwdChanged) keep emitting an empty response
+      // because their consumers rely on the env-cache invalidation side effect.
+      if (
+        hook.hookEvent === 'PostToolUse' &&
+        Object.keys(response).length === 0
+      ) {
+        logForDebugging(
+          `Hooks: Async PostToolUse ${hook.processId} produced no payload — dropping`,
+        )
+        return { type: 'remove' as const, processId: hook.processId }
+      }
+
       return {
         type: 'response' as const,
         processId: hook.processId,
