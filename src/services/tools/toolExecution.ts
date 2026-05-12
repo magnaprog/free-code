@@ -1880,7 +1880,15 @@ async function checkPermissionsAndCallTool(
       hookMessages.push(hookResult)
     }
 
+    // SECURITY/UX (upstream 2.1.110): pre-tool messages (PreToolUse
+    // additionalContext, permission decisions, hook attachments) accumulated
+    // in resultingMessages BEFORE the tool.call() throw must survive the
+    // failure path. Returning only [tool_result, ...hookMessages] silently
+    // discards everything Claude needs to understand why the call ran in the
+    // first place — surfacing as "the hook's additionalContext disappears on
+    // any failed tool call."
     return [
+      ...resultingMessages,
       {
         message: createUserMessage({
           content: [
