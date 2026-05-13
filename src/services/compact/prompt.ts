@@ -286,6 +286,8 @@ const NO_TOOLS_TRAILER =
   'one <summary> block and nothing else. ' +
   'Tool calls will be rejected and you will fail the task.'
 
+export const EMERGENCY_COMPACT_MAX_OUTPUT_TOKENS = 4_000
+
 const EMERGENCY_COMPACT_PROMPT = `EMERGENCY COMPACTION RETRY.
 
 The previous compaction attempt exceeded the output-token limit. Produce a much shorter, lossy continuation summary.
@@ -294,7 +296,7 @@ The previous compaction attempt exceeded the output-token limit. Produce a much 
 
 Hard requirements:
 - Return exactly one <summary> block and nothing else.
-- Stay under 4,000 tokens.
+- Stay under ${EMERGENCY_COMPACT_MAX_OUTPUT_TOKENS.toLocaleString()} tokens.
 - No analysis, no preamble, no code blocks unless absolutely essential.
 - Preserve only what is needed to continue work safely: active user request, changed files, commands/tests, errors, decisions, and next step.
 - Omit routine transcript history, repeated reasoning, long file contents, and non-critical details.

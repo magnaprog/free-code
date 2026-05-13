@@ -31,10 +31,10 @@ import { isModelAllowed } from './modelAllowlist.js'
 import { type ModelAlias, isModelAlias } from './aliases.js'
 import { capitalize } from '../stringUtils.js'
 import {
-  CHATGPT_CODEX_MODELS,
   DEFAULT_CODEX_MODEL,
   DEFAULT_OPENAI_RESPONSES_MODEL,
   OPENAI_RESPONSES_MODELS,
+  getKnownNonClaudeModelCapability,
 } from './providerCapabilities.js'
 
 export type ModelShortName = string
@@ -434,20 +434,21 @@ export function getPublicModelDisplayName(model: ModelName): string | null {
 export function getModelBackendContextDescription(
   model: string | null,
 ): string | undefined {
-  if (!model || getAPIProvider() !== 'openai') {
+  if (getAPIProvider() !== 'openai') {
     return undefined
   }
 
-  const isChatGPTCodex =
-    !process.env.OPENAI_API_KEY && CHATGPT_CODEX_MODELS.some(m => m.id === model)
-  const isOpenAIResponses =
-    !!process.env.OPENAI_API_KEY && OPENAI_RESPONSES_MODELS.some(m => m.id === model)
-  if (!isChatGPTCodex && !isOpenAIResponses) {
+  const resolvedModel = model ?? getDefaultMainLoopModelSetting()
+  const adapter = process.env.OPENAI_API_KEY
+    ? 'openai-responses'
+    : 'chatgpt-codex'
+  if (!getKnownNonClaudeModelCapability(resolvedModel, adapter)) {
     return undefined
   }
 
-  const backend = isChatGPTCodex ? 'ChatGPT Codex OAuth' : 'OpenAI Responses'
-  return `${backend} · ${formatContextWindow(getContextWindowForModel(model))} context`
+  const backend =
+    adapter === 'chatgpt-codex' ? 'ChatGPT Codex OAuth' : 'OpenAI Responses'
+  return `${backend} · ${formatContextWindow(getContextWindowForModel(resolvedModel))} context`
 }
 
 function formatContextWindow(tokens: number): string {

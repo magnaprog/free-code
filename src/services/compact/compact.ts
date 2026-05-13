@@ -39,17 +39,13 @@ import {
   getMcpInstructionsDeltaAttachment,
 } from '../../utils/attachments.js'
 import { getMemoryPath } from '../../utils/config.js'
-import {
-  COMPACT_MAX_OUTPUT_TOKENS,
-  getModelMaxOutputTokens,
-} from '../../utils/context.js'
+import { COMPACT_MAX_OUTPUT_TOKENS } from '../../utils/context.js'
 import {
   analyzeContext,
   tokenStatsToStatsigMetrics,
 } from '../../utils/contextAnalysis.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { hasExactErrorMessage } from '../../utils/errors.js'
-import { validateBoundedIntEnvVar } from '../../utils/envValidation.js'
 import { cacheToObject } from '../../utils/fileStateCache.js'
 import {
   type CacheSafeParams,
@@ -101,7 +97,8 @@ import {
   logEvent,
 } from '../analytics/index.js'
 import {
-  getMaxOutputTokensForModel,
+  getDefaultMaxOutputTokensForModel,
+  getMaxOutputTokensForModelWithDefault,
   queryModelWithStreaming,
 } from '../api/claude.js'
 import {
@@ -118,6 +115,7 @@ import {
 } from '../tokenEstimation.js'
 import { groupMessagesByApiRound } from './grouping.js'
 import {
+  EMERGENCY_COMPACT_MAX_OUTPUT_TOKENS,
   getCompactPrompt,
   getCompactUserSummaryMessage,
   getEmergencyCompactPrompt,
@@ -428,19 +426,16 @@ function isMaxOutputTokensAssistantMessage(message: AssistantMessage): boolean {
 function getCompactMaxOutputTokens(model: string): number {
   const defaultTokens = Math.min(
     COMPACT_MAX_OUTPUT_TOKENS,
-    getMaxOutputTokensForModel(model),
+    getDefaultMaxOutputTokensForModel(model),
   )
-  const envValue = process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS
-  if (!envValue) {
-    return defaultTokens
-  }
-  const result = validateBoundedIntEnvVar(
-    'CLAUDE_CODE_MAX_OUTPUT_TOKENS',
-    envValue,
-    defaultTokens,
-    getModelMaxOutputTokens(model).upperLimit,
+  return getMaxOutputTokensForModelWithDefault(model, defaultTokens)
+}
+
+function getEmergencyCompactMaxOutputTokens(model: string): number {
+  return Math.min(
+    EMERGENCY_COMPACT_MAX_OUTPUT_TOKENS,
+    getCompactMaxOutputTokens(model),
   )
-  return result.status === 'invalid' ? defaultTokens : result.effective
 }
 
 /**
@@ -522,6 +517,9 @@ export async function compactConversation(
         context,
         preCompactTokenCount,
         cacheSafeParams: retryCacheSafeParams,
+        maxOutputTokensOverride: usedEmergencyCompactPrompt
+          ? getEmergencyCompactMaxOutputTokens(context.options.mainLoopModel)
+          : undefined,
       })
       if (isMaxOutputTokensAssistantMessage(summaryResponse)) {
         if (!usedEmergencyCompactPrompt) {
@@ -957,6 +955,9 @@ export async function partialCompactConversation(
         context,
         preCompactTokenCount,
         cacheSafeParams: retryCacheSafeParams,
+        maxOutputTokensOverride: usedEmergencyCompactPrompt
+          ? getEmergencyCompactMaxOutputTokens(context.options.mainLoopModel)
+          : undefined,
       })
       if (isMaxOutputTokensAssistantMessage(summaryResponse)) {
         if (!usedEmergencyCompactPrompt) {
@@ -1248,6 +1249,7 @@ async function streamCompactSummary({
   context,
   preCompactTokenCount,
   cacheSafeParams,
+  maxOutputTokensOverride,
 }: {
   messages: Message[]
   summaryRequest: UserMessage
@@ -1255,6 +1257,7 @@ async function streamCompactSummary({
   context: ToolUseContext
   preCompactTokenCount: number
   cacheSafeParams: CacheSafeParams
+  maxOutputTokensOverride?: number
 }): Promise<AssistantMessage> {
   // When prompt cache sharing is enabled, use forked agent to reuse the
   // main conversation's cached prefix (system prompt, tools, context messages).
@@ -1284,7 +1287,9 @@ async function streamCompactSummary({
     : undefined
 
   try {
-    if (promptCacheSharingEnabled) {
+    const canUsePromptCacheSharing =
+      promptCacheSharingEnabled && maxOutputTokensOverride === undefined
+    if (canUsePromptCacheSharing) {
       try {
         // DO NOT set maxOutputTokens here. The fork piggybacks on the main thread's
         // prompt cache by sending identical cache-key params (system, tools, model,
@@ -1300,6 +1305,7 @@ async function streamCompactSummary({
           querySource: 'compact',
           forkLabel: 'compact',
           maxTurns: 1,
+          disableMaxOutputTokensRecovery: true,
           skipCacheWrite: true,
           // Pass the compact context's abortController so user Esc aborts the
           // fork — same signal the streaming fallback uses at
@@ -1310,6 +1316,9 @@ async function streamCompactSummary({
         const assistantText = assistantMsg
           ? getAssistantMessageText(assistantMsg)
           : null
+        if (assistantMsg && isMaxOutputTokensAssistantMessage(assistantMsg)) {
+          return assistantMsg
+        }
         // Guard isApiErrorMessage: query() catches API errors (including
         // APIUserAbortError on ESC) and yields them as synthetic assistant
         // messages. Without this check, an aborted compact "succeeds" with
@@ -1422,9 +1431,9 @@ async function streamCompactSummary({
           toolChoice: undefined,
           isNonInteractiveSession: context.options.isNonInteractiveSession,
           hasAppendSystemPrompt: !!context.options.appendSystemPrompt,
-          maxOutputTokensOverride: getCompactMaxOutputTokens(
-            context.options.mainLoopModel,
-          ),
+          maxOutputTokensOverride:
+            maxOutputTokensOverride ??
+            getCompactMaxOutputTokens(context.options.mainLoopModel),
           querySource: 'compact',
           agents: context.options.agentDefinitions.activeAgents,
           mcpTools: [],

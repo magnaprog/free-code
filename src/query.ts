@@ -190,6 +190,7 @@ export type QueryParams = {
   maxOutputTokensOverride?: number
   maxTurns?: number
   skipCacheWrite?: boolean
+  disableMaxOutputTokensRecovery?: boolean
   // API task_budget (output_config.task_budget, beta task-budgets-2026-03-13).
   // Distinct from the tokenBudget +500k auto-continue feature. `total` is the
   // budget for the whole agentic turn; `remaining` is computed per iteration
@@ -260,6 +261,7 @@ async function* queryLoop(
     querySource,
     maxTurns,
     skipCacheWrite,
+    disableMaxOutputTokensRecovery,
   } = params
   const deps = params.deps ?? productionDeps()
 
@@ -850,7 +852,7 @@ async function* queryLoop(
               withheld = true
             }
             if (isWithheldMaxOutputTokens(message)) {
-              withheld = true
+              withheld = !disableMaxOutputTokensRecovery
             }
             if (!withheld) {
               yield yieldMessage
@@ -1269,7 +1271,10 @@ async function* queryLoop(
       // Check for max_output_tokens and inject recovery message. The error
       // was withheld from the stream above; only surface it if recovery
       // exhausts.
-      if (isWithheldMaxOutputTokens(lastMessage)) {
+      if (
+        isWithheldMaxOutputTokens(lastMessage) &&
+        !disableMaxOutputTokensRecovery
+      ) {
         // Escalating retry: if we used the capped 8k default and hit the
         // limit, retry the SAME request at 64k — no meta message, no
         // multi-turn dance. This fires once per turn (guarded by the
@@ -1346,7 +1351,12 @@ async function* queryLoop(
       // real response — hooks evaluating it create a death spiral:
       // error → hook blocking → retry → error → …
       if (lastMessage?.isApiErrorMessage) {
-        void executeStopFailureHooks(lastMessage, toolUseContext)
+        if (
+          !disableMaxOutputTokensRecovery ||
+          !isWithheldMaxOutputTokens(lastMessage)
+        ) {
+          void executeStopFailureHooks(lastMessage, toolUseContext)
+        }
         return { reason: 'completed' }
       }
 

@@ -1818,6 +1818,40 @@ async function* queryModel(
   let maxOutputTokens = 0
   let responseHeaders: globalThis.Headers | undefined = undefined
   let research: unknown = undefined
+  const createAssistantMessageFromResult = (
+    result: BetaMessage,
+    content: (BetaContentBlock | ConnectorTextBlock)[] = result.content,
+  ): AssistantMessage => ({
+    message: {
+      ...result,
+      content: normalizeContentFromAPI(content, tools, options.agentId),
+    },
+    requestId: streamRequestId ?? undefined,
+    type: 'assistant',
+    uuid: randomUUID(),
+    timestamp: new Date().toISOString(),
+    ...(process.env.USER_TYPE === 'ant' &&
+      research !== undefined && {
+        research,
+      }),
+    ...(advisorModel && {
+      advisorModel,
+    }),
+  })
+  function* emitNonStreamingFallbackMessages(
+    result: BetaMessage,
+  ): Generator<AssistantMessage> {
+    const message = createAssistantMessageFromResult(result)
+    newMessages.push(message)
+    fallbackMessage = message
+    yield message
+    if (result.stop_reason === 'max_tokens') {
+      const maxTokensMessage =
+        createMaxOutputTokensAssistantMessage(maxOutputTokens)
+      newMessages.push(maxTokensMessage)
+      yield maxTokensMessage
+    }
+  }
   let isFastModeRequest = isFastMode // Keep separate state as it may change if falling back
   let isAdvisorInProgress = false
 
@@ -2245,23 +2279,9 @@ async function* queryModel(
               })
               throw new Error('Message not found')
             }
-            const m: AssistantMessage = {
-              message: {
-                ...partialMessage,
-                content: normalizeContentFromAPI(
-                  [contentBlock] as BetaContentBlock[],
-                  tools,
-                  options.agentId,
-                ),
-              },
-              requestId: streamRequestId ?? undefined,
-              type: 'assistant',
-              uuid: randomUUID(),
-              timestamp: new Date().toISOString(),
-              ...(process.env.USER_TYPE === 'ant' &&
-                research !== undefined && { research }),
-              ...(advisorModel && { advisorModel }),
-            }
+            const m = createAssistantMessageFromResult(partialMessage, [
+              contentBlock,
+            ] as BetaContentBlock[])
             newMessages.push(m)
             yield m
             break
@@ -2623,33 +2643,9 @@ async function* queryModel(
         streamRequestId,
       )
 
-      const m: AssistantMessage =
-        result.stop_reason === 'max_tokens'
-          ? createMaxOutputTokensAssistantMessage(maxOutputTokens)
-          : {
-              message: {
-                ...result,
-                content: normalizeContentFromAPI(
-                  result.content,
-                  tools,
-                  options.agentId,
-                ),
-              },
-              requestId: streamRequestId ?? undefined,
-              type: 'assistant',
-              uuid: randomUUID(),
-              timestamp: new Date().toISOString(),
-              ...(process.env.USER_TYPE === 'ant' &&
-                research !== undefined && {
-                  research,
-                }),
-              ...(advisorModel && {
-                advisorModel,
-              }),
-            }
-      newMessages.push(m)
-      fallbackMessage = m
-      yield m
+      for (const message of emitNonStreamingFallbackMessages(result)) {
+        yield message
+      }
     } finally {
       clearStreamIdleTimers()
     }
@@ -2727,29 +2723,9 @@ async function* queryModel(
           failedRequestId,
         )
 
-        const m: AssistantMessage =
-          result.stop_reason === 'max_tokens'
-            ? createMaxOutputTokensAssistantMessage(maxOutputTokens)
-            : {
-                message: {
-                  ...result,
-                  content: normalizeContentFromAPI(
-                    result.content,
-                    tools,
-                    options.agentId,
-                  ),
-                },
-                requestId: streamRequestId ?? undefined,
-                type: 'assistant',
-                uuid: randomUUID(),
-                timestamp: new Date().toISOString(),
-                ...(process.env.USER_TYPE === 'ant' &&
-                  research !== undefined && { research }),
-                ...(advisorModel && { advisorModel }),
-              }
-        newMessages.push(m)
-        fallbackMessage = m
-        yield m
+        for (const message of emitNonStreamingFallbackMessages(result)) {
+          yield message
+        }
 
         // Continue to success logging below
       } catch (fallbackError) {
@@ -3462,18 +3438,30 @@ function isMaxTokensCapEnabled(): boolean {
 }
 
 export function getMaxOutputTokensForModel(model: string): number {
-  const maxOutputTokens = getModelMaxOutputTokens(model)
-
   // Slot-reservation cap: drop default to 8k for all models. BQ p99 output
   // = 4,911 tokens; 32k/64k defaults over-reserve 8-16× slot capacity.
   // Requests hitting the cap get one clean retry at 64k (query.ts
   // max_output_tokens_escalate). Math.min keeps models with lower native
   // defaults (e.g. claude-3-opus at 4k) at their native value. Applied
   // before the env-var override so CLAUDE_CODE_MAX_OUTPUT_TOKENS still wins.
-  const defaultTokens = isMaxTokensCapEnabled()
+  return getMaxOutputTokensForModelWithDefault(
+    model,
+    getDefaultMaxOutputTokensForModel(model),
+  )
+}
+
+export function getDefaultMaxOutputTokensForModel(model: string): number {
+  const maxOutputTokens = getModelMaxOutputTokens(model)
+  return isMaxTokensCapEnabled()
     ? Math.min(maxOutputTokens.default, CAPPED_DEFAULT_MAX_TOKENS)
     : maxOutputTokens.default
+}
 
+export function getMaxOutputTokensForModelWithDefault(
+  model: string,
+  defaultTokens: number,
+): number {
+  const maxOutputTokens = getModelMaxOutputTokens(model)
   const result = validateBoundedIntEnvVar(
     'CLAUDE_CODE_MAX_OUTPUT_TOKENS',
     process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS,

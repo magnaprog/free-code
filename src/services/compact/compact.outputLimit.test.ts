@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from 'b
 import type { ToolUseContext } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
 import { createFileStateCacheWithSizeLimit } from '../../utils/fileStateCache.js'
+import { validateBoundedIntEnvVar } from '../../utils/envValidation.js'
 import {
   _setGlobalConfigCacheForTesting,
   getGlobalConfig,
@@ -21,6 +22,7 @@ const originalGlobalConfig = getGlobalConfig()
 let responses: Array<'max_output' | 'success'> = []
 let prompts: string[] = []
 let maxOutputTokenOverrides: unknown[] = []
+let compactCachePrefixEnabled = false
 
 const queryModelWithStreaming = mock(async function* ({
   messages,
@@ -50,12 +52,21 @@ const queryModelWithStreaming = mock(async function* ({
 })
 
 mock.module('../api/claude.js', () => ({
-  getMaxOutputTokensForModel: () => 20_000,
+  getMaxOutputTokensForModelWithDefault: (_model: string, defaultTokens: number) =>
+    validateBoundedIntEnvVar(
+      'CLAUDE_CODE_MAX_OUTPUT_TOKENS',
+      process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS,
+      defaultTokens,
+      128_000,
+    ).effective,
   queryModelWithStreaming,
 }))
 
 mock.module('../analytics/growthbook.js', () => ({
-  getFeatureValue_CACHED_MAY_BE_STALE: () => false,
+  getFeatureValue_CACHED_MAY_BE_STALE: <T>(key: string, defaultValue: T) =>
+    key === 'tengu_compact_cache_prefix'
+      ? (compactCachePrefixEnabled as T)
+      : defaultValue,
 }))
 
 mock.module('../analytics/index.js', () => ({
@@ -103,6 +114,8 @@ function createContext(notifications: unknown[] = []): ToolUseContext {
     },
     getAppState: () => ({
       effortValue: undefined,
+      mcp: { clients: [], tools: [] },
+      sessionHooks: new Map(),
       tasks: {},
       toolPermissionContext: {
         additionalWorkingDirectories: new Map(),
@@ -189,6 +202,8 @@ describe('compact output-limit recovery', () => {
     responses = []
     prompts = []
     maxOutputTokenOverrides = []
+    compactCachePrefixEnabled = false
+    delete process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS
     delete process.env.ENABLE_CLAUDE_CODE_SM_COMPACT
     process.env.DISABLE_CLAUDE_CODE_SM_COMPACT = 'true'
     _setGlobalConfigCacheForTesting({
@@ -226,6 +241,22 @@ describe('compact output-limit recovery', () => {
     expect(prompts[0]).toContain('Keep the summary under 8,000 tokens')
     expect(prompts[1]).toContain('EMERGENCY COMPACTION RETRY')
     expect(prompts[1]).toContain('Stay under 4,000 tokens')
+    expect(maxOutputTokenOverrides).toEqual([20_000, 4_000])
+    expect(result.summaryMessages[0]?.message.content).toContain(
+      'short continuation state',
+    )
+  })
+
+  test('cache-sharing path surfaces max output before emergency retry', async () => {
+    compactCachePrefixEnabled = true
+    responses = ['max_output', 'success']
+
+    const result = await runCompact()
+
+    expect(queryModelWithStreaming).toHaveBeenCalledTimes(2)
+    expect(prompts[0]).toContain('Keep the summary under 8,000 tokens')
+    expect(prompts[1]).toContain('EMERGENCY COMPACTION RETRY')
+    expect(maxOutputTokenOverrides).toEqual([undefined, 4_000])
     expect(result.summaryMessages[0]?.message.content).toContain(
       'short continuation state',
     )
