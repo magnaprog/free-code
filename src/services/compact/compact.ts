@@ -97,7 +97,8 @@ import {
   logEvent,
 } from '../analytics/index.js'
 import {
-  getMaxOutputTokensForModel,
+  getDefaultMaxOutputTokensForModel,
+  getMaxOutputTokensForModelWithDefault,
   queryModelWithStreaming,
 } from '../api/claude.js'
 import {
@@ -114,8 +115,10 @@ import {
 } from '../tokenEstimation.js'
 import { groupMessagesByApiRound } from './grouping.js'
 import {
+  EMERGENCY_COMPACT_MAX_OUTPUT_TOKENS,
   getCompactPrompt,
   getCompactUserSummaryMessage,
+  getEmergencyCompactPrompt,
   getPartialCompactPrompt,
 } from './prompt.js'
 
@@ -224,6 +227,42 @@ export function stripReinjectedAttachments(messages: Message[]): Message[] {
 
 export const ERROR_MESSAGE_NOT_ENOUGH_MESSAGES =
   'Not enough messages to compact.'
+export const ERROR_MESSAGE_PRECOMPACT_BLOCKED =
+  'Compaction blocked by PreCompact hook'
+export const ERROR_MESSAGE_COMPACT_OUTPUT_LIMIT =
+  'Compaction failed because the summary exceeded the output-token limit. Clear large tool results or reduce context, then try /compact again.'
+
+export class PreCompactBlockedError extends Error {
+  readonly reason?: string
+  constructor(reason?: string) {
+    super(
+      reason
+        ? `${ERROR_MESSAGE_PRECOMPACT_BLOCKED}: ${reason}`
+        : ERROR_MESSAGE_PRECOMPACT_BLOCKED,
+    )
+    this.name = 'PreCompactBlockedError'
+    this.reason = reason
+  }
+}
+
+export function isPreCompactBlockedError(
+  error: unknown,
+): error is PreCompactBlockedError {
+  return error instanceof PreCompactBlockedError
+}
+
+export type PreCompactHookResult = Awaited<
+  ReturnType<typeof executePreCompactHooks>
+>
+
+export function throwIfPreCompactBlocked(
+  hookResult: Pick<PreCompactHookResult, 'blocked' | 'blockedReason'>,
+): void {
+  if (hookResult.blocked) {
+    throw new PreCompactBlockedError(hookResult.blockedReason)
+  }
+}
+
 const MAX_PTL_RETRIES = 3
 const PTL_RETRY_MARKER = '[earlier conversation truncated for compaction retry]'
 
@@ -380,6 +419,25 @@ export function mergeHookInstructions(
   return `${userInstructions}\n\n${hookInstructions}`
 }
 
+function isMaxOutputTokensAssistantMessage(message: AssistantMessage): boolean {
+  return message.apiError === 'max_output_tokens'
+}
+
+function getCompactMaxOutputTokens(model: string): number {
+  const defaultTokens = Math.min(
+    COMPACT_MAX_OUTPUT_TOKENS,
+    getDefaultMaxOutputTokensForModel(model),
+  )
+  return getMaxOutputTokensForModelWithDefault(model, defaultTokens)
+}
+
+function getEmergencyCompactMaxOutputTokens(model: string): number {
+  return Math.min(
+    EMERGENCY_COMPACT_MAX_OUTPUT_TOKENS,
+    getCompactMaxOutputTokens(model),
+  )
+}
+
 /**
  * Creates a compact version of a conversation by summarizing older messages
  * and preserving recent conversation history.
@@ -392,6 +450,7 @@ export async function compactConversation(
   customInstructions?: string,
   isAutoCompact: boolean = false,
   recompactionInfo?: RecompactionInfo,
+  preCompactHookResult?: PreCompactHookResult,
 ): Promise<CompactionResult> {
   try {
     if (messages.length === 0) {
@@ -403,20 +462,22 @@ export async function compactConversation(
     const appState = context.getAppState()
     void logPermissionContextForAnts(appState.toolPermissionContext, 'summary')
 
-    context.onCompactProgress?.({
-      type: 'hooks_start',
-      hookType: 'pre_compact',
-    })
-
-    // Execute PreCompact hooks
-    context.setSDKStatus?.('compacting')
-    const hookResult = await executePreCompactHooks(
-      {
-        trigger: isAutoCompact ? 'auto' : 'manual',
-        customInstructions: customInstructions ?? null,
-      },
-      context.abortController.signal,
-    )
+    let hookResult = preCompactHookResult
+    if (!hookResult) {
+      context.onCompactProgress?.({
+        type: 'hooks_start',
+        hookType: 'pre_compact',
+      })
+      context.setSDKStatus?.('compacting')
+      hookResult = await executePreCompactHooks(
+        {
+          trigger: isAutoCompact ? 'auto' : 'manual',
+          customInstructions: customInstructions ?? null,
+        },
+        context.abortController.signal,
+      )
+    }
+    throwIfPreCompactBlocked(hookResult)
     customInstructions = mergeHookInstructions(
       customInstructions,
       hookResult.newCustomInstructions,
@@ -438,9 +499,10 @@ export async function compactConversation(
     )
 
     const compactPrompt = getCompactPrompt(customInstructions)
-    const summaryRequest = createUserMessage({
+    let summaryRequest = createUserMessage({
       content: compactPrompt,
     })
+    let usedEmergencyCompactPrompt = false
 
     let messagesToSummarize = messages
     let retryCacheSafeParams = cacheSafeParams
@@ -455,7 +517,30 @@ export async function compactConversation(
         context,
         preCompactTokenCount,
         cacheSafeParams: retryCacheSafeParams,
+        maxOutputTokensOverride: usedEmergencyCompactPrompt
+          ? getEmergencyCompactMaxOutputTokens(context.options.mainLoopModel)
+          : undefined,
       })
+      if (isMaxOutputTokensAssistantMessage(summaryResponse)) {
+        if (!usedEmergencyCompactPrompt) {
+          usedEmergencyCompactPrompt = true
+          summaryRequest = createUserMessage({
+            content: getEmergencyCompactPrompt(customInstructions),
+          })
+          logEvent('tengu_compact_emergency_retry', {
+            preCompactTokenCount,
+            promptCacheSharingEnabled,
+          })
+          continue
+        }
+        logEvent('tengu_compact_failed', {
+          reason:
+            'max_output_tokens' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          preCompactTokenCount,
+          promptCacheSharingEnabled,
+        })
+        throw new Error(ERROR_MESSAGE_COMPACT_OUTPUT_LIMIT)
+      }
       summary = getAssistantMessageText(summaryResponse)
       if (!summary?.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) break
 
@@ -823,6 +908,7 @@ export async function partialCompactConversation(
       },
       context.abortController.signal,
     )
+    throwIfPreCompactBlocked(hookResult)
 
     // Merge hook instructions with user feedback
     let customInstructions: string | undefined
@@ -839,9 +925,10 @@ export async function partialCompactConversation(
     context.onCompactProgress?.({ type: 'compact_start' })
 
     const compactPrompt = getPartialCompactPrompt(customInstructions, direction)
-    const summaryRequest = createUserMessage({
+    let summaryRequest = createUserMessage({
       content: compactPrompt,
     })
+    let usedEmergencyCompactPrompt = false
 
     const failureMetadata = {
       preCompactTokenCount,
@@ -868,7 +955,26 @@ export async function partialCompactConversation(
         context,
         preCompactTokenCount,
         cacheSafeParams: retryCacheSafeParams,
+        maxOutputTokensOverride: usedEmergencyCompactPrompt
+          ? getEmergencyCompactMaxOutputTokens(context.options.mainLoopModel)
+          : undefined,
       })
+      if (isMaxOutputTokensAssistantMessage(summaryResponse)) {
+        if (!usedEmergencyCompactPrompt) {
+          usedEmergencyCompactPrompt = true
+          summaryRequest = createUserMessage({
+            content: getEmergencyCompactPrompt(customInstructions, direction),
+          })
+          logEvent('tengu_partial_compact_emergency_retry', failureMetadata)
+          continue
+        }
+        logEvent('tengu_partial_compact_failed', {
+          reason:
+            'max_output_tokens' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          ...failureMetadata,
+        })
+        throw new Error(ERROR_MESSAGE_COMPACT_OUTPUT_LIMIT)
+      }
       summary = getAssistantMessageText(summaryResponse)
       if (!summary?.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) break
 
@@ -1113,7 +1219,8 @@ function addErrorNotificationIfNeeded(
 ) {
   if (
     !hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT) &&
-    !hasExactErrorMessage(error, ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)
+    !hasExactErrorMessage(error, ERROR_MESSAGE_NOT_ENOUGH_MESSAGES) &&
+    !isPreCompactBlockedError(error)
   ) {
     context.addNotification?.({
       key: 'error-compacting-conversation',
@@ -1142,6 +1249,7 @@ async function streamCompactSummary({
   context,
   preCompactTokenCount,
   cacheSafeParams,
+  maxOutputTokensOverride,
 }: {
   messages: Message[]
   summaryRequest: UserMessage
@@ -1149,6 +1257,7 @@ async function streamCompactSummary({
   context: ToolUseContext
   preCompactTokenCount: number
   cacheSafeParams: CacheSafeParams
+  maxOutputTokensOverride?: number
 }): Promise<AssistantMessage> {
   // When prompt cache sharing is enabled, use forked agent to reuse the
   // main conversation's cached prefix (system prompt, tools, context messages).
@@ -1178,7 +1287,9 @@ async function streamCompactSummary({
     : undefined
 
   try {
-    if (promptCacheSharingEnabled) {
+    const canUsePromptCacheSharing =
+      promptCacheSharingEnabled && maxOutputTokensOverride === undefined
+    if (canUsePromptCacheSharing) {
       try {
         // DO NOT set maxOutputTokens here. The fork piggybacks on the main thread's
         // prompt cache by sending identical cache-key params (system, tools, model,
@@ -1194,6 +1305,7 @@ async function streamCompactSummary({
           querySource: 'compact',
           forkLabel: 'compact',
           maxTurns: 1,
+          disableMaxOutputTokensRecovery: true,
           skipCacheWrite: true,
           // Pass the compact context's abortController so user Esc aborts the
           // fork — same signal the streaming fallback uses at
@@ -1204,6 +1316,9 @@ async function streamCompactSummary({
         const assistantText = assistantMsg
           ? getAssistantMessageText(assistantMsg)
           : null
+        if (assistantMsg && isMaxOutputTokensAssistantMessage(assistantMsg)) {
+          return assistantMsg
+        }
         // Guard isApiErrorMessage: query() catches API errors (including
         // APIUserAbortError on ESC) and yields them as synthetic assistant
         // messages. Without this check, an aborted compact "succeeds" with
@@ -1316,10 +1431,9 @@ async function streamCompactSummary({
           toolChoice: undefined,
           isNonInteractiveSession: context.options.isNonInteractiveSession,
           hasAppendSystemPrompt: !!context.options.appendSystemPrompt,
-          maxOutputTokensOverride: Math.min(
-            COMPACT_MAX_OUTPUT_TOKENS,
-            getMaxOutputTokensForModel(context.options.mainLoopModel),
-          ),
+          maxOutputTokensOverride:
+            maxOutputTokensOverride ??
+            getCompactMaxOutputTokens(context.options.mainLoopModel),
           querySource: 'compact',
           agents: context.options.agentDefinitions.activeAgents,
           mcpTools: [],

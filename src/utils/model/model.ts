@@ -16,6 +16,7 @@ import {
 } from '../auth.js'
 import { getAntModelOverrideConfig, resolveAntModel } from './antModels.js'
 import {
+  getContextWindowForModel,
   has1mContext,
   is1mContextDisabled,
   modelSupports1M,
@@ -33,6 +34,7 @@ import {
   DEFAULT_CODEX_MODEL,
   DEFAULT_OPENAI_RESPONSES_MODEL,
   OPENAI_RESPONSES_MODELS,
+  getKnownNonClaudeModelCapability,
 } from './providerCapabilities.js'
 
 export type ModelShortName = string
@@ -427,6 +429,34 @@ export function getPublicModelDisplayName(model: ModelName): string | null {
     default:
       return formatKnownNonClaudeModelName(model)
   }
+}
+
+export function getModelBackendContextDescription(
+  model: string | null,
+): string | undefined {
+  if (getAPIProvider() !== 'openai') {
+    return undefined
+  }
+
+  const resolvedModel = model ?? getDefaultMainLoopModelSetting()
+  const adapter = process.env.OPENAI_API_KEY
+    ? 'openai-responses'
+    : 'chatgpt-codex'
+  if (!getKnownNonClaudeModelCapability(resolvedModel, adapter)) {
+    return undefined
+  }
+
+  const backend =
+    adapter === 'chatgpt-codex' ? 'ChatGPT Codex OAuth' : 'OpenAI Responses'
+  return `${backend} · ${formatContextWindow(getContextWindowForModel(resolvedModel))} context`
+}
+
+function formatContextWindow(tokens: number): string {
+  if (tokens >= 1_000_000) {
+    const millions = tokens / 1_000_000
+    return `${Number.isInteger(millions) ? millions : millions.toFixed(2)}M`
+  }
+  return `${Math.round(tokens / 1000)}K`
 }
 
 function formatKnownNonClaudeModelName(model: string): string | null {

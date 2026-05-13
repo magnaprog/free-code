@@ -286,6 +286,59 @@ const NO_TOOLS_TRAILER =
   'one <summary> block and nothing else. ' +
   'Tool calls will be rejected and you will fail the task.'
 
+export const EMERGENCY_COMPACT_MAX_OUTPUT_TOKENS = 4_000
+
+const EMERGENCY_COMPACT_PROMPT = `EMERGENCY COMPACTION RETRY.
+
+The previous compaction attempt exceeded the output-token limit. Produce a much shorter, lossy continuation summary.
+
+{{scope}}
+
+Hard requirements:
+- Return exactly one <summary> block and nothing else.
+- Stay under ${EMERGENCY_COMPACT_MAX_OUTPUT_TOKENS.toLocaleString()} tokens.
+- No analysis, no preamble, no code blocks unless absolutely essential.
+- Preserve only what is needed to continue work safely: active user request, changed files, commands/tests, errors, decisions, and next step.
+- Omit routine transcript history, repeated reasoning, long file contents, and non-critical details.
+- If details are too large, point to the transcript path instead of copying them.
+
+<summary>
+1. Active Request:
+2. Critical Files/Changes:
+3. Validation/Errors:
+4. Current State:
+5. Next Step:
+</summary>`
+
+export function getEmergencyCompactPrompt(
+  customInstructions?: string,
+  direction?: PartialCompactDirection,
+): string {
+  const scope = getEmergencyCompactScope(direction)
+  let prompt =
+    NO_TOOLS_PREAMBLE + EMERGENCY_COMPACT_PROMPT.replace('{{scope}}', scope)
+
+  if (customInstructions && customInstructions.trim() !== '') {
+    prompt += `\n\nAdditional Instructions:\n${customInstructions}`
+  }
+
+  prompt += NO_TOOLS_TRAILER
+
+  return prompt
+}
+
+function getEmergencyCompactScope(
+  direction?: PartialCompactDirection,
+): string {
+  if (direction === 'from') {
+    return 'Scope: summarize only the recent messages selected for partial compaction. Earlier messages are retained verbatim; do not duplicate them except for essential dependencies.'
+  }
+  if (direction === 'up_to') {
+    return 'Scope: summarize only the older prefix you can see. Newer messages will be preserved after this summary; provide context needed to understand them.'
+  }
+  return 'Scope: summarize the conversation so far for continuation.'
+}
+
 export function getPartialCompactPrompt(
   customInstructions?: string,
   direction: PartialCompactDirection = 'from',

@@ -103,6 +103,8 @@ export type ForkedAgentParams = {
   maxOutputTokens?: number
   /** Optional cap on number of turns (API round-trips) */
   maxTurns?: number
+  /** Surface max_output_tokens immediately instead of query-level continuation recovery. */
+  disableMaxOutputTokensRecovery?: boolean
   /** Optional callback invoked for each message as it arrives (for streaming UI) */
   onMessage?: (message: Message) => void
   /** Skip sidechain transcript recording (e.g., for ephemeral work like speculation) */
@@ -501,6 +503,7 @@ export async function runForkedAgent({
   overrides,
   maxOutputTokens,
   maxTurns,
+  disableMaxOutputTokensRecovery,
   onMessage,
   skipTranscript,
   skipCacheWrite,
@@ -559,6 +562,7 @@ export async function runForkedAgent({
       maxOutputTokensOverride: maxOutputTokens,
       maxTurns,
       skipCacheWrite,
+      disableMaxOutputTokensRecovery,
     })) {
       // Extract real usage from message_delta stream events (final usage per API call)
       if (message.type === 'stream_event') {

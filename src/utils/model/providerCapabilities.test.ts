@@ -5,6 +5,7 @@ import {
   getBedrockRegionPrefix,
   isFoundationModel,
 } from './bedrock.js'
+import { getModelBackendContextDescription } from './model.js'
 import {
   CHATGPT_CODEX_MODELS,
   getRequiredNonClaudeAdapterForModel,
@@ -19,6 +20,7 @@ function withProviderEnv(
     foundry?: string
     userType?: string
     maxContextTokens?: string
+    openaiModel?: string
   },
   callback: () => void,
 ): void {
@@ -30,6 +32,7 @@ function withProviderEnv(
     foundry: process.env.CLAUDE_CODE_USE_FOUNDRY,
     userType: process.env.USER_TYPE,
     maxContextTokens: process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS,
+    openaiModel: process.env.OPENAI_MODEL,
   }
 
   const setOrDelete = (key: string, value: string | undefined) => {
@@ -47,6 +50,7 @@ function withProviderEnv(
   setOrDelete('CLAUDE_CODE_USE_FOUNDRY', env.foundry)
   setOrDelete('USER_TYPE', env.userType)
   setOrDelete('CLAUDE_CODE_MAX_CONTEXT_TOKENS', env.maxContextTokens)
+  setOrDelete('OPENAI_MODEL', env.openaiModel)
 
   try {
     callback()
@@ -58,6 +62,7 @@ function withProviderEnv(
     setOrDelete('CLAUDE_CODE_USE_FOUNDRY', previous.foundry)
     setOrDelete('USER_TYPE', previous.userType)
     setOrDelete('CLAUDE_CODE_MAX_CONTEXT_TOKENS', previous.maxContextTokens)
+    setOrDelete('OPENAI_MODEL', previous.openaiModel)
   }
 }
 
@@ -125,6 +130,12 @@ describe('provider capability adapter routing', () => {
   test('uses verified context and output caps for current OpenAI Responses models', () => {
     withProviderEnv({ openai: '1', openaiApiKey: 'test' }, () => {
       expect(getContextWindowForModel('gpt-5.5')).toBe(1_050_000)
+      expect(getModelBackendContextDescription('gpt-5.5')).toBe(
+        'OpenAI Responses · 1.05M context',
+      )
+      expect(getModelBackendContextDescription(null)).toBe(
+        'OpenAI Responses · 1.05M context',
+      )
       expect(getContextWindowForModel('gpt-5.4')).toBe(1_050_000)
       expect(getContextWindowForModel('gpt-5.4-mini')).toBe(400_000)
       expect(getModelMaxOutputTokens('gpt-5.5')).toEqual({
@@ -152,6 +163,12 @@ describe('provider capability adapter routing', () => {
         'gpt-5.1-codex',
       )
       expect(getContextWindowForModel('gpt-5.5')).toBe(272_000)
+      expect(getModelBackendContextDescription('gpt-5.5')).toBe(
+        'ChatGPT Codex OAuth · 272K context',
+      )
+      expect(getModelBackendContextDescription(null)).toBe(
+        'ChatGPT Codex OAuth · 272K context',
+      )
       expect(getContextWindowForModel('gpt-5.4')).toBe(272_000)
       expect(getContextWindowForModel('gpt-5.4-mini')).toBe(272_000)
       expect(getContextWindowForModel('gpt-5.3-codex')).toBe(272_000)

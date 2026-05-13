@@ -447,6 +447,20 @@ function validateHookJson(
   }
 }
 
+function getSyncHookJson(
+  json: HookJSONOutput | undefined,
+): SyncHookJSONOutput | undefined {
+  return json && isSyncHookJSONOutput(json) ? json : undefined
+}
+
+function getBlockedHookOutput(
+  json: SyncHookJSONOutput | undefined,
+  fallback: string,
+): string | undefined {
+  if (json?.decision !== 'block') return undefined
+  return json.reason || json.systemMessage || fallback
+}
+
 function parseHookOutput(stdout: string): {
   json?: HookJSONOutput
   plainText?: string
@@ -877,6 +891,7 @@ async function execCommandHook(
   // as opaque — not re-interpreted as a template.
   let command = hook.command
   let pluginOpts: ReturnType<typeof loadPluginOptions> | undefined
+  const hookRoot = pluginRoot ?? skillRoot
   if (pluginRoot) {
     // Plugin directory gone (orphan GC race, concurrent session deleted it):
     // throw so callers yield a non-blocking error. Running would fail — and
@@ -890,26 +905,26 @@ async function execCommandHook(
           (pluginId ? ` (${pluginId} — run /plugin to reinstall)` : ''),
       )
     }
-    // Inline both ROOT and DATA substitution instead of calling
-    // substitutePluginVariables(). That helper normalizes \ → / on Windows
-    // unconditionally — correct for bash (toHookPath already produced /c/...
-    // so it's a no-op) but wrong for PS where toHookPath is identity and we
-    // want native C:\... backslashes. Inlining also lets us use the function-
-    // form .replace() so paths containing $ aren't mangled by $-pattern
-    // interpretation (rare but possible: \\server\c$\plugin).
-    const rootPath = toHookPath(pluginRoot)
+  }
+  // Inline both ROOT and DATA substitution instead of calling
+  // substitutePluginVariables(). That helper normalizes \ → / on Windows
+  // unconditionally — correct for bash (toHookPath already produced /c/...
+  // so it's a no-op) but wrong for PS where toHookPath is identity and we
+  // want native C:\... backslashes. Inlining also lets us use the function-
+  // form .replace() so paths containing $ aren't mangled by $-pattern
+  // interpretation (rare but possible: \\server\c$\plugin).
+  if (hookRoot) {
+    const rootPath = toHookPath(hookRoot)
     command = command.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, () => rootPath)
-    if (pluginId) {
-      const dataPath = toHookPath(getPluginDataDir(pluginId))
-      command = command.replace(/\$\{CLAUDE_PLUGIN_DATA\}/g, () => dataPath)
-    }
-    if (pluginId) {
-      pluginOpts = loadPluginOptions(pluginId)
-      // Throws if a referenced key is missing — that means the hook uses a key
-      // that's either not declared in manifest.userConfig or not yet configured.
-      // Caught upstream like any other hook exec failure.
-      command = substituteUserConfigVariables(command, pluginOpts)
-    }
+  }
+  if (pluginRoot && pluginId) {
+    const dataPath = toHookPath(getPluginDataDir(pluginId))
+    command = command.replace(/\$\{CLAUDE_PLUGIN_DATA\}/g, () => dataPath)
+    pluginOpts = loadPluginOptions(pluginId)
+    // Throws if a referenced key is missing — that means the hook uses a key
+    // that's either not declared in manifest.userConfig or not yet configured.
+    // Caught upstream like any other hook exec failure.
+    command = substituteUserConfigVariables(command, pluginOpts)
   }
 
   // On Windows (bash only), auto-prepend `bash` for .sh scripts so they
@@ -934,19 +949,21 @@ async function execCommandHook(
     ? hook.timeout * 1000
     : TOOL_HOOK_EXECUTION_TIMEOUT_MS
 
-  // Build env vars — all paths go through toHookPath for Windows POSIX conversion
+  const toHookEnvPath = hook.args ? (p: string) => p : toHookPath
+
+  // Shell-form bash hooks get POSIX paths on Windows; exec form gets native paths.
   const envVars: NodeJS.ProcessEnv = {
     ...subprocessEnv(),
-    CLAUDE_PROJECT_DIR: toHookPath(projectDir),
+    CLAUDE_PROJECT_DIR: toHookEnvPath(projectDir),
     ...(effortLevel ? { CLAUDE_EFFORT: effortLevel } : {}),
   }
 
   // Plugin and skill hooks both set CLAUDE_PLUGIN_ROOT (skills use the same
   // name for consistency — skills can migrate to plugins without code changes)
   if (pluginRoot) {
-    envVars.CLAUDE_PLUGIN_ROOT = toHookPath(pluginRoot)
+    envVars.CLAUDE_PLUGIN_ROOT = toHookEnvPath(pluginRoot)
     if (pluginId) {
-      envVars.CLAUDE_PLUGIN_DATA = toHookPath(getPluginDataDir(pluginId))
+      envVars.CLAUDE_PLUGIN_DATA = toHookEnvPath(getPluginDataDir(pluginId))
     }
   }
   // Expose plugin options as env vars too, so hooks can read them without
@@ -962,7 +979,7 @@ async function execCommandHook(
     }
   }
   if (skillRoot) {
-    envVars.CLAUDE_PLUGIN_ROOT = toHookPath(skillRoot)
+    envVars.CLAUDE_PLUGIN_ROOT = toHookEnvPath(skillRoot)
   }
 
   // CLAUDE_ENV_FILE points to a .sh file that the hook writes env var
@@ -1012,7 +1029,37 @@ async function execCommandHook(
   // startup, which will exit first. Relaxing that is phase 1 of the
   // design's implementation order (separate PR).
   let child: ChildProcessWithoutNullStreams
-  if (shellType === 'powershell') {
+  // Upstream 2.1.139: exec form — when hook.args is provided, spawn the
+  // command directly with the given argv instead of going through a shell.
+  // Path placeholders (e.g. ${CLAUDE_PROJECT_DIR}/script.sh) never need
+  // quoting because no shell parses the argv. CLAUDE_PLUGIN_ROOT /
+  // CLAUDE_PLUGIN_DATA / user_config substitution applies to BOTH command
+  // and args, but no shell metacharacters are honored.
+  if (hook.args) {
+    // Exec form bypasses shells, so path placeholders must be raw argv strings.
+    const substituteVars = (s: string): string => {
+      let value = s.replace(/\$\{CLAUDE_PROJECT_DIR\}/g, () => projectDir)
+      if (hookRoot) {
+        value = value.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, () => hookRoot)
+      }
+      if (pluginRoot && pluginId) {
+        const dataPath = getPluginDataDir(pluginId)
+        value = value.replace(/\$\{CLAUDE_PLUGIN_DATA\}/g, () => dataPath)
+        if (pluginOpts) {
+          value = substituteUserConfigVariables(value, pluginOpts)
+        }
+      }
+      return value
+    }
+    const execCommand = substituteVars(hook.command)
+    const execArgs = hook.args.map(substituteVars)
+    child = spawn(execCommand, execArgs, {
+      env: envVars,
+      cwd: safeCwd,
+      shell: false,
+      windowsHide: true,
+    }) as ChildProcessWithoutNullStreams
+  } else if (shellType === 'powershell') {
     const pwshPath = await getCachedPowerShellPath()
     if (!pwshPath) {
       throw new Error(
@@ -3150,7 +3197,7 @@ async function executeHooksOutsideREPL({
 
   // Run all hooks in parallel with individual timeouts
   const hookPromises = matchingHooks.map(
-    async ({ hook, pluginRoot, pluginId }, hookIndex) => {
+    async ({ hook, pluginRoot, pluginId, skillRoot }, hookIndex) => {
       // Handle callback hooks
       if (hook.type === 'callback') {
         const callbackTimeoutMs = hook.timeout ? hook.timeout * 1000 : timeoutMs
@@ -3182,14 +3229,14 @@ async function executeHooksOutsideREPL({
             }
           }
 
+          const syncJson = getSyncHookJson(json)
+          const blocked = syncJson?.decision === 'block'
           const output =
-            hookEvent === 'WorktreeCreate' &&
-            isSyncHookJSONOutput(json) &&
-            json.hookSpecificOutput?.hookEventName === 'WorktreeCreate'
-              ? json.hookSpecificOutput.worktreePath
-              : json.systemMessage || ''
-          const blocked =
-            isSyncHookJSONOutput(json) && json.decision === 'block'
+            getBlockedHookOutput(syncJson, '') ??
+            (hookEvent === 'WorktreeCreate' &&
+            syncJson?.hookSpecificOutput?.hookEventName === 'WorktreeCreate'
+              ? syncJson.hookSpecificOutput.worktreePath
+              : syncJson?.systemMessage || '')
 
           logForDebugging(`${hookName} [callback] completed successfully`)
 
@@ -3302,11 +3349,8 @@ async function executeHooksOutsideREPL({
               { level: 'verbose' },
             )
           }
-          const jsonBlocked =
-            httpJson &&
-            !isAsyncHookJSONOutput(httpJson) &&
-            isSyncHookJSONOutput(httpJson) &&
-            httpJson.decision === 'block'
+          const syncHttpJson = getSyncHookJson(httpJson)
+          const jsonBlocked = syncHttpJson?.decision === 'block'
 
           // WorktreeCreate's consumer reads `output` as the bare filesystem
           // path. Command hooks provide it via stdout; http hooks provide it
@@ -3314,13 +3358,13 @@ async function executeHooksOutsideREPL({
           // so the consumer's length filter skips it instead of treating the
           // raw '{}' body as a path.
           const output =
-            hookEvent === 'WorktreeCreate'
-              ? httpJson &&
-                isSyncHookJSONOutput(httpJson) &&
-                httpJson.hookSpecificOutput?.hookEventName === 'WorktreeCreate'
-                ? httpJson.hookSpecificOutput.worktreePath
+            getBlockedHookOutput(syncHttpJson, httpResult.body) ??
+            (hookEvent === 'WorktreeCreate'
+              ? syncHttpJson?.hookSpecificOutput?.hookEventName ===
+                'WorktreeCreate'
+                ? syncHttpJson.hookSpecificOutput.worktreePath
                 : ''
-              : httpResult.body
+              : httpResult.body)
 
           return {
             command: hook.url,
@@ -3362,6 +3406,7 @@ async function executeHooksOutsideREPL({
           hookIndex,
           pluginRoot,
           pluginId,
+          skillRoot,
         )
 
         // Clear timeout if hook completes
@@ -3395,27 +3440,22 @@ async function executeHooksOutsideREPL({
         }
 
         // Blocked if exit code 2 or JSON decision: 'block'
-        const jsonBlocked =
-          json &&
-          !isAsyncHookJSONOutput(json) &&
-          isSyncHookJSONOutput(json) &&
-          json.decision === 'block'
-        const blocked = result.status === 2 || !!jsonBlocked
+        const syncJson = getSyncHookJson(json)
+        const jsonBlocked = syncJson?.decision === 'block'
+        const blocked = result.status === 2 || jsonBlocked
 
         // For successful hooks (exit code 0), use stdout; for failed hooks, use stderr
         const output =
-          result.status === 0 ? result.stdout || '' : result.stderr || ''
+          getBlockedHookOutput(syncJson, result.stdout || result.stderr || '') ??
+          (result.status === 0 ? result.stdout || '' : result.stderr || '')
 
         const watchPaths =
-          json &&
-          isSyncHookJSONOutput(json) &&
-          json.hookSpecificOutput &&
-          'watchPaths' in json.hookSpecificOutput
-            ? json.hookSpecificOutput.watchPaths
+          syncJson?.hookSpecificOutput &&
+          'watchPaths' in syncJson.hookSpecificOutput
+            ? syncJson.hookSpecificOutput.watchPaths
             : undefined
 
-        const systemMessage =
-          json && isSyncHookJSONOutput(json) ? json.systemMessage : undefined
+        const systemMessage = syncJson?.systemMessage
 
         return {
           command: hook.command,
@@ -4043,6 +4083,8 @@ export async function executePreCompactHooks(
 ): Promise<{
   newCustomInstructions?: string
   userDisplayMessage?: string
+  blocked?: boolean
+  blockedReason?: string
 }> {
   const hookInput: PreCompactHookInput = {
     ...createBaseHookInput(undefined),
@@ -4062,14 +4104,28 @@ export async function executePreCompactHooks(
     return {}
   }
 
+  // Upstream 2.1.105: any blocking PreCompact hook (exit code 2 or JSON
+  // `{"decision":"block"}`) cancels compaction. Use the first blocking hook's
+  // output as the reason shown to the user. Build the full display message
+  // separately so users can still see all hook results.
+  const blockingResult = results.find(result => result.blocked)
+
   // Extract custom instructions from successful hooks with non-empty output
   const successfulOutputs = results
-    .filter(result => result.succeeded && result.output.trim().length > 0)
+    .filter(
+      result =>
+        !result.blocked && result.succeeded && result.output.trim().length > 0,
+    )
     .map(result => result.output.trim())
 
   // Build user display messages with command info
   const displayMessages: string[] = []
   for (const result of results) {
+    if (result.blocked) {
+      const reason = result.output.trim() || 'no reason given'
+      displayMessages.push(`PreCompact [${result.command}] blocked: ${reason}`)
+      continue
+    }
     if (result.succeeded) {
       if (result.output.trim()) {
         displayMessages.push(
@@ -4096,6 +4152,8 @@ export async function executePreCompactHooks(
       successfulOutputs.length > 0 ? successfulOutputs.join('\n\n') : undefined,
     userDisplayMessage:
       displayMessages.length > 0 ? displayMessages.join('\n') : undefined,
+    blocked: blockingResult !== undefined,
+    blockedReason: blockingResult?.output.trim() || undefined,
   }
 }
 

@@ -10,6 +10,7 @@ import { logForDebugging } from '../../utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { hasExactErrorMessage } from '../../utils/errors.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
+import { executePreCompactHooks } from '../../utils/hooks.js'
 import { logError } from '../../utils/log.js'
 import { tokenCountWithEstimation } from '../../utils/tokens.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
@@ -19,8 +20,12 @@ import { setLastSummarizedMessageId } from '../SessionMemory/sessionMemoryUtils.
 import {
   type CompactionResult,
   compactConversation,
+  ERROR_MESSAGE_COMPACT_OUTPUT_LIMIT,
   ERROR_MESSAGE_USER_ABORT,
+  isPreCompactBlockedError,
+  type PreCompactHookResult,
   type RecompactionInfo,
+  throwIfPreCompactBlocked,
 } from './compact.js'
 import { runPostCompactCleanup } from './postCompactCleanup.js'
 import { trySessionMemoryCompaction } from './sessionMemoryCompact.js'
@@ -277,32 +282,50 @@ async function runAutoCompact(
     querySource,
   }
 
-  // EXPERIMENT: Try session memory compaction first
-  const sessionMemoryResult = await trySessionMemoryCompaction(
-    messages,
-    toolUseContext.agentId,
-    recompactionInfo.autoCompactThreshold,
-  )
-  if (sessionMemoryResult) {
-    // Reset lastSummarizedMessageId since session memory compaction prunes messages
-    // and the old message UUID will no longer exist after the REPL replaces messages
-    setLastSummarizedMessageId(undefined)
-    runPostCompactCleanup(querySource)
-    // Reset cache read baseline so the post-compact drop isn't flagged as a
-    // break. compactConversation does this internally; SM-compact doesn't.
-    // BQ 2026-03-01: missing this made 20% of tengu_prompt_cache_break events
-    // false positives (systemPromptChanged=true, timeSinceLastAssistantMsg=-1).
-    if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
-      notifyCompaction(querySource ?? 'compact', toolUseContext.agentId)
-    }
-    markPostCompaction()
-    return {
-      wasCompacted: true,
-      compactionResult: sessionMemoryResult,
-    }
-  }
-
+  let compactConversationStarted = false
   try {
+    toolUseContext.onCompactProgress?.({
+      type: 'hooks_start',
+      hookType: 'pre_compact',
+    })
+    toolUseContext.setSDKStatus?.('compacting')
+    const preCompactHookResult: PreCompactHookResult =
+      await executePreCompactHooks(
+        { trigger: 'auto', customInstructions: null },
+        toolUseContext.abortController.signal,
+      )
+    throwIfPreCompactBlocked(preCompactHookResult)
+
+    if (!preCompactHookResult.newCustomInstructions) {
+      const sessionMemoryResult = await trySessionMemoryCompaction(
+        messages,
+        toolUseContext.agentId,
+        recompactionInfo.autoCompactThreshold,
+        preCompactHookResult,
+      )
+      if (sessionMemoryResult) {
+        // Reset lastSummarizedMessageId since session memory compaction prunes messages
+        // and the old message UUID will no longer exist after the REPL replaces messages
+        setLastSummarizedMessageId(undefined)
+        runPostCompactCleanup(querySource)
+        // Reset cache read baseline so the post-compact drop isn't flagged as a
+        // break. compactConversation does this internally; SM-compact doesn't.
+        // BQ 2026-03-01: missing this made 20% of tengu_prompt_cache_break events
+        // false positives (systemPromptChanged=true, timeSinceLastAssistantMsg=-1).
+        if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
+          notifyCompaction(querySource ?? 'compact', toolUseContext.agentId)
+        }
+        markPostCompaction()
+        toolUseContext.onCompactProgress?.({ type: 'compact_end' })
+        toolUseContext.setSDKStatus?.(null)
+        return {
+          wasCompacted: true,
+          compactionResult: sessionMemoryResult,
+        }
+      }
+    }
+
+    compactConversationStarted = true
     const compactionResult = await compactConversation(
       messages,
       toolUseContext,
@@ -311,6 +334,7 @@ async function runAutoCompact(
       undefined, // No custom instructions for autocompact
       true, // isAutoCompact
       recompactionInfo,
+      preCompactHookResult,
     )
 
     // Reset lastSummarizedMessageId since legacy compaction replaces all messages
@@ -325,7 +349,26 @@ async function runAutoCompact(
       consecutiveFailures: 0,
     }
   } catch (error) {
-    if (!hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT)) {
+    if (!compactConversationStarted) {
+      toolUseContext.onCompactProgress?.({ type: 'compact_end' })
+      toolUseContext.setSDKStatus?.(null)
+    }
+    if (isPreCompactBlockedError(error)) {
+      logForDebugging(`autocompact: ${error.message}`)
+      return { wasCompacted: false }
+    }
+    if (hasExactErrorMessage(error, ERROR_MESSAGE_COMPACT_OUTPUT_LIMIT)) {
+      toolUseContext.addNotification?.({
+        key: 'autocompact-output-limit',
+        text: `Auto-compact failed: ${ERROR_MESSAGE_COMPACT_OUTPUT_LIMIT}`,
+        color: 'error',
+        priority: 'high',
+        timeoutMs: 12_000,
+      })
+      logForDebugging(`autocompact: ${ERROR_MESSAGE_COMPACT_OUTPUT_LIMIT}`, {
+        level: 'warn',
+      })
+    } else if (!hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT)) {
       logError(error)
     }
     // Increment consecutive failure count for circuit breaker.

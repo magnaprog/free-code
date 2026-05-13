@@ -41,7 +41,10 @@ import {
   logEvent,
 } from '../analytics/index.js'
 import { fetchClaudeAIMcpConfigsIfEligible } from './claudeai.js'
-import { expandEnvVarsInString } from './envExpansion.js'
+import {
+  expandEnvVarsInString,
+  getEnvExpansionExtraEnv,
+} from './envExpansion.js'
 import {
   type ConfigScope,
   type McpHTTPServerConfig,
@@ -559,8 +562,10 @@ function expandEnvVars(config: McpServerConfig): {
 } {
   const missingVars: string[] = []
 
+  const extraEnv = getEnvExpansionExtraEnv()
+
   function expandString(str: string): string {
-    const { expanded, missingVars: vars } = expandEnvVarsInString(str)
+    const { expanded, missingVars: vars } = expandEnvVarsInString(str, extraEnv)
     missingVars.push(...vars)
     return expanded
   }

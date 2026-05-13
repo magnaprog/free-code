@@ -32,12 +32,18 @@ function buildHookSchemas() {
   const BashCommandHookSchema = z.object({
     type: z.literal('command').describe('Shell command hook type'),
     command: z.string().describe('Shell command to execute'),
+    args: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'When provided, spawn the command directly with these argv entries instead of invoking a shell. Path placeholders (e.g. ${CLAUDE_PROJECT_DIR}/script.sh) never need quoting in this form. Mutually exclusive with shell metacharacters in `command`.',
+      ),
     if: IfConditionSchema(),
     shell: z
       .enum(SHELL_TYPES)
       .optional()
       .describe(
-        "Shell interpreter. 'bash' uses your $SHELL (bash/zsh/sh); 'powershell' uses pwsh. Defaults to bash.",
+        "Shell interpreter. 'bash' uses your $SHELL (bash/zsh/sh); 'powershell' uses pwsh. Defaults to bash. Ignored when `args` is set (exec form).",
       ),
     timeout: z
       .number()
@@ -61,6 +67,12 @@ function buildHookSchemas() {
       .optional()
       .describe(
         'If true, hook runs in background and wakes the model on exit code 2 (blocking error). Implies async.',
+      ),
+    continueOnBlock: z
+      .boolean()
+      .optional()
+      .describe(
+        'Forward-compatible field; free-code does not gate hook behavior on this. PostToolUse block reasons are always fed back to Claude as a system reminder (equivalent to upstream continueOnBlock=true).',
       ),
   })
 

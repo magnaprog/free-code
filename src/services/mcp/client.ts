@@ -40,7 +40,11 @@ import mapValues from 'lodash-es/mapValues.js'
 import memoize from 'lodash-es/memoize.js'
 import zipObject from 'lodash-es/zipObject.js'
 import pMap from 'p-map'
-import { getOriginalCwd, getSessionId } from '../../bootstrap/state.js'
+import {
+  getOriginalCwd,
+  getProjectRoot,
+  getSessionId,
+} from '../../bootstrap/state.js'
 import type { Command } from '../../commands.js'
 import { getOauthConfig } from '../../constants/oauth.js'
 import { PRODUCT_URL } from '../../constants/product.js'
@@ -949,11 +953,17 @@ export const connectToServer = memoize(
         const finalArgs = process.env.CLAUDE_CODE_SHELL_PREFIX
           ? [[serverRef.command, ...serverRef.args].join(' ')]
           : serverRef.args
+        // Upstream 2.1.139: MCP stdio servers receive CLAUDE_PROJECT_DIR so
+        // plugin configs and stdio servers can reference ${CLAUDE_PROJECT_DIR}
+        // and resolve paths relative to the stable project root rather than
+        // worktrees / spawn cwd. Match hooks' resolution (getProjectRoot,
+        // not getCwd) so worktree entry doesn't change the value.
         transport = new StdioClientTransport({
           command: finalCommand,
           args: finalArgs,
           env: {
             ...subprocessEnv(),
+            CLAUDE_PROJECT_DIR: getProjectRoot(),
             ...serverRef.env,
           } as Record<string, string>,
           stderr: 'pipe', // prevents error output from the MCP server from printing to the UI
