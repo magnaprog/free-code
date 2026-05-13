@@ -36,6 +36,7 @@ import {
   annotateBoundaryWithPreservedSegment,
   buildPostCompactMessages,
   type CompactionResult,
+  type PreCompactHookResult,
   createPlanAttachmentIfNeeded,
 } from './compact.js'
 import { estimateMessageTokens } from './microCompact.js'
@@ -441,6 +442,7 @@ function createCompactionResultFromSessionMemory(
   hookResults: HookResultMessage[],
   transcriptPath: string,
   agentId?: AgentId,
+  preCompactHookResult?: PreCompactHookResult,
 ): CompactionResult {
   const preCompactTokenCount = tokenCountFromLastAPIResponse(messages)
 
@@ -494,6 +496,7 @@ function createCompactionResultFromSessionMemory(
     attachments,
     hookResults,
     messagesToKeep,
+    userDisplayMessage: preCompactHookResult?.userDisplayMessage,
     preCompactTokenCount,
     // SM-compact has no compact-API-call, so postCompactTokenCount (kept for
     // event continuity) and truePostCompactTokenCount converge to the same value.
@@ -515,6 +518,7 @@ export async function trySessionMemoryCompaction(
   messages: Message[],
   agentId?: AgentId,
   autoCompactThreshold?: number,
+  preCompactHookResult?: PreCompactHookResult,
 ): Promise<CompactionResult | null> {
   if (!shouldUseSessionMemoryCompaction()) {
     return null
@@ -595,6 +599,7 @@ export async function trySessionMemoryCompaction(
       hookResults,
       transcriptPath,
       agentId,
+      preCompactHookResult,
     )
 
     const postCompactMessages = buildPostCompactMessages(compactionResult)

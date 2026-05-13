@@ -39,13 +39,17 @@ import {
   getMcpInstructionsDeltaAttachment,
 } from '../../utils/attachments.js'
 import { getMemoryPath } from '../../utils/config.js'
-import { COMPACT_MAX_OUTPUT_TOKENS } from '../../utils/context.js'
+import {
+  COMPACT_MAX_OUTPUT_TOKENS,
+  getModelMaxOutputTokens,
+} from '../../utils/context.js'
 import {
   analyzeContext,
   tokenStatsToStatsigMetrics,
 } from '../../utils/contextAnalysis.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { hasExactErrorMessage } from '../../utils/errors.js'
+import { validateBoundedIntEnvVar } from '../../utils/envValidation.js'
 import { cacheToObject } from '../../utils/fileStateCache.js'
 import {
   type CacheSafeParams,
@@ -116,6 +120,7 @@ import { groupMessagesByApiRound } from './grouping.js'
 import {
   getCompactPrompt,
   getCompactUserSummaryMessage,
+  getEmergencyCompactPrompt,
   getPartialCompactPrompt,
 } from './prompt.js'
 
@@ -226,6 +231,8 @@ export const ERROR_MESSAGE_NOT_ENOUGH_MESSAGES =
   'Not enough messages to compact.'
 export const ERROR_MESSAGE_PRECOMPACT_BLOCKED =
   'Compaction blocked by PreCompact hook'
+export const ERROR_MESSAGE_COMPACT_OUTPUT_LIMIT =
+  'Compaction failed because the summary exceeded the output-token limit. Clear large tool results or reduce context, then try /compact again.'
 
 export class PreCompactBlockedError extends Error {
   readonly reason?: string
@@ -246,10 +253,13 @@ export function isPreCompactBlockedError(
   return error instanceof PreCompactBlockedError
 }
 
-export function throwIfPreCompactBlocked(hookResult: {
-  blocked?: boolean
-  blockedReason?: string
-}): void {
+export type PreCompactHookResult = Awaited<
+  ReturnType<typeof executePreCompactHooks>
+>
+
+export function throwIfPreCompactBlocked(
+  hookResult: Pick<PreCompactHookResult, 'blocked' | 'blockedReason'>,
+): void {
   if (hookResult.blocked) {
     throw new PreCompactBlockedError(hookResult.blockedReason)
   }
@@ -411,6 +421,28 @@ export function mergeHookInstructions(
   return `${userInstructions}\n\n${hookInstructions}`
 }
 
+function isMaxOutputTokensAssistantMessage(message: AssistantMessage): boolean {
+  return message.apiError === 'max_output_tokens'
+}
+
+function getCompactMaxOutputTokens(model: string): number {
+  const defaultTokens = Math.min(
+    COMPACT_MAX_OUTPUT_TOKENS,
+    getMaxOutputTokensForModel(model),
+  )
+  const envValue = process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS
+  if (!envValue) {
+    return defaultTokens
+  }
+  const result = validateBoundedIntEnvVar(
+    'CLAUDE_CODE_MAX_OUTPUT_TOKENS',
+    envValue,
+    defaultTokens,
+    getModelMaxOutputTokens(model).upperLimit,
+  )
+  return result.status === 'invalid' ? defaultTokens : result.effective
+}
+
 /**
  * Creates a compact version of a conversation by summarizing older messages
  * and preserving recent conversation history.
@@ -423,6 +455,7 @@ export async function compactConversation(
   customInstructions?: string,
   isAutoCompact: boolean = false,
   recompactionInfo?: RecompactionInfo,
+  preCompactHookResult?: PreCompactHookResult,
 ): Promise<CompactionResult> {
   try {
     if (messages.length === 0) {
@@ -434,20 +467,21 @@ export async function compactConversation(
     const appState = context.getAppState()
     void logPermissionContextForAnts(appState.toolPermissionContext, 'summary')
 
-    context.onCompactProgress?.({
-      type: 'hooks_start',
-      hookType: 'pre_compact',
-    })
-
-    // Execute PreCompact hooks
-    context.setSDKStatus?.('compacting')
-    const hookResult = await executePreCompactHooks(
-      {
-        trigger: isAutoCompact ? 'auto' : 'manual',
-        customInstructions: customInstructions ?? null,
-      },
-      context.abortController.signal,
-    )
+    let hookResult = preCompactHookResult
+    if (!hookResult) {
+      context.onCompactProgress?.({
+        type: 'hooks_start',
+        hookType: 'pre_compact',
+      })
+      context.setSDKStatus?.('compacting')
+      hookResult = await executePreCompactHooks(
+        {
+          trigger: isAutoCompact ? 'auto' : 'manual',
+          customInstructions: customInstructions ?? null,
+        },
+        context.abortController.signal,
+      )
+    }
     throwIfPreCompactBlocked(hookResult)
     customInstructions = mergeHookInstructions(
       customInstructions,
@@ -470,9 +504,10 @@ export async function compactConversation(
     )
 
     const compactPrompt = getCompactPrompt(customInstructions)
-    const summaryRequest = createUserMessage({
+    let summaryRequest = createUserMessage({
       content: compactPrompt,
     })
+    let usedEmergencyCompactPrompt = false
 
     let messagesToSummarize = messages
     let retryCacheSafeParams = cacheSafeParams
@@ -488,6 +523,26 @@ export async function compactConversation(
         preCompactTokenCount,
         cacheSafeParams: retryCacheSafeParams,
       })
+      if (isMaxOutputTokensAssistantMessage(summaryResponse)) {
+        if (!usedEmergencyCompactPrompt) {
+          usedEmergencyCompactPrompt = true
+          summaryRequest = createUserMessage({
+            content: getEmergencyCompactPrompt(customInstructions),
+          })
+          logEvent('tengu_compact_emergency_retry', {
+            preCompactTokenCount,
+            promptCacheSharingEnabled,
+          })
+          continue
+        }
+        logEvent('tengu_compact_failed', {
+          reason:
+            'max_output_tokens' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          preCompactTokenCount,
+          promptCacheSharingEnabled,
+        })
+        throw new Error(ERROR_MESSAGE_COMPACT_OUTPUT_LIMIT)
+      }
       summary = getAssistantMessageText(summaryResponse)
       if (!summary?.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) break
 
@@ -872,9 +927,10 @@ export async function partialCompactConversation(
     context.onCompactProgress?.({ type: 'compact_start' })
 
     const compactPrompt = getPartialCompactPrompt(customInstructions, direction)
-    const summaryRequest = createUserMessage({
+    let summaryRequest = createUserMessage({
       content: compactPrompt,
     })
+    let usedEmergencyCompactPrompt = false
 
     const failureMetadata = {
       preCompactTokenCount,
@@ -902,6 +958,22 @@ export async function partialCompactConversation(
         preCompactTokenCount,
         cacheSafeParams: retryCacheSafeParams,
       })
+      if (isMaxOutputTokensAssistantMessage(summaryResponse)) {
+        if (!usedEmergencyCompactPrompt) {
+          usedEmergencyCompactPrompt = true
+          summaryRequest = createUserMessage({
+            content: getEmergencyCompactPrompt(customInstructions, direction),
+          })
+          logEvent('tengu_partial_compact_emergency_retry', failureMetadata)
+          continue
+        }
+        logEvent('tengu_partial_compact_failed', {
+          reason:
+            'max_output_tokens' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          ...failureMetadata,
+        })
+        throw new Error(ERROR_MESSAGE_COMPACT_OUTPUT_LIMIT)
+      }
       summary = getAssistantMessageText(summaryResponse)
       if (!summary?.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) break
 
@@ -1350,9 +1422,8 @@ async function streamCompactSummary({
           toolChoice: undefined,
           isNonInteractiveSession: context.options.isNonInteractiveSession,
           hasAppendSystemPrompt: !!context.options.appendSystemPrompt,
-          maxOutputTokensOverride: Math.min(
-            COMPACT_MAX_OUTPUT_TOKENS,
-            getMaxOutputTokensForModel(context.options.mainLoopModel),
+          maxOutputTokensOverride: getCompactMaxOutputTokens(
+            context.options.mainLoopModel,
           ),
           querySource: 'compact',
           agents: context.options.agentDefinitions.activeAgents,

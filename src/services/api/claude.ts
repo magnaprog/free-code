@@ -821,6 +821,40 @@ function chatGPTCodexRequiresStreaming(): boolean {
   return getAPIProvider() === 'openai' && !process.env.OPENAI_API_KEY
 }
 
+export function getMaxOutputTokensErrorMessage(maxOutputTokens: number): string {
+  if (chatGPTCodexRequiresStreaming()) {
+    return `${API_ERROR_MESSAGE_PREFIX}: The selected backend stopped after reaching its output token maximum. ChatGPT Codex streaming does not accept CLAUDE_CODE_MAX_OUTPUT_TOKENS.`
+  }
+  return `${API_ERROR_MESSAGE_PREFIX}: The model's response exceeded the ${maxOutputTokens} output token maximum. To configure this behavior when supported by the selected provider, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable.`
+}
+
+function createMaxOutputTokensAssistantMessage(
+  maxOutputTokens: number,
+): AssistantMessage {
+  return createAssistantAPIErrorMessage({
+    content: getMaxOutputTokensErrorMessage(maxOutputTokens),
+    apiError: 'max_output_tokens',
+    error: 'max_output_tokens',
+  })
+}
+
+export function buildAnthropicRequestHeaders({
+  clientRequestId,
+  agentId,
+}: {
+  clientRequestId?: string
+  agentId?: AgentId
+}): Record<string, string> | undefined {
+  const headers: Record<string, string> = {}
+  if (clientRequestId) {
+    headers[CLIENT_REQUEST_ID_HEADER] = clientRequestId
+  }
+  if (isAttributionHeaderEnabled() && agentId) {
+    headers['X-Claude-Code-Agent-Id'] = agentId
+  }
+  return Object.keys(headers).length > 0 ? headers : undefined
+}
+
 /**
  * Helper generator for non-streaming API requests.
  * Encapsulates the common pattern of creating a withRetry generator,
@@ -831,6 +865,7 @@ export async function* executeNonStreamingRequest(
     model: string
     fetchOverride?: Options['fetchOverride']
     source: string
+    headers?: Record<string, string>
   },
   retryOptions: {
     model: string
@@ -880,6 +915,7 @@ export async function* executeNonStreamingRequest(
           {
             signal: retryOptions.signal,
             timeout: fallbackTimeoutMs,
+            ...(clientOptions.headers && { headers: clientOptions.headers }),
           },
         )
       } catch (err) {
@@ -1836,25 +1872,17 @@ async function* queryModel(
         // traffic. Gated behind isAttributionHeaderEnabled() so free-code's
         // no-attribution default stays clean — opt in with
         // FREE_CODE_ENABLE_ANTHROPIC_ATTRIBUTION=true.
-        const subagentHeaders: Record<string, string> = {}
-        if (isAttributionHeaderEnabled() && options.agentId) {
-          subagentHeaders['X-Claude-Code-Agent-Id'] = options.agentId
-        }
-        const requestHeaders = {
-          ...(clientRequestId && {
-            [CLIENT_REQUEST_ID_HEADER]: clientRequestId,
-          }),
-          ...subagentHeaders,
-        }
+        const requestHeaders = buildAnthropicRequestHeaders({
+          clientRequestId,
+          agentId: options.agentId,
+        })
         // biome-ignore lint/plugin: main conversation loop handles attribution separately
         const result = await anthropic.beta.messages
           .create(
             { ...params, stream: true },
             {
               signal,
-              ...(Object.keys(requestHeaders).length > 0 && {
-                headers: requestHeaders,
-              }),
+              ...(requestHeaders && { headers: requestHeaders }),
             },
           )
           .withResponse()
@@ -2295,13 +2323,7 @@ async function* queryModel(
               logEvent('tengu_max_tokens_reached', {
                 max_tokens: maxOutputTokens,
               })
-              yield createAssistantAPIErrorMessage({
-                content: `${API_ERROR_MESSAGE_PREFIX}: Claude's response exceeded the ${
-                  maxOutputTokens
-                } output token maximum. To configure this behavior, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable.`,
-                apiError: 'max_output_tokens',
-                error: 'max_output_tokens',
-              })
+              yield createMaxOutputTokensAssistantMessage(maxOutputTokens)
             }
 
             if (stopReason === 'model_context_window_exceeded') {
@@ -2578,7 +2600,11 @@ async function* queryModel(
           : 'other') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
       const result = yield* executeNonStreamingRequest(
-        { model: options.model, source: options.querySource },
+        {
+          model: options.model,
+          source: options.querySource,
+          headers: buildAnthropicRequestHeaders({ agentId: options.agentId }),
+        },
         {
           model: options.model,
           fallbackModel: options.fallbackModel,
@@ -2597,27 +2623,30 @@ async function* queryModel(
         streamRequestId,
       )
 
-      const m: AssistantMessage = {
-        message: {
-          ...result,
-          content: normalizeContentFromAPI(
-            result.content,
-            tools,
-            options.agentId,
-          ),
-        },
-        requestId: streamRequestId ?? undefined,
-        type: 'assistant',
-        uuid: randomUUID(),
-        timestamp: new Date().toISOString(),
-        ...(process.env.USER_TYPE === 'ant' &&
-          research !== undefined && {
-            research,
-          }),
-        ...(advisorModel && {
-          advisorModel,
-        }),
-      }
+      const m: AssistantMessage =
+        result.stop_reason === 'max_tokens'
+          ? createMaxOutputTokensAssistantMessage(maxOutputTokens)
+          : {
+              message: {
+                ...result,
+                content: normalizeContentFromAPI(
+                  result.content,
+                  tools,
+                  options.agentId,
+                ),
+              },
+              requestId: streamRequestId ?? undefined,
+              type: 'assistant',
+              uuid: randomUUID(),
+              timestamp: new Date().toISOString(),
+              ...(process.env.USER_TYPE === 'ant' &&
+                research !== undefined && {
+                  research,
+                }),
+              ...(advisorModel && {
+                advisorModel,
+              }),
+            }
       newMessages.push(m)
       fallbackMessage = m
       yield m
@@ -2677,7 +2706,11 @@ async function* queryModel(
       try {
         // Fall back to non-streaming mode
         const result = yield* executeNonStreamingRequest(
-          { model: options.model, source: options.querySource },
+          {
+            model: options.model,
+            source: options.querySource,
+            headers: buildAnthropicRequestHeaders({ agentId: options.agentId }),
+          },
           {
             model: options.model,
             fallbackModel: options.fallbackModel,
@@ -2694,23 +2727,26 @@ async function* queryModel(
           failedRequestId,
         )
 
-        const m: AssistantMessage = {
-          message: {
-            ...result,
-            content: normalizeContentFromAPI(
-              result.content,
-              tools,
-              options.agentId,
-            ),
-          },
-          requestId: streamRequestId ?? undefined,
-          type: 'assistant',
-          uuid: randomUUID(),
-          timestamp: new Date().toISOString(),
-          ...(process.env.USER_TYPE === 'ant' &&
-            research !== undefined && { research }),
-          ...(advisorModel && { advisorModel }),
-        }
+        const m: AssistantMessage =
+          result.stop_reason === 'max_tokens'
+            ? createMaxOutputTokensAssistantMessage(maxOutputTokens)
+            : {
+                message: {
+                  ...result,
+                  content: normalizeContentFromAPI(
+                    result.content,
+                    tools,
+                    options.agentId,
+                  ),
+                },
+                requestId: streamRequestId ?? undefined,
+                type: 'assistant',
+                uuid: randomUUID(),
+                timestamp: new Date().toISOString(),
+                ...(process.env.USER_TYPE === 'ant' &&
+                  research !== undefined && { research }),
+                ...(advisorModel && { advisorModel }),
+              }
         newMessages.push(m)
         fallbackMessage = m
         yield m

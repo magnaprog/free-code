@@ -891,6 +891,7 @@ async function execCommandHook(
   // as opaque — not re-interpreted as a template.
   let command = hook.command
   let pluginOpts: ReturnType<typeof loadPluginOptions> | undefined
+  const hookRoot = pluginRoot ?? skillRoot
   if (pluginRoot) {
     // Plugin directory gone (orphan GC race, concurrent session deleted it):
     // throw so callers yield a non-blocking error. Running would fail — and
@@ -904,26 +905,26 @@ async function execCommandHook(
           (pluginId ? ` (${pluginId} — run /plugin to reinstall)` : ''),
       )
     }
-    // Inline both ROOT and DATA substitution instead of calling
-    // substitutePluginVariables(). That helper normalizes \ → / on Windows
-    // unconditionally — correct for bash (toHookPath already produced /c/...
-    // so it's a no-op) but wrong for PS where toHookPath is identity and we
-    // want native C:\... backslashes. Inlining also lets us use the function-
-    // form .replace() so paths containing $ aren't mangled by $-pattern
-    // interpretation (rare but possible: \\server\c$\plugin).
-    const rootPath = toHookPath(pluginRoot)
+  }
+  // Inline both ROOT and DATA substitution instead of calling
+  // substitutePluginVariables(). That helper normalizes \ → / on Windows
+  // unconditionally — correct for bash (toHookPath already produced /c/...
+  // so it's a no-op) but wrong for PS where toHookPath is identity and we
+  // want native C:\... backslashes. Inlining also lets us use the function-
+  // form .replace() so paths containing $ aren't mangled by $-pattern
+  // interpretation (rare but possible: \\server\c$\plugin).
+  if (hookRoot) {
+    const rootPath = toHookPath(hookRoot)
     command = command.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, () => rootPath)
-    if (pluginId) {
-      const dataPath = toHookPath(getPluginDataDir(pluginId))
-      command = command.replace(/\$\{CLAUDE_PLUGIN_DATA\}/g, () => dataPath)
-    }
-    if (pluginId) {
-      pluginOpts = loadPluginOptions(pluginId)
-      // Throws if a referenced key is missing — that means the hook uses a key
-      // that's either not declared in manifest.userConfig or not yet configured.
-      // Caught upstream like any other hook exec failure.
-      command = substituteUserConfigVariables(command, pluginOpts)
-    }
+  }
+  if (pluginRoot && pluginId) {
+    const dataPath = toHookPath(getPluginDataDir(pluginId))
+    command = command.replace(/\$\{CLAUDE_PLUGIN_DATA\}/g, () => dataPath)
+    pluginOpts = loadPluginOptions(pluginId)
+    // Throws if a referenced key is missing — that means the hook uses a key
+    // that's either not declared in manifest.userConfig or not yet configured.
+    // Caught upstream like any other hook exec failure.
+    command = substituteUserConfigVariables(command, pluginOpts)
   }
 
   // On Windows (bash only), auto-prepend `bash` for .sh scripts so they
@@ -1038,14 +1039,14 @@ async function execCommandHook(
     // Exec form bypasses shells, so path placeholders must be raw argv strings.
     const substituteVars = (s: string): string => {
       let value = s.replace(/\$\{CLAUDE_PROJECT_DIR\}/g, () => projectDir)
-      if (pluginRoot) {
-        value = value.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, () => pluginRoot)
-        if (pluginId) {
-          const dataPath = getPluginDataDir(pluginId)
-          value = value.replace(/\$\{CLAUDE_PLUGIN_DATA\}/g, () => dataPath)
-          if (pluginOpts) {
-            value = substituteUserConfigVariables(value, pluginOpts)
-          }
+      if (hookRoot) {
+        value = value.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, () => hookRoot)
+      }
+      if (pluginRoot && pluginId) {
+        const dataPath = getPluginDataDir(pluginId)
+        value = value.replace(/\$\{CLAUDE_PLUGIN_DATA\}/g, () => dataPath)
+        if (pluginOpts) {
+          value = substituteUserConfigVariables(value, pluginOpts)
         }
       }
       return value
@@ -3196,7 +3197,7 @@ async function executeHooksOutsideREPL({
 
   // Run all hooks in parallel with individual timeouts
   const hookPromises = matchingHooks.map(
-    async ({ hook, pluginRoot, pluginId }, hookIndex) => {
+    async ({ hook, pluginRoot, pluginId, skillRoot }, hookIndex) => {
       // Handle callback hooks
       if (hook.type === 'callback') {
         const callbackTimeoutMs = hook.timeout ? hook.timeout * 1000 : timeoutMs
@@ -3405,6 +3406,7 @@ async function executeHooksOutsideREPL({
           hookIndex,
           pluginRoot,
           pluginId,
+          skillRoot,
         )
 
         // Clear timeout if hook completes

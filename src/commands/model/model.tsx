@@ -12,7 +12,7 @@ import { isBilledAsExtraUsage } from '../../utils/extraUsage.js';
 import { clearFastModeCooldown, isFastModeAvailable, isFastModeEnabled, isFastModeSupportedByModel } from '../../utils/fastMode.js';
 import { MODEL_ALIASES } from '../../utils/model/aliases.js';
 import { checkOpus1mAccess, checkSonnet1mAccess } from '../../utils/model/check1mAccess.js';
-import { getDefaultMainLoopModelSetting, isOpus1mMergeEnabled, renderDefaultModelSetting } from '../../utils/model/model.js';
+import { getDefaultMainLoopModelSetting, getModelBackendContextDescription, isOpus1mMergeEnabled, renderDefaultModelSetting } from '../../utils/model/model.js';
 import { isModelAllowed } from '../../utils/model/modelAllowlist.js';
 import { validateModel } from '../../utils/model/validateModel.js';
 function ModelPickerWrapper(t0) {
@@ -58,6 +58,10 @@ function ModelPickerWrapper(t0) {
       let message = `Set model to ${chalk.bold(renderModelLabel(model))}`;
       if (effort !== undefined) {
         message = message + ` with ${chalk.bold(effort)} effort`;
+      }
+      const backendInfo = getModelBackendContextDescription(model);
+      if (backendInfo) {
+        message = message + ` · ${backendInfo}`;
       }
       let wasFastModeToggledOn = undefined;
       if (isFastModeEnabled()) {
@@ -202,6 +206,10 @@ function SetModelAndClose({
         mainLoopModelForSession: null
       }));
       let message = `Set model to ${chalk.bold(renderModelLabel(modelValue))}`;
+      const backendInfo = getModelBackendContextDescription(modelValue);
+      if (backendInfo) {
+        message += ` · ${backendInfo}`;
+      }
       let wasFastModeToggledOn = undefined;
       if (isFastModeEnabled()) {
         clearFastModeCooldown();
@@ -252,10 +260,13 @@ function ShowModelAndClose(t0) {
   const effortValue = useAppState(_temp9);
   const displayModel = renderModelLabel(mainLoopModel);
   const effortInfo = effortValue !== undefined ? ` (effort: ${effortValue})` : "";
+  const activeModel = mainLoopModelForSession ?? mainLoopModel;
+  const backendInfo = getModelBackendContextDescription(activeModel);
+  const backendLine = backendInfo ? `\nBackend: ${backendInfo}` : "";
   if (mainLoopModelForSession) {
-    onDone(`Current model: ${chalk.bold(renderModelLabel(mainLoopModelForSession))} (session override from plan mode)\nBase model: ${displayModel}${effortInfo}`);
+    onDone(`Current model: ${chalk.bold(renderModelLabel(mainLoopModelForSession))} (session override from plan mode)\nBase model: ${displayModel}${effortInfo}${backendLine}`);
   } else {
-    onDone(`Current model: ${displayModel}${effortInfo}`);
+    onDone(`Current model: ${displayModel}${effortInfo}${backendLine}`);
   }
   return null;
 }
