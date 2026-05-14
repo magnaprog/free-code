@@ -1,6 +1,13 @@
 import { describe, expect, test } from 'bun:test'
 import { bedrockConverseFetchAdapterTestHooks } from './bedrock-converse-fetch-adapter.js'
 
+function parseSseData(text: string): Record<string, unknown>[] {
+  return text
+    .split('\n')
+    .filter(line => line.startsWith('data: '))
+    .map(line => JSON.parse(line.slice('data: '.length)) as Record<string, unknown>)
+}
+
 describe('bedrock converse fetch adapter translation', () => {
   test('maps Anthropic request controls to Converse fields', () => {
     const request =
@@ -378,7 +385,13 @@ describe('bedrock converse fetch adapter translation', () => {
       '"type":"input_json_delta","partial_json":"{\\"file_path\\":\\"a.ts\\"}"',
     )
     expect(text).toContain('"stop_reason":"tool_use"')
-    expect(text).toContain('"usage":{"input_tokens":10,"output_tokens":20}')
+    const messageDelta = parseSseData(text).find(
+      event => event.type === 'message_delta',
+    )
+    expect(messageDelta?.usage).toEqual({
+      input_tokens: 10,
+      output_tokens: 20,
+    })
   })
 
   test('generates unique fallback tool_use IDs from ConverseStream output', async () => {

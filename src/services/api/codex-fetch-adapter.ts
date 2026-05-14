@@ -913,6 +913,7 @@ async function translateCodexStreamToAnthropic(
   ) {
     // Use 'tool_use' stop reason when model made tool calls
     const stopReason = hadToolCalls ? 'tool_use' : streamStopReason
+    const usage = { input_tokens: inputTokens, output_tokens: outputTokens }
 
     controller.enqueue(
       encoder.encode(
@@ -921,7 +922,7 @@ async function translateCodexStreamToAnthropic(
           JSON.stringify({
             type: 'message_delta',
             delta: { stop_reason: stopReason, stop_sequence: null },
-            usage: { output_tokens: outputTokens },
+            usage,
           }),
         ),
       ),
@@ -938,7 +939,7 @@ async function translateCodexStreamToAnthropic(
               invocationLatency: 0,
               firstByteLatency: 0,
             },
-            usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+            usage,
           }),
         ),
       ),

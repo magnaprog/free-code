@@ -578,13 +578,15 @@ function createAnthropicStreamFromBedrock(
           })
         }
 
+        const usage = { input_tokens: inputTokens, output_tokens: outputTokens }
+
         emit('message_delta', {
           type: 'message_delta',
           delta: {
             stop_reason: translateStopReason(stopReason, sawToolUse),
             stop_sequence: null,
           },
-          usage: { output_tokens: outputTokens },
+          usage,
         })
         emit('message_stop', {
           type: 'message_stop',
@@ -594,10 +596,7 @@ function createAnthropicStreamFromBedrock(
             invocationLatency: 0,
             firstByteLatency: 0,
           },
-          usage: {
-            input_tokens: inputTokens,
-            output_tokens: outputTokens,
-          },
+          usage,
         })
         controller.close()
       } catch (error) {

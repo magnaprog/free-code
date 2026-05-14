@@ -12,6 +12,13 @@ function sseResponse(events: Record<string, unknown>[]): Response {
   )
 }
 
+function parseSseData(text: string): Record<string, unknown>[] {
+  return text
+    .split('\n')
+    .filter(line => line.startsWith('data: '))
+    .map(line => JSON.parse(line.slice('data: '.length)) as Record<string, unknown>)
+}
+
 describe('codex fetch adapter translation', () => {
   test('recognizes ChatGPT Codex backend model IDs', () => {
     expect(isCodexModel('gpt-5.5')).toBe(true)
@@ -224,6 +231,60 @@ describe('codex fetch adapter translation', () => {
     } finally {
       globalThis.fetch = previousFetch
     }
+  })
+
+  test('puts final input usage on streaming message_delta', async () => {
+    const response = await codexFetchAdapterTestHooks.translateCodexStreamToAnthropic(
+      sseResponse([
+        { type: 'response.output_item.added', item: { type: 'message' } },
+        { type: 'response.output_text.delta', delta: 'done' },
+        {
+          type: 'response.completed',
+          response: { usage: { input_tokens: 123, output_tokens: 4 } },
+        },
+      ]),
+      'gpt-5.5',
+    )
+
+    const text = await response.text()
+    const messageDelta = parseSseData(text).find(
+      event => event.type === 'message_delta',
+    )
+    expect(messageDelta?.usage).toEqual({
+      input_tokens: 123,
+      output_tokens: 4,
+    })
+  })
+
+  test('puts incomplete response usage on streaming message_delta', async () => {
+    const response = await codexFetchAdapterTestHooks.translateCodexStreamToAnthropic(
+      sseResponse([
+        { type: 'response.output_item.added', item: { type: 'message' } },
+        { type: 'response.output_text.delta', delta: 'partial' },
+        {
+          type: 'response.incomplete',
+          response: {
+            status: 'incomplete',
+            incomplete_details: { reason: 'max_output_tokens' },
+            usage: { input_tokens: 456, output_tokens: 7 },
+          },
+        },
+      ]),
+      'gpt-5.5',
+    )
+
+    const text = await response.text()
+    const messageDelta = parseSseData(text).find(
+      event => event.type === 'message_delta',
+    )
+    expect(messageDelta?.delta).toEqual({
+      stop_reason: 'max_tokens',
+      stop_sequence: null,
+    })
+    expect(messageDelta?.usage).toEqual({
+      input_tokens: 456,
+      output_tokens: 7,
+    })
   })
 
   test('preserves context-limit details from Codex non-OK responses', async () => {
