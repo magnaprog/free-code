@@ -986,8 +986,8 @@ function PromptInput({
     isSubmittingSlashCommand?: boolean;
     deferUntilTurnEnd?: boolean;
   } = false) => {
-    const isSubmittingSlashCommand = typeof submitOptions === 'boolean' ? submitOptions : submitOptions.isSubmittingSlashCommand ?? false;
-    const deferUntilTurnEnd = typeof submitOptions === 'object' && submitOptions.deferUntilTurnEnd === true;
+    const isSubmittingSlashCommand = typeof submitOptions === 'boolean' ? submitOptions : submitOptions?.isSubmittingSlashCommand ?? false;
+    const deferUntilTurnEnd = typeof submitOptions === 'object' && submitOptions?.deferUntilTurnEnd === true;
     if (deferUntilTurnEnd) {
       logEvent('tengu_chat_submit_deferred', {});
     }
@@ -1019,7 +1019,7 @@ function PromptInput({
     // wants to submit just the image(s). Only in leader view — promptSuggestion
     // is leader-context, not teammate.
     const suggestionText = promptSuggestionState.text;
-    if (deferUntilTurnEnd && inputParam.trim() === '' && suggestionText && !hasImages) {
+    if (deferUntilTurnEnd && inputParam.trim() === '' && !hasImages) {
       addNotification({
         key: 'defer-needs-input',
         text: 'Type a follow-up to queue.',
