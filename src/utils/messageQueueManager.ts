@@ -154,6 +154,17 @@ const PRIORITY_ORDER: Record<QueuePriority, number> = {
   later: 2,
 }
 
+export function isSameQueueSchedulingBucket(
+  a: QueuedCommand,
+  b: QueuedCommand,
+): boolean {
+  return (
+    a.mode === b.mode &&
+    (a.priority ?? 'next') === (b.priority ?? 'next') &&
+    (a.deferUntilTurnEnd === true) === (b.deferUntilTurnEnd === true)
+  )
+}
+
 /**
  * Remove and return the highest-priority command, or undefined if empty.
  * Within the same priority level, commands are dequeued FIFO.

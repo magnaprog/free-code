@@ -27,6 +27,7 @@ import { gracefulShutdownSync } from './gracefulShutdown.js'
 import { enqueue } from './messageQueueManager.js'
 import { resolveSkillModelOverride } from './model/model.js'
 import type { ProcessUserInputContext } from './processUserInput/processUserInput.js'
+import { getContentText, markQueuedFollowUpMessage } from './messages.js'
 import { processUserInput } from './processUserInput/processUserInput.js'
 import type { QueryGuard } from './QueryGuard.js'
 import { queryCheckpoint, startQueryProfile } from './queryProfiler.js'
@@ -34,6 +35,23 @@ import { runWithWorkload } from './workloadContext.js'
 
 function exit(): void {
   gracefulShutdownSync(0)
+}
+
+function markSubmittedQueuedFollowUpMessage(
+  messages: Message[],
+  mode: PromptInputMode,
+): void {
+  for (const message of messages) {
+    if (message.type !== 'user' || message.isMeta) continue
+    if (
+      mode === 'bash' &&
+      !getContentText(message.message.content)?.includes('<bash-input>')
+    ) {
+      continue
+    }
+    markQueuedFollowUpMessage(message)
+    return
+  }
 }
 
 type BaseExecutionParams = {
@@ -511,17 +529,13 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
           (cmd.mode === 'task-notification'
             ? ({ kind: 'task-notification' } as const)
             : undefined)
-        for (const m of result.messages) {
-          if (m.type !== 'user') continue
-          if (origin) m.origin = origin
+        if (origin || cmd.deferUntilTurnEnd) {
+          for (const m of result.messages) {
+            if (m.type !== 'user') continue
+            if (origin) m.origin = origin
+          }
           if (cmd.deferUntilTurnEnd) {
-            const displayMessage = m as typeof m & {
-              display?: { queuedFollowUp?: boolean }
-            }
-            displayMessage.display = {
-              ...displayMessage.display,
-              queuedFollowUp: true,
-            }
+            markSubmittedQueuedFollowUpMessage(result.messages, cmd.mode)
           }
         }
         newMessages.push(...result.messages)

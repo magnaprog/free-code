@@ -3,6 +3,7 @@ import {
   dequeue,
   dequeueAllMatching,
   hasCommandsInQueue,
+  isSameQueueSchedulingBucket,
   peek,
 } from './messageQueueManager.js'
 
@@ -73,17 +74,12 @@ export function processQueueIfReady({
     return { processed: true }
   }
 
-  // Drain all non-slash-command items with the same mode at once.
-  const targetMode = next.mode
-  const targetPriority = next.priority ?? 'next'
-  const targetDeferUntilTurnEnd = next.deferUntilTurnEnd === true
+  // Drain all non-slash-command items with the same scheduling bucket at once.
   const commands = dequeueAllMatching(
     cmd =>
       isMainThread(cmd) &&
       !isSlashCommand(cmd) &&
-      cmd.mode === targetMode &&
-      (cmd.priority ?? 'next') === targetPriority &&
-      (cmd.deferUntilTurnEnd === true) === targetDeferUntilTurnEnd,
+      isSameQueueSchedulingBucket(cmd, next),
   )
   if (commands.length === 0) {
     return { processed: false }

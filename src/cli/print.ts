@@ -48,6 +48,7 @@ import {
   peek,
   subscribeToCommandQueue,
   getCommandsByMaxPriority,
+  isSameQueueSchedulingBucket,
 } from 'src/utils/messageQueueManager.js'
 import { notifyCommandLifecycle } from 'src/utils/commandLifecycle.js'
 import {
@@ -447,8 +448,7 @@ export function canBatchWith(
   return (
     next !== undefined &&
     next.mode === 'prompt' &&
-    (next.priority ?? 'next') === (head.priority ?? 'next') &&
-    (next.deferUntilTurnEnd === true) === (head.deferUntilTurnEnd === true) &&
+    isSameQueueSchedulingBucket(head, next) &&
     next.workload === head.workload &&
     next.isMeta === head.isMeta
   )

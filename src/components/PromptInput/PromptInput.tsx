@@ -253,6 +253,8 @@ function PromptInput({
     show: false
   });
   const [cursorOffset, setCursorOffset] = useState<number>(input.length);
+  const inputRef = React.useRef(input);
+  inputRef.current = input;
   // Track the last input value set via internal handlers so we can detect
   // external input changes (e.g. speech-to-text injection) and move cursor to end.
   const lastInternalInputRef = React.useRef(input);
@@ -1017,7 +1019,17 @@ function PromptInput({
     // Check for images early - we need this for suggestion logic below
     const hasImages = Object.values(pastedContents).some(c => c.type === 'image');
 
+    const activeAgent = getActiveAgentForInput(store.getState());
     const queuePayload = mode === 'prompt' ? parseQueueCommand(inputParam) : null;
+    if ((deferUntilTurnEnd || queuePayload !== null) && activeAgent.type !== 'leader') {
+      addNotification({
+        key: 'defer-not-supported-agent-view',
+        text: 'Deferred submit is not supported while viewing an agent.',
+        priority: 'immediate',
+        timeoutMs: 2500
+      });
+      return;
+    }
     if (queuePayload !== null) {
       historyInput = inputParam;
       inputParam = queuePayload;
@@ -1122,8 +1134,6 @@ function PromptInput({
     removeNotification('stash-hint');
 
     // Route input to viewed agent (in-process teammate or named local_agent).
-    // Deferred submit is leader-context only; agent-view submission stays immediate.
-    const activeAgent = getActiveAgentForInput(store.getState());
     if (activeAgent.type !== 'leader' && onAgentSubmit) {
       logEvent('tengu_transcript_input_to_teammate', {});
       await onAgentSubmit(inputParam, activeAgent.task, {
@@ -1693,14 +1703,14 @@ function PromptInput({
       action: 'chat:submit',
       context: 'Chat',
       handler: () => {
-        void onSubmit(input);
+        void onSubmit(inputRef.current);
       }
     });
     const unregisterDeferredSubmit = keybindingContext.registerHandler({
       action: 'chat:submitDeferred',
       context: 'Chat',
       handler: () => {
-        void onSubmit(input, {
+        void onSubmit(inputRef.current, {
           deferUntilTurnEnd: true,
           deferredSubmitSource: 'keybinding'
         });
@@ -1710,7 +1720,7 @@ function PromptInput({
       unregisterSubmit();
       unregisterDeferredSubmit();
     };
-  }, [keybindingContext, isModalOverlayActive, onSubmit, input]);
+  }, [keybindingContext, isModalOverlayActive, onSubmit]);
 
   // Chat context keybindings for editing shortcuts
   // Note: history:previous/history:next are NOT handled here. They are passed as

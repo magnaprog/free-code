@@ -8,7 +8,7 @@ import { QueuedMessageProvider } from '../../context/QueuedMessageContext.js';
 import { useCommandQueue } from '../../hooks/useCommandQueue.js';
 import type { QueuedCommand } from '../../types/textInputTypes.js';
 import { isQueuedCommandVisible } from '../../utils/messageQueueManager.js';
-import { createUserMessage, EMPTY_LOOKUPS, normalizeMessages } from '../../utils/messages.js';
+import { createUserMessage, EMPTY_LOOKUPS, markQueuedFollowUpMessage, normalizeMessages } from '../../utils/messages.js';
 import { jsonParse } from '../../utils/slowOperations.js';
 import { Message } from '../Message.js';
 const EMPTY_SET = new Set<string>();
@@ -101,13 +101,7 @@ function PromptInputQueuedCommandsImpl(): React.ReactNode {
         content
       });
       if (cmd.deferUntilTurnEnd) {
-        const displayMessage = message as typeof message & {
-          display?: { queuedFollowUp?: boolean }
-        };
-        displayMessage.display = {
-          ...displayMessage.display,
-          queuedFollowUp: true,
-        };
+        markQueuedFollowUpMessage(message);
       }
       return message;
     }));

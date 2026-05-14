@@ -457,6 +457,16 @@ export function createAssistantAPIErrorMessage({
   })
 }
 
+export function markQueuedFollowUpMessage(message: UserMessage): void {
+  const displayMessage = message as typeof message & {
+    display?: { queuedFollowUp?: boolean }
+  }
+  displayMessage.display = {
+    ...displayMessage.display,
+    queuedFollowUp: true,
+  }
+}
+
 export function createUserMessage({
   content,
   isMeta,
