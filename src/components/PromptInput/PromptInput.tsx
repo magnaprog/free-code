@@ -988,6 +988,9 @@ function PromptInput({
   } = false) => {
     const isSubmittingSlashCommand = typeof submitOptions === 'boolean' ? submitOptions : submitOptions.isSubmittingSlashCommand ?? false;
     const deferUntilTurnEnd = typeof submitOptions === 'object' && submitOptions.deferUntilTurnEnd === true;
+    if (deferUntilTurnEnd) {
+      logEvent('tengu_chat_submit_deferred', {});
+    }
     inputParam = inputParam.trimEnd();
 
     // Don't submit if a footer indicator is being opened. Read fresh from
@@ -1101,6 +1104,7 @@ function PromptInput({
     removeNotification('stash-hint');
 
     // Route input to viewed agent (in-process teammate or named local_agent).
+    // Deferred submit is leader-context only; agent-view submission stays immediate.
     const activeAgent = getActiveAgentForInput(store.getState());
     if (activeAgent.type !== 'leader' && onAgentSubmit) {
       logEvent('tengu_transcript_input_to_teammate', {});
