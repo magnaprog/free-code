@@ -379,7 +379,7 @@ export async function handlePromptSubmit(
   // go through the same executeUserInput loop. This ensures images get
   // resized via processUserInput regardless of how the command arrives.
   // When idle, deferUntilTurnEnd is meaningless: nothing is queued, so no
-  // queued-follow-up marker is stamped.
+  // Queued Message marker is stamped.
   const cmd: QueuedCommand = {
     value: finalInput,
     preExpansionValue: input,

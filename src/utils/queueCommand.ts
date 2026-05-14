@@ -1,5 +1,9 @@
 const QUEUE_COMMAND_RE = /^\s*\/queue(?=$|\s)([\s\S]*)$/
 
+export function formatQueueCommand(payload: string): string {
+  return payload.length > 0 ? `/queue ${payload}` : '/queue'
+}
+
 export function parseQueueCommand(input: string): string | null {
   const match = QUEUE_COMMAND_RE.exec(input)
   if (!match) return null

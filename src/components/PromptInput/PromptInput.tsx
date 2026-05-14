@@ -11,7 +11,7 @@ import { type AppState, useAppState, useAppStateStore, useSetAppState } from 'sr
 import type { FooterItem } from 'src/state/AppStateStore.js';
 import { getCwd } from 'src/utils/cwd.js';
 import { isQueuedCommandEditable, popAllEditable } from 'src/utils/messageQueueManager.js';
-import { parseQueueCommand } from 'src/utils/queueCommand.js';
+import { formatQueueCommand, parseQueueCommand } from 'src/utils/queueCommand.js';
 import stripAnsi from 'strip-ansi';
 import { companionReservedColumns } from '../../buddy/CompanionSprite.js';
 import { findBuddyTriggerPositions, useBuddyNotification } from '../../buddy/useBuddyNotification.js';
@@ -939,8 +939,7 @@ function PromptInput({
     }
 
     // If there's an editable queued command, move it to the input for editing when UP is pressed
-    const hasEditableCommand = queuedCommands.some(isQueuedCommandEditable);
-    if (hasEditableCommand) {
+    if (hasEditableQueuedCommand) {
       void popAllCommandsFromQueue();
       return;
     }
@@ -1024,7 +1023,7 @@ function PromptInput({
     if ((deferUntilTurnEnd || queuePayload !== null) && activeAgent.type !== 'leader') {
       addNotification({
         key: 'defer-not-supported-agent-view',
-        text: 'Deferred submit is not supported while viewing an agent.',
+        text: 'Queued Message is not supported while viewing an agent.',
         priority: 'immediate',
         timeoutMs: 2500
       });
@@ -1035,6 +1034,8 @@ function PromptInput({
       inputParam = queuePayload;
       deferUntilTurnEnd = true;
       deferredSubmitSource ??= 'slash';
+    } else if (deferUntilTurnEnd && deferredSubmitSource === 'keybinding' && mode === 'prompt' && inputParam.trim() !== '') {
+      historyInput = formatQueueCommand(inputParam);
     }
 
     if (deferUntilTurnEnd) {
@@ -1052,7 +1053,7 @@ function PromptInput({
     if (deferUntilTurnEnd && inputParam.trim() === '' && (!hasImages || deferredSubmitSource === 'slash')) {
       addNotification({
         key: 'defer-needs-input',
-        text: 'Type a follow-up to queue.',
+        text: 'Type a message to queue.',
         priority: 'immediate',
         timeoutMs: 2500
       });
@@ -1308,6 +1309,7 @@ function PromptInput({
     setCursorOffset(cursorOffset + text.length);
   }
   const doublePressEscFromEmpty = useDoublePress(() => {}, () => onShowMessageSelector());
+  const hasEditableQueuedCommand = queuedCommands.some(isQueuedCommandEditable);
 
   // Function to get the queued command for editing. Returns true if commands were popped.
   const popAllCommandsFromQueue = useCallback((): boolean => {
@@ -2016,8 +2018,7 @@ function PromptInput({
       }
 
       // If there's an editable queued command, move it to the input for editing when ESC is pressed
-      const hasEditableCommand = queuedCommands.some(isQueuedCommandEditable);
-      if (hasEditableCommand) {
+      if (hasEditableQueuedCommand) {
         void popAllCommandsFromQueue();
         return;
       }
@@ -2261,7 +2262,7 @@ function PromptInput({
     columns: textInputColumns,
     maxVisibleLines,
     disableCursorMovementForUpDownKeys: suggestions.length > 0 || !!footerItemSelected,
-    disableEscapeDoublePress: suggestions.length > 0,
+    disableEscapeDoublePress: suggestions.length > 0 || hasEditableQueuedCommand,
     cursorOffset,
     onChangeCursorOffset: setCursorOffset,
     onPaste: onTextPaste,
@@ -2312,7 +2313,7 @@ function PromptInput({
   }
   const textInputElement = isVimModeEnabled() ? <VimTextInput {...baseProps} initialMode={vimMode} onModeChange={setVimMode} /> : <TextInput {...baseProps} />;
   return <Box flexDirection="column" marginTop={briefOwnsGap ? 0 : 1}>
-      {!isFullscreenEnvEnabled() && <PromptInputQueuedCommands />}
+      <PromptInputQueuedCommands />
       {hasSuppressedDialogs && <Box marginTop={1} marginLeft={2}>
           <Text dimColor>Waiting for permission…</Text>
         </Box>}

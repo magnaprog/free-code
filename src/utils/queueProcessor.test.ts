@@ -13,7 +13,7 @@ mock.module('./messages.js', () => ({
   extractTextContent: () => '',
 }))
 
-const { clearCommandQueue, enqueue, getCommandQueue } = await import(
+const { clearCommandQueue, enqueue, getCommandQueue, popAllEditable } = await import(
   './messageQueueManager.js'
 )
 const { processQueueIfReady } = await import('./queueProcessor.js')
@@ -38,6 +38,13 @@ describe('processQueueIfReady', () => {
     expect(result).toEqual({ processed: true })
     expect(batches).toEqual([['first', 'second']])
     expect(getCommandQueue().map(cmd => cmd.value)).toEqual(['deferred'])
+  })
+
+  test('restores deferred prompts as queue commands for editing', () => {
+    enqueue({ value: 'fix this', mode: 'prompt', deferUntilTurnEnd: true })
+
+    expect(popAllEditable('', 0)?.text).toBe('/queue fix this')
+    expect(getCommandQueue()).toEqual([])
   })
 
   test('drains deferred prompts together when they are the active bucket', () => {

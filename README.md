@@ -243,16 +243,16 @@ bun run dev
 ./cli /login
 ```
 
-### Queue follow-ups
+### Queue messages
 
-While the assistant is responding, press `Ctrl+X Ctrl+Q` or type `/queue <message>` to queue a follow-up for after the current turn ends.
+While the assistant is responding, press `Ctrl+X Ctrl+Q` or type `/queue <message>` to queue a message for after the current turn ends.
 
 ```bash
 /queue run the tests after this
 /queue if tests pass, summarize the changes
 ```
 
-Multiple queued prompt messages are batched into one assistant turn; the assistant sees all queued follow-ups at once. Slash-command payloads such as `/queue /clear` are queued as deferred slash input instead of executing immediately.
+Multiple queued prompt messages are batched into one assistant turn; the assistant sees all Queued Messages at once. Slash-command payloads such as `/queue /clear` are queued as deferred slash input instead of executing immediately.
 
 ### Environment Variables Reference
 

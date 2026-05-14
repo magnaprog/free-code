@@ -1,6 +1,14 @@
 import { describe, expect, test } from 'bun:test'
 
-import { parseQueueCommand } from './queueCommand.js'
+import { formatQueueCommand, parseQueueCommand } from './queueCommand.js'
+
+describe('formatQueueCommand', () => {
+  test('formats queue commands', () => {
+    expect(formatQueueCommand('hello')).toBe('/queue hello')
+    expect(formatQueueCommand('/clear')).toBe('/queue /clear')
+    expect(formatQueueCommand('')).toBe('/queue')
+  })
+})
 
 describe('parseQueueCommand', () => {
   test('parses queue command payloads', () => {

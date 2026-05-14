@@ -15,6 +15,7 @@ import type {
 } from '../types/textInputTypes.js'
 import type { PastedContent } from './config.js'
 import { extractTextContent } from './messages.js'
+import { formatQueueCommand } from './queueCommand.js'
 import { objectGroupBy } from './objectGroupBy.js'
 import { recordQueueOperation } from './sessionStorage.js'
 import { createSignal } from './signal.js'
@@ -454,7 +455,12 @@ export function popAllEditable(
   }
 
   // Extract text from queued commands (handles both strings and ContentBlockParam[])
-  const queuedTexts = editable.map(cmd => extractTextFromValue(cmd.value))
+  const queuedTexts = editable.map(cmd => {
+    const text = extractTextFromValue(cmd.value)
+    return cmd.deferUntilTurnEnd && cmd.mode === 'prompt'
+      ? formatQueueCommand(text)
+      : text
+  })
   const newInput = [...queuedTexts, currentInput].filter(Boolean).join('\n')
 
   // Calculate cursor offset: length of joined queued commands + 1 + current cursor offset

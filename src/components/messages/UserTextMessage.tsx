@@ -42,7 +42,7 @@ export function UserTextMessage(t0) {
   if (param.text.trim() === NO_CONTENT_MESSAGE) {
     return null;
   }
-  const queuedFollowUpLabel = queuedFollowUp ? <Box marginLeft={addMargin ? 2 : 0}><Text dimColor>queued follow-up</Text></Box> : null;
+  const queuedFollowUpLabel = queuedFollowUp ? <Box marginLeft={addMargin ? 2 : 0}><Text dimColor>Queued Message</Text></Box> : null;
   const withQueuedFollowUpLabel = (content: React.ReactNode): React.ReactNode => queuedFollowUpLabel ? <>{queuedFollowUpLabel}{content}</> : content;
   if (planContent) {
     return withQueuedFollowUpLabel(<UserPlanMessage addMargin={addMargin} planContent={planContent} />);
