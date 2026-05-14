@@ -11,6 +11,7 @@ import { type AppState, useAppState, useAppStateStore, useSetAppState } from 'sr
 import type { FooterItem } from 'src/state/AppStateStore.js';
 import { getCwd } from 'src/utils/cwd.js';
 import { isQueuedCommandEditable, popAllEditable } from 'src/utils/messageQueueManager.js';
+import { parseQueueCommand } from 'src/utils/queueCommand.js';
 import stripAnsi from 'strip-ansi';
 import { companionReservedColumns } from '../../buddy/CompanionSprite.js';
 import { findBuddyTriggerPositions, useBuddyNotification } from '../../buddy/useBuddyNotification.js';
@@ -167,6 +168,8 @@ type Props = {
     setAppState: (f: (prev: AppState) => AppState) => void;
   }, options?: {
     fromKeybinding?: boolean;
+    deferUntilTurnEnd?: boolean;
+    historyInput?: string;
   }) => Promise<void>;
   onAgentSubmit?: (input: string, task: InProcessTeammateTaskState | LocalAgentTaskState, helpers: PromptInputHelpers) => Promise<void>;
   isSearchingHistory: boolean;
@@ -981,7 +984,17 @@ function PromptInput({
   const setSuggestionsState = useCallback((updater: typeof suggestionsState | ((prev: typeof suggestionsState) => typeof suggestionsState)) => {
     setSuggestionsStateRaw(prev => typeof updater === 'function' ? updater(prev) : updater);
   }, []);
-  const onSubmit = useCallback(async (inputParam: string, isSubmittingSlashCommand = false) => {
+  const onSubmit = useCallback(async (inputParam: string, submitOptions: boolean | {
+    isSubmittingSlashCommand?: boolean;
+    deferUntilTurnEnd?: boolean;
+    deferredSubmitSource?: 'keybinding' | 'slash';
+    historyInput?: string;
+  } = false) => {
+    const submitOptionsObject = typeof submitOptions === 'object' && submitOptions !== null ? submitOptions : undefined;
+    const isSubmittingSlashCommand = typeof submitOptions === 'boolean' ? submitOptions : submitOptionsObject?.isSubmittingSlashCommand ?? false;
+    let deferUntilTurnEnd = submitOptionsObject?.deferUntilTurnEnd === true;
+    let deferredSubmitSource: 'keybinding' | 'slash' | undefined = deferUntilTurnEnd ? submitOptionsObject?.deferredSubmitSource ?? 'keybinding' : undefined;
+    let historyInput = submitOptionsObject?.historyInput;
     inputParam = inputParam.trimEnd();
 
     // Don't submit if a footer indicator is being opened. Read fresh from
@@ -1004,13 +1017,37 @@ function PromptInput({
     // Check for images early - we need this for suggestion logic below
     const hasImages = Object.values(pastedContents).some(c => c.type === 'image');
 
-    // If input is empty OR matches the suggestion, submit it
-    // But if there are images attached, don't auto-accept the suggestion -
-    // the user wants to submit just the image(s).
-    // Only in leader view — promptSuggestion is leader-context, not teammate.
+    const queuePayload = mode === 'prompt' ? parseQueueCommand(inputParam) : null;
+    if (queuePayload !== null) {
+      historyInput = inputParam;
+      inputParam = queuePayload;
+      deferUntilTurnEnd = true;
+      deferredSubmitSource ??= 'slash';
+    }
+
+    if (deferUntilTurnEnd) {
+      logEvent('tengu_chat_submit_deferred', {
+        source: (deferredSubmitSource ?? 'keybinding') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+      });
+    }
+
+    // Normal submit accepts prompt suggestions when input is empty or exactly
+    // matches the suggestion. Deferred submit does not: it queues typed text.
+    // If there are images attached, don't auto-accept the suggestion — the user
+    // wants to submit just the image(s). Only in leader view — promptSuggestion
+    // is leader-context, not teammate.
     const suggestionText = promptSuggestionState.text;
+    if (deferUntilTurnEnd && inputParam.trim() === '' && (!hasImages || deferredSubmitSource === 'slash')) {
+      addNotification({
+        key: 'defer-needs-input',
+        text: 'Type a follow-up to queue.',
+        priority: 'immediate',
+        timeoutMs: 2500
+      });
+      return;
+    }
     const inputMatchesSuggestion = inputParam.trim() === '' || inputParam === suggestionText;
-    if (inputMatchesSuggestion && suggestionText && !hasImages && !state.viewingAgentTaskId) {
+    if (!deferUntilTurnEnd && inputMatchesSuggestion && suggestionText && !hasImages && !state.viewingAgentTaskId) {
       // If speculation is active, inject messages immediately as they stream
       if (speculation.status === 'active') {
         markAccepted();
@@ -1038,7 +1075,7 @@ function PromptInput({
     }
 
     // Handle @name direct message
-    if (isAgentSwarmsEnabled()) {
+    if (!deferUntilTurnEnd && isAgentSwarmsEnabled()) {
       const directMessage = parseDirectMemberMessage(inputParam);
       if (directMessage) {
         const result = await sendDirectMemberMessage(directMessage.recipientName, directMessage.message, teamContext, writeToMailbox);
@@ -1085,6 +1122,7 @@ function PromptInput({
     removeNotification('stash-hint');
 
     // Route input to viewed agent (in-process teammate or named local_agent).
+    // Deferred submit is leader-context only; agent-view submission stays immediate.
     const activeAgent = getActiveAgentForInput(store.getState());
     if (activeAgent.type !== 'leader' && onAgentSubmit) {
       logEvent('tengu_transcript_input_to_teammate', {});
@@ -1097,12 +1135,20 @@ function PromptInput({
     }
 
     // Normal leader submission
+    const onSubmitOptions = deferUntilTurnEnd || historyInput !== undefined ? {
+      ...(deferUntilTurnEnd ? {
+        deferUntilTurnEnd: true
+      } : {}),
+      ...(historyInput !== undefined ? {
+        historyInput
+      } : {})
+    } : undefined;
     await onSubmitProp(inputParam, {
       setCursorOffset,
       clearBuffer,
       resetHistory
-    });
-  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, pastedContents, removeNotification]);
+    }, undefined, onSubmitOptions);
+  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, mode, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, pastedContents, removeNotification, addNotification]);
   const {
     suggestions,
     selectedSuggestion,
@@ -1643,13 +1689,27 @@ function PromptInput({
   const keybindingContext = useOptionalKeybindingContext();
   useEffect(() => {
     if (!keybindingContext || isModalOverlayActive) return;
-    return keybindingContext.registerHandler({
+    const unregisterSubmit = keybindingContext.registerHandler({
       action: 'chat:submit',
       context: 'Chat',
       handler: () => {
         void onSubmit(input);
       }
     });
+    const unregisterDeferredSubmit = keybindingContext.registerHandler({
+      action: 'chat:submitDeferred',
+      context: 'Chat',
+      handler: () => {
+        void onSubmit(input, {
+          deferUntilTurnEnd: true,
+          deferredSubmitSource: 'keybinding'
+        });
+      }
+    });
+    return () => {
+      unregisterSubmit();
+      unregisterDeferredSubmit();
+    };
   }, [keybindingContext, isModalOverlayActive, onSubmit, input]);
 
   // Chat context keybindings for editing shortcuts

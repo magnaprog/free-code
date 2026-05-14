@@ -108,6 +108,7 @@ export type HandlePromptSubmitParams = BaseExecutionParams & {
   setMessages?: (updater: (prev: Message[]) => Message[]) => void
   streamMode?: SpinnerMode
   hasInterruptibleToolInProgress?: boolean
+  deferUntilTurnEnd?: boolean
   uuid?: UUID
   /**
    * When true, input starting with `/` is treated as plain text.
@@ -192,6 +193,7 @@ export async function handlePromptSubmit(
   // Handle exit commands by triggering the exit command instead of direct process.exit
   // Skip for remote bridge messages — "exit" typed on iOS shouldn't kill the local session
   if (
+    !params.deferUntilTurnEnd &&
     !skipSlashCommands &&
     ['exit', 'quit', ':q', ':q!', ':wq', ':wq!'].includes(input.trim())
   ) {
@@ -248,7 +250,8 @@ export async function handlePromptSubmit(
     if (
       immediateCommand &&
       immediateCommand.type === 'local-jsx' &&
-      (queryGuard.isActive || isExternalLoading)
+      (queryGuard.isActive || isExternalLoading) &&
+      !params.deferUntilTurnEnd
     ) {
       logEvent('tengu_immediate_command_executed', {
         commandName:
@@ -318,7 +321,7 @@ export async function handlePromptSubmit(
 
     // Interrupt the current turn when all executing tools have
     // interruptBehavior 'cancel' (e.g. SleepTool).
-    if (params.hasInterruptibleToolInProgress) {
+    if (!params.deferUntilTurnEnd && params.hasInterruptibleToolInProgress) {
       logForDebugging(
         `[interrupt] Aborting current turn: streamMode=${params.streamMode}`,
       )
@@ -340,6 +343,7 @@ export async function handlePromptSubmit(
       pastedContents: hasImages ? pastedContents : undefined,
       skipSlashCommands,
       uuid,
+      deferUntilTurnEnd: params.deferUntilTurnEnd,
     })
 
     onInputChange('')
@@ -356,6 +360,8 @@ export async function handlePromptSubmit(
   // Construct a QueuedCommand from the direct user input so both paths
   // go through the same executeUserInput loop. This ensures images get
   // resized via processUserInput regardless of how the command arrives.
+  // When idle, deferUntilTurnEnd is meaningless: nothing is queued, so no
+  // queued-follow-up marker is stamped.
   const cmd: QueuedCommand = {
     value: finalInput,
     preExpansionValue: input,
@@ -505,9 +511,17 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
           (cmd.mode === 'task-notification'
             ? ({ kind: 'task-notification' } as const)
             : undefined)
-        if (origin) {
-          for (const m of result.messages) {
-            if (m.type === 'user') m.origin = origin
+        for (const m of result.messages) {
+          if (m.type !== 'user') continue
+          if (origin) m.origin = origin
+          if (cmd.deferUntilTurnEnd) {
+            const displayMessage = m as typeof m & {
+              display?: { queuedFollowUp?: boolean }
+            }
+            displayMessage.display = {
+              ...displayMessage.display,
+              queuedFollowUp: true,
+            }
           }
         }
         newMessages.push(...result.messages)

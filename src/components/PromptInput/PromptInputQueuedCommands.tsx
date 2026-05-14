@@ -97,9 +97,19 @@ function PromptInputQueuedCommandsImpl(): React.ReactNode {
       }
       // [Image #N] placeholders are inline in the text value (inserted at
       // paste time), so the queue preview shows them without stub blocks.
-      return createUserMessage({
+      const message = createUserMessage({
         content
       });
+      if (cmd.deferUntilTurnEnd) {
+        const displayMessage = message as typeof message & {
+          display?: { queuedFollowUp?: boolean }
+        };
+        displayMessage.display = {
+          ...displayMessage.display,
+          queuedFollowUp: true,
+        };
+      }
+      return message;
     }));
   }, [queuedCommands]);
 

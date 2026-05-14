@@ -301,6 +301,8 @@ export type QueuedCommand = {
   mode: PromptInputMode
   /** Defaults to the priority implied by `mode` when enqueued. */
   priority?: QueuePriority
+  /** User-queued follow-up that must wait for the current foreground turn to end. */
+  deferUntilTurnEnd?: boolean
   uuid?: UUID
   orphanedPermission?: OrphanedPermission
   /** Raw pasted contents including images. Images are resized at execution time. */
