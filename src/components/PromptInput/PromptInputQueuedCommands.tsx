@@ -1,13 +1,17 @@
 import { feature } from 'bun:bundle';
+import stripAnsi from 'strip-ansi';
 import * as React from 'react';
 import { useMemo } from 'react';
-import { Box } from 'src/ink.js';
+import { Box, Text } from 'src/ink.js';
 import { useAppState } from 'src/state/AppState.js';
 import { STATUS_TAG, SUMMARY_TAG, TASK_NOTIFICATION_TAG } from '../../constants/xml.js';
 import { QueuedMessageProvider } from '../../context/QueuedMessageContext.js';
 import { useCommandQueue } from '../../hooks/useCommandQueue.js';
+import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import type { QueuedCommand } from '../../types/textInputTypes.js';
 import { isQueuedCommandVisible } from '../../utils/messageQueueManager.js';
+import { plural } from '../../utils/stringUtils.js';
+import { renderTruncatedContent } from '../../utils/terminal.js';
 import { createUserMessage, EMPTY_LOOKUPS, markQueuedFollowUpMessage, normalizeMessages } from '../../utils/messages.js';
 import { jsonParse } from '../../utils/slowOperations.js';
 import { Message } from '../Message.js';
@@ -28,6 +32,8 @@ function isIdleNotification(value: string): boolean {
 
 // Maximum number of task notification lines to show
 const MAX_VISIBLE_NOTIFICATIONS = 3;
+// Fullscreen prompt lives outside ScrollBox; keep its height nearly fixed while streaming.
+const MAX_VISIBLE_QUEUED_COMMANDS = 1;
 
 /**
  * Create a synthetic overflow notification message for capped task notifications.
@@ -40,11 +46,13 @@ function createOverflowNotificationMessage(count: number): string {
 }
 
 /**
- * Process queued commands to cap task notifications at MAX_VISIBLE_NOTIFICATIONS lines.
- * Other command types are always shown in full.
+ * Process queued commands for prompt-area preview.
  * Idle notifications are filtered out entirely.
  */
-function processQueuedCommands(queuedCommands: QueuedCommand[]): QueuedCommand[] {
+function processQueuedCommands(queuedCommands: QueuedCommand[]): {
+  commands: QueuedCommand[];
+  hiddenCount: number;
+} {
   // Filter out idle notifications - they are processed silently
   const filteredCommands = queuedCommands.filter(cmd => typeof cmd.value !== 'string' || !isIdleNotification(cmd.value));
 
@@ -52,24 +60,33 @@ function processQueuedCommands(queuedCommands: QueuedCommand[]): QueuedCommand[]
   const taskNotifications = filteredCommands.filter(cmd => cmd.mode === 'task-notification');
   const otherCommands = filteredCommands.filter(cmd => cmd.mode !== 'task-notification');
 
-  // If notifications fit within limit, return all commands as-is
-  if (taskNotifications.length <= MAX_VISIBLE_NOTIFICATIONS) {
-    return [...otherCommands, ...taskNotifications];
+  let notificationCommands = taskNotifications;
+  if (taskNotifications.length > MAX_VISIBLE_NOTIFICATIONS) {
+    // Show first (MAX_VISIBLE_NOTIFICATIONS - 1) notifications, then a summary
+    const visibleNotifications = taskNotifications.slice(0, MAX_VISIBLE_NOTIFICATIONS - 1);
+    const overflowCount = taskNotifications.length - (MAX_VISIBLE_NOTIFICATIONS - 1);
+
+    // Create synthetic overflow message
+    const overflowCommand: QueuedCommand = {
+      value: createOverflowNotificationMessage(overflowCount),
+      mode: 'task-notification'
+    };
+    notificationCommands = [...visibleNotifications, overflowCommand];
   }
 
-  // Show first (MAX_VISIBLE_NOTIFICATIONS - 1) notifications, then a summary
-  const visibleNotifications = taskNotifications.slice(0, MAX_VISIBLE_NOTIFICATIONS - 1);
-  const overflowCount = taskNotifications.length - (MAX_VISIBLE_NOTIFICATIONS - 1);
-
-  // Create synthetic overflow message
-  const overflowCommand: QueuedCommand = {
-    value: createOverflowNotificationMessage(overflowCount),
-    mode: 'task-notification'
+  const commands = [...otherCommands, ...notificationCommands];
+  return {
+    commands: commands.slice(0, MAX_VISIBLE_QUEUED_COMMANDS),
+    hiddenCount: Math.max(0, commands.length - MAX_VISIBLE_QUEUED_COMMANDS)
   };
-  return [...otherCommands, ...visibleNotifications, overflowCommand];
+}
+
+function truncateQueuedPreviewText(text: string, columns: number): string {
+  return stripAnsi(renderTruncatedContent(text, columns, true));
 }
 function PromptInputQueuedCommandsImpl(): React.ReactNode {
   const queuedCommands = useCommandQueue();
+  const { columns } = useTerminalSize();
   const viewingAgent = useAppState(s => !!s.viewingAgentTaskId);
   // Brief layout: dim queue items + skip the paddingX (brief messages
   // already indent themselves). Gate mirrors the brief-spinner/message
@@ -81,7 +98,7 @@ function PromptInputQueuedCommandsImpl(): React.ReactNode {
 
   // createUserMessage mints a fresh UUID per call; without memoization, streaming
   // re-renders defeat Message's areMessagePropsEqual (compares uuid) → flicker.
-  const messages = useMemo(() => {
+  const preview = useMemo(() => {
     if (queuedCommands.length === 0) return null;
     // task-notification is shown via useInboxNotification; most isMeta commands
     // (scheduled tasks, proactive ticks) are system-generated and hidden.
@@ -90,31 +107,41 @@ function PromptInputQueuedCommandsImpl(): React.ReactNode {
     const visibleCommands = queuedCommands.filter(isQueuedCommandVisible);
     if (visibleCommands.length === 0) return null;
     const processedCommands = processQueuedCommands(visibleCommands);
-    return normalizeMessages(processedCommands.map(cmd => {
-      let content = cmd.value;
-      if (cmd.mode === 'bash' && typeof content === 'string') {
-        content = `<bash-input>${content}</bash-input>`;
-      }
-      // [Image #N] placeholders are inline in the text value (inserted at
-      // paste time), so the queue preview shows them without stub blocks.
-      const message = createUserMessage({
-        content
-      });
-      if (cmd.deferUntilTurnEnd) {
-        markQueuedFollowUpMessage(message);
-      }
-      return message;
-    }));
-  }, [queuedCommands]);
+    if (processedCommands.commands.length === 0) return null;
+    return {
+      messages: normalizeMessages(processedCommands.commands.map(cmd => {
+        let content = cmd.value;
+        if (typeof content === 'string' && cmd.mode !== 'task-notification') {
+          content = truncateQueuedPreviewText(content, columns);
+        }
+        if (cmd.mode === 'bash' && typeof content === 'string') {
+          content = `<bash-input>${content}</bash-input>`;
+        }
+        // [Image #N] placeholders are inline in the text value (inserted at
+        // paste time), so the queue preview shows them without stub blocks.
+        const message = createUserMessage({
+          content
+        });
+        if (cmd.deferUntilTurnEnd) {
+          markQueuedFollowUpMessage(message);
+        }
+        return message;
+      })),
+      hiddenCount: processedCommands.hiddenCount
+    };
+  }, [queuedCommands, columns]);
 
   // Don't show leader's queued commands when viewing any agent's transcript
-  if (viewingAgent || messages === null) {
+  if (viewingAgent || preview === null) {
     return null;
   }
   return <Box marginTop={1} flexDirection="column">
-      {messages.map((message, i) => <QueuedMessageProvider key={i} isFirst={i === 0} useBriefLayout={useBriefLayout}>
+      {preview.messages.map((message, i) => <QueuedMessageProvider key={i} isFirst={i === 0} useBriefLayout={useBriefLayout}>
           <Message message={message} lookups={EMPTY_LOOKUPS} addMargin={false} tools={[]} commands={[]} verbose={false} inProgressToolUseIDs={EMPTY_SET} progressMessagesForMessage={[]} shouldAnimate={false} shouldShowDot={false} isTranscriptMode={false} isStatic={true} />
         </QueuedMessageProvider>)}
+      {preview.hiddenCount > 0 && <Box marginLeft={2}>
+          <Text dimColor>+{preview.hiddenCount} more queued {plural(preview.hiddenCount, 'message')}</Text>
+        </Box>}
     </Box>;
 }
 export const PromptInputQueuedCommands = React.memo(PromptInputQueuedCommandsImpl);
