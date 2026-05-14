@@ -167,6 +167,7 @@ type Props = {
     setAppState: (f: (prev: AppState) => AppState) => void;
   }, options?: {
     fromKeybinding?: boolean;
+    deferUntilTurnEnd?: boolean;
   }) => Promise<void>;
   onAgentSubmit?: (input: string, task: InProcessTeammateTaskState | LocalAgentTaskState, helpers: PromptInputHelpers) => Promise<void>;
   isSearchingHistory: boolean;
@@ -981,7 +982,12 @@ function PromptInput({
   const setSuggestionsState = useCallback((updater: typeof suggestionsState | ((prev: typeof suggestionsState) => typeof suggestionsState)) => {
     setSuggestionsStateRaw(prev => typeof updater === 'function' ? updater(prev) : updater);
   }, []);
-  const onSubmit = useCallback(async (inputParam: string, isSubmittingSlashCommand = false) => {
+  const onSubmit = useCallback(async (inputParam: string, submitOptions: boolean | {
+    isSubmittingSlashCommand?: boolean;
+    deferUntilTurnEnd?: boolean;
+  } = false) => {
+    const isSubmittingSlashCommand = typeof submitOptions === 'boolean' ? submitOptions : submitOptions.isSubmittingSlashCommand ?? false;
+    const deferUntilTurnEnd = typeof submitOptions === 'object' && submitOptions.deferUntilTurnEnd === true;
     inputParam = inputParam.trimEnd();
 
     // Don't submit if a footer indicator is being opened. Read fresh from
@@ -1004,13 +1010,23 @@ function PromptInput({
     // Check for images early - we need this for suggestion logic below
     const hasImages = Object.values(pastedContents).some(c => c.type === 'image');
 
-    // If input is empty OR matches the suggestion, submit it
-    // But if there are images attached, don't auto-accept the suggestion -
-    // the user wants to submit just the image(s).
-    // Only in leader view — promptSuggestion is leader-context, not teammate.
+    // Normal submit accepts prompt suggestions when input is empty or exactly
+    // matches the suggestion. Deferred submit does not: it queues typed text.
+    // If there are images attached, don't auto-accept the suggestion — the user
+    // wants to submit just the image(s). Only in leader view — promptSuggestion
+    // is leader-context, not teammate.
     const suggestionText = promptSuggestionState.text;
+    if (deferUntilTurnEnd && inputParam.trim() === '' && suggestionText && !hasImages) {
+      addNotification({
+        key: 'defer-needs-input',
+        text: 'Type a follow-up to queue.',
+        priority: 'immediate',
+        timeoutMs: 2500
+      });
+      return;
+    }
     const inputMatchesSuggestion = inputParam.trim() === '' || inputParam === suggestionText;
-    if (inputMatchesSuggestion && suggestionText && !hasImages && !state.viewingAgentTaskId) {
+    if (!deferUntilTurnEnd && inputMatchesSuggestion && suggestionText && !hasImages && !state.viewingAgentTaskId) {
       // If speculation is active, inject messages immediately as they stream
       if (speculation.status === 'active') {
         markAccepted();
@@ -1101,8 +1117,10 @@ function PromptInput({
       setCursorOffset,
       clearBuffer,
       resetHistory
-    });
-  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, pastedContents, removeNotification]);
+    }, undefined, deferUntilTurnEnd ? {
+      deferUntilTurnEnd: true
+    } : undefined);
+  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, pastedContents, removeNotification, addNotification]);
   const {
     suggestions,
     selectedSuggestion,
@@ -1643,13 +1661,26 @@ function PromptInput({
   const keybindingContext = useOptionalKeybindingContext();
   useEffect(() => {
     if (!keybindingContext || isModalOverlayActive) return;
-    return keybindingContext.registerHandler({
+    const unregisterSubmit = keybindingContext.registerHandler({
       action: 'chat:submit',
       context: 'Chat',
       handler: () => {
         void onSubmit(input);
       }
     });
+    const unregisterDeferredSubmit = keybindingContext.registerHandler({
+      action: 'chat:submitDeferred',
+      context: 'Chat',
+      handler: () => {
+        void onSubmit(input, {
+          deferUntilTurnEnd: true
+        });
+      }
+    });
+    return () => {
+      unregisterSubmit();
+      unregisterDeferredSubmit();
+    };
   }, [keybindingContext, isModalOverlayActive, onSubmit, input]);
 
   // Chat context keybindings for editing shortcuts

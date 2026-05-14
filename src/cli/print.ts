@@ -447,6 +447,8 @@ export function canBatchWith(
   return (
     next !== undefined &&
     next.mode === 'prompt' &&
+    (next.priority ?? 'next') === (head.priority ?? 'next') &&
+    (next.deferUntilTurnEnd === true) === (head.deferUntilTurnEnd === true) &&
     next.workload === head.workload &&
     next.isMeta === head.isMeta
   )

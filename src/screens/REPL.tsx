@@ -3151,6 +3151,7 @@ export function REPL({
     setAppState: SetAppState;
   }, options?: {
     fromKeybinding?: boolean;
+    deferUntilTurnEnd?: boolean;
   }) => {
     // Re-pin scroll to bottom on submit so the user always sees the new
     // exchange (matches OpenCode's auto-scroll behavior).
@@ -3161,10 +3162,20 @@ export function REPL({
       proactiveModule?.resumeProactive();
     }
 
+    if (options?.deferUntilTurnEnd && activeRemote.isRemoteMode) {
+      addNotification({
+        key: 'defer-not-supported-remote',
+        text: 'Deferred submit is not supported in remote mode.',
+        priority: 'immediate',
+        timeoutMs: 2500
+      });
+      return;
+    }
+
     // Handle immediate commands - these bypass the queue and execute right away
     // even while Claude is processing. Commands opt-in via `immediate: true`.
     // Commands triggered via keybindings are always treated as immediate.
-    if (!speculationAccept && input.trim().startsWith('/')) {
+    if (!speculationAccept && !options?.deferUntilTurnEnd && input.trim().startsWith('/')) {
       // Expand [Pasted text #N] refs so immediate commands (e.g. /btw) receive
       // the pasted content, not the placeholder. The non-immediate path gets
       // this expansion later in handlePromptSubmit.
@@ -3521,7 +3532,8 @@ export function REPL({
       // Read via ref so streamMode can be dropped from onSubmit deps —
       // handlePromptSubmit only uses it for debug log + telemetry event.
       streamMode: streamModeRef.current,
-      hasInterruptibleToolInProgress: hasInterruptibleToolInProgressRef.current
+      hasInterruptibleToolInProgress: hasInterruptibleToolInProgressRef.current,
+      deferUntilTurnEnd: options?.deferUntilTurnEnd
     });
 
     // Restore stash that was deferred above. Two cases:

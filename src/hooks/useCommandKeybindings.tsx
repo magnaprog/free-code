@@ -19,6 +19,7 @@ type Props = {
   // so we use a rest parameter to allow any additional args
   onSubmit: (input: string, helpers: PromptInputHelpers, ...rest: [speculationAccept?: undefined, options?: {
     fromKeybinding?: boolean;
+    deferUntilTurnEnd?: boolean;
   }]) => void;
   /** Set to false to disable command keybindings (e.g., when a dialog is open) */
   isActive?: boolean;
