@@ -3152,6 +3152,7 @@ export function REPL({
   }, options?: {
     fromKeybinding?: boolean;
     deferUntilTurnEnd?: boolean;
+    historyInput?: string;
   }) => {
     // Re-pin scroll to bottom on submit so the user always sees the new
     // exchange (matches OpenCode's auto-scroll behavior).
@@ -3331,8 +3332,9 @@ export function REPL({
     // so notifications and already-queued user input won't be added to history here.
     // Skip history for keybinding-triggered commands (user didn't type the command).
     if (!options?.fromKeybinding) {
+      const inputForHistory = options?.historyInput ?? input;
       addToHistory({
-        display: speculationAccept ? input : prependModeCharacterToInput(input, inputMode),
+        display: speculationAccept ? input : prependModeCharacterToInput(inputForHistory, inputMode),
         pastedContents: speculationAccept ? {} : pastedContents
       });
       // Add the just-submitted command to the front of the ghost-text
