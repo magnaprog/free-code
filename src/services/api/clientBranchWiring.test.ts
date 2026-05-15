@@ -42,31 +42,31 @@ function recordCapture(name: string) {
 }
 
 const stubAnthropic = recordCapture('Anthropic')
-class StubAPIError extends Error {
-  status?: number
-  constructor(status?: number, _err?: unknown, message = '') {
-    super(message)
-    this.status = status
-  }
-}
-class StubAnthropicError extends Error {}
 
+// Enumerate every SDK error class downstream code imports. Bun's
+// mock.module replaces the module at import-resolution time and
+// reads its exports statically, so a Proxy-based dynamic stub
+// cannot satisfy named imports. If the SDK ever adds a new error
+// class that the rest of the codebase imports, the test will fail
+// fast with a clear "Export named 'Foo' not found" message — easier
+// to debug than a Proxy that silently returns the wrong shape.
+const ErrorClass = (): typeof Error => class extends Error {}
 mock.module('@anthropic-ai/sdk', () => ({
   default: stubAnthropic,
   Anthropic: stubAnthropic,
-  APIError: StubAPIError,
-  APIUserAbortError: class extends Error {},
-  APIConnectionError: class extends Error {},
-  APIConnectionTimeoutError: class extends Error {},
-  AuthenticationError: class extends Error {},
-  PermissionDeniedError: class extends Error {},
-  NotFoundError: class extends Error {},
-  ConflictError: class extends Error {},
-  UnprocessableEntityError: class extends Error {},
-  RateLimitError: class extends Error {},
-  BadRequestError: class extends Error {},
-  InternalServerError: class extends Error {},
-  AnthropicError: StubAnthropicError,
+  APIError: ErrorClass(),
+  APIUserAbortError: ErrorClass(),
+  APIConnectionError: ErrorClass(),
+  APIConnectionTimeoutError: ErrorClass(),
+  AuthenticationError: ErrorClass(),
+  PermissionDeniedError: ErrorClass(),
+  NotFoundError: ErrorClass(),
+  ConflictError: ErrorClass(),
+  UnprocessableEntityError: ErrorClass(),
+  RateLimitError: ErrorClass(),
+  BadRequestError: ErrorClass(),
+  InternalServerError: ErrorClass(),
+  AnthropicError: ErrorClass(),
 }))
 mock.module('@anthropic-ai/bedrock-sdk', () => ({
   AnthropicBedrock: recordCapture('AnthropicBedrock'),
