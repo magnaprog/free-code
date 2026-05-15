@@ -81,7 +81,7 @@ describe('direct Anthropic unix-socket routing gate', () => {
     expect(routesToProdAnthropicAPI('https://api.anthropic.com:443')).toBe(true)
   })
 
-  test('rejects staging, custom, insecure, and malformed base URLs', () => {
+  test('rejects staging, custom, insecure, credential-bearing, and malformed base URLs', () => {
     expect(routesToProdAnthropicAPI('https://api-staging.anthropic.com')).toBe(false)
     expect(routesToProdAnthropicAPI('https://proxy.example/anthropic')).toBe(false)
     expect(routesToProdAnthropicAPI('http://api.anthropic.com')).toBe(false)

@@ -21,11 +21,7 @@ export function getAPIProviderForStatsig(): AnalyticsMetadata_I_VERIFIED_THIS_IS
 }
 
 const ANTHROPIC_API_HOST = 'api.anthropic.com'
-const ANTHROPIC_API_HOSTS = [ANTHROPIC_API_HOST] as const
-const ANTHROPIC_API_HOSTS_WITH_STAGING = [
-  ANTHROPIC_API_HOST,
-  'api-staging.anthropic.com',
-] as const
+const ANTHROPIC_STAGING_API_HOST = 'api-staging.anthropic.com'
 
 export function isHttpsAnthropicApiBaseUrl(
   baseUrl: string,
@@ -33,15 +29,15 @@ export function isHttpsAnthropicApiBaseUrl(
 ): boolean {
   try {
     const url = new URL(baseUrl)
-    const allowedHosts = allowStaging
-      ? ANTHROPIC_API_HOSTS_WITH_STAGING
-      : ANTHROPIC_API_HOSTS
+    const isAllowedHost =
+      url.hostname === ANTHROPIC_API_HOST ||
+      (allowStaging && url.hostname === ANTHROPIC_STAGING_API_HOST)
     return (
       url.protocol === 'https:' &&
       url.port === '' &&
       url.username === '' &&
       url.password === '' &&
-      allowedHosts.includes(url.hostname)
+      isAllowedHost
     )
   } catch {
     return false

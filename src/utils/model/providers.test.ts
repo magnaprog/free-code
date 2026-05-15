@@ -39,7 +39,7 @@ describe('isFirstPartyAnthropicBaseUrl', () => {
     expect(isFirstPartyAnthropicBaseUrl()).toBe(true)
   })
 
-  test('rejects insecure, custom, non-default-port, and malformed URLs', () => {
+  test('rejects insecure, custom, credential-bearing, and malformed URLs', () => {
     process.env.ANTHROPIC_BASE_URL = 'http://api.anthropic.com'
     expect(isFirstPartyAnthropicBaseUrl()).toBe(false)
 
