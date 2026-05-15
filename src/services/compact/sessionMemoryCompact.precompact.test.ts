@@ -11,6 +11,7 @@ import type { AgentId } from '../../types/ids.js'
 import type { Message } from '../../types/message.js'
 
 const originalSmCompact = process.env.ENABLE_CLAUDE_CODE_SM_COMPACT
+const originalApiKey = process.env.ANTHROPIC_API_KEY
 
 mock.module('../analytics/growthbook.js', () => ({
   checkGate_CACHED_OR_BLOCKING: async () => false,
@@ -66,6 +67,13 @@ const message = {
 describe('session-memory PreCompact results', () => {
   beforeEach(() => {
     process.env.ENABLE_CLAUDE_CODE_SM_COMPACT = 'true'
+    // getMainLoopModel() reaches isMaxSubscriber() → getAnthropicApiKeyWithSource()
+    // which throws when no Anthropic credential is present. The test does not
+    // hit a real API; the fake key just satisfies the auth precondition so the
+    // model-resolution call returns instead of throwing through the catch.
+    if (!process.env.ANTHROPIC_API_KEY) {
+      process.env.ANTHROPIC_API_KEY = 'sk-test-placeholder'
+    }
     resetSessionMemoryCompactConfig()
   })
 
@@ -75,6 +83,11 @@ describe('session-memory PreCompact results', () => {
       delete process.env.ENABLE_CLAUDE_CODE_SM_COMPACT
     } else {
       process.env.ENABLE_CLAUDE_CODE_SM_COMPACT = originalSmCompact
+    }
+    if (originalApiKey === undefined) {
+      delete process.env.ANTHROPIC_API_KEY
+    } else {
+      process.env.ANTHROPIC_API_KEY = originalApiKey
     }
   })
 
