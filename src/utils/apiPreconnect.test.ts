@@ -4,16 +4,45 @@ import {
   preconnectAnthropicApi,
 } from './apiPreconnect.js'
 
-const originalEnv = {
-  CLAUDE_CODE_USE_OPENAI: process.env.CLAUDE_CODE_USE_OPENAI,
-  CLAUDE_CODE_USE_OPENCODE_GO: process.env.CLAUDE_CODE_USE_OPENCODE_GO,
-  CLAUDE_CODE_USE_BEDROCK: process.env.CLAUDE_CODE_USE_BEDROCK,
-  CLAUDE_CODE_USE_VERTEX: process.env.CLAUDE_CODE_USE_VERTEX,
-  CLAUDE_CODE_USE_FOUNDRY: process.env.CLAUDE_CODE_USE_FOUNDRY,
-  CLAUDE_CODE_CUSTOM_OAUTH_URL: process.env.CLAUDE_CODE_CUSTOM_OAUTH_URL,
-  ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL,
-}
+const providerEnvKeys = [
+  'CLAUDE_CODE_USE_OPENAI',
+  'CLAUDE_CODE_USE_OPENCODE_GO',
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CODE_USE_FOUNDRY',
+] as const
+
+const preconnectSkipEnvKeys = [
+  'HTTPS_PROXY',
+  'https_proxy',
+  'HTTP_PROXY',
+  'http_proxy',
+  'ANTHROPIC_UNIX_SOCKET',
+  'CLAUDE_CODE_CLIENT_CERT',
+  'CLAUDE_CODE_CLIENT_KEY',
+] as const
+
+const trackedEnvKeys = [
+  ...providerEnvKeys,
+  ...preconnectSkipEnvKeys,
+  'CLAUDE_CODE_CUSTOM_OAUTH_URL',
+  'ANTHROPIC_BASE_URL',
+] as const
+
+const originalEnv = Object.fromEntries(
+  trackedEnvKeys.map(key => [key, process.env[key]]),
+)
 const originalFetch = globalThis.fetch
+
+function clearEnv(keys: readonly string[]): void {
+  for (const key of keys) delete process.env[key]
+}
+
+function useFirstPartyApiBaseUrl(): void {
+  clearEnv(providerEnvKeys)
+  clearEnv(preconnectSkipEnvKeys)
+  process.env.ANTHROPIC_BASE_URL = 'https://api.anthropic.com'
+}
 
 beforeEach(() => {
   // preconnect latches `fired = true` on first call. Reset before every
@@ -45,13 +74,7 @@ describe('preconnectAnthropicApi', () => {
   })
 
   test('warms the explicit ANTHROPIC_BASE_URL on the first-party path', () => {
-    // Clear any provider flag so getAPIProvider() returns 'firstParty'.
-    delete process.env.CLAUDE_CODE_USE_OPENAI
-    delete process.env.CLAUDE_CODE_USE_OPENCODE_GO
-    delete process.env.CLAUDE_CODE_USE_BEDROCK
-    delete process.env.CLAUDE_CODE_USE_VERTEX
-    delete process.env.CLAUDE_CODE_USE_FOUNDRY
-    process.env.ANTHROPIC_BASE_URL = 'https://api.anthropic.com'
+    useFirstPartyApiBaseUrl()
 
     let observedUrl: string | undefined
     globalThis.fetch = ((input: unknown) => {
@@ -64,12 +87,7 @@ describe('preconnectAnthropicApi', () => {
   })
 
   test('second call within a session is a no-op (fired latch)', () => {
-    delete process.env.CLAUDE_CODE_USE_OPENAI
-    delete process.env.CLAUDE_CODE_USE_OPENCODE_GO
-    delete process.env.CLAUDE_CODE_USE_BEDROCK
-    delete process.env.CLAUDE_CODE_USE_VERTEX
-    delete process.env.CLAUDE_CODE_USE_FOUNDRY
-    process.env.ANTHROPIC_BASE_URL = 'https://api.anthropic.com'
+    useFirstPartyApiBaseUrl()
 
     let fetchCallCount = 0
     globalThis.fetch = (() => {
