@@ -2618,7 +2618,7 @@ async function persistBlobToTextBlock(
   serverName: string,
   sourceDescription: string,
 ): Promise<Array<ContentBlockParam>> {
-  const persistId = `mcp-${normalizeNameForMCP(serverName)}-blob-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const persistId = `mcp-${normalizeNameForMCP(serverName)}-blob-${Date.now()}-${randomUUID()}`
   const result = await persistBinaryContent(bytes, mimeType, persistId)
 
   if ('error' in result) {
@@ -2811,11 +2811,10 @@ export async function processMCPResult(
   } as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS)
 
   // Index the persisted MCP output so ContextRecall sees it alongside
-  // regular tool-result artifacts. tool_use_id format for MCP is
-  // `mcp-<server>-<tool>-<timestamp>`; toolName for the artifact ref is
-  // the synthetic mcp__server__tool surface (matches how MCP tool names
-  // are normalized elsewhere in the codebase). Gated by feature flag.
-  const mcpArtifactToolName = `mcp__${normalizeNameForMCP(name)}__${normalizeNameForMCP(tool)}`
+  // regular tool-result artifacts. Use buildMcpToolName so the toolName
+  // recorded in the artifact matches the canonical mcp__server__tool
+  // surface used everywhere else in the codebase.
+  const mcpArtifactToolName = buildMcpToolName(name, tool)
   await recordToolResultArtifact({
     toolUseId: persistId,
     toolName: mcpArtifactToolName,

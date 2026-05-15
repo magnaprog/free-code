@@ -699,11 +699,15 @@ async function translateChatStreamToAnthropic(
                       partial_json: entry.arguments,
                     },
                   })
+                  // Pre-name buffer replayed; drop the buffer so a long
+                  // stream doesn't grow `entry.arguments` linearly with
+                  // every subsequent chunk for no benefit.
+                  entry.arguments = ''
                 }
               }
               if (typeof fn?.arguments === 'string' && fn.arguments) {
                 if (entry.started) {
-                  entry.arguments += fn.arguments
+                  // Forwarded immediately; no need to retain in the entry.
                   enqueue('content_block_delta', {
                     type: 'content_block_delta',
                     index: entry.localIndex,
@@ -713,7 +717,7 @@ async function translateChatStreamToAnthropic(
                     },
                   })
                 } else {
-                  // Buffer; replay when block is started.
+                  // Buffer until block can start (name still missing).
                   entry.arguments += fn.arguments
                 }
               }

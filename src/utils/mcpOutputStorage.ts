@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto'
 import { writeFile } from 'fs/promises'
 import { join } from 'path'
 import {
@@ -5,10 +6,14 @@ import {
   logEvent,
 } from '../services/analytics/index.js'
 import type { MCPResultType } from '../services/mcp/client.js'
-import { toError } from './errors.js'
+import { getErrnoCode, toError } from './errors.js'
 import { formatFileSize } from './format.js'
 import { logError } from './log.js'
-import { ensureToolResultsDir, getToolResultsDir } from './toolResultStorage.js'
+import {
+  ensureToolResultsDir,
+  getToolResultsDir,
+  safeFilenameFromToolUseId,
+} from './toolResultStorage.js'
 
 /**
  * Generates a format description string based on the MCP result type and schema.
@@ -152,14 +157,37 @@ export async function persistBinaryContent(
 ): Promise<PersistBinaryResult> {
   await ensureToolResultsDir()
   const ext = extensionForMimeType(mimeType)
-  const filepath = join(getToolResultsDir(), `${persistId}.${ext}`)
 
+  // Round 8: route through safeFilenameFromToolUseId so a malicious
+  // persistId cannot escape the tool-results dir, AND distinct raw IDs
+  // produce distinct filenames. Combined with `wx` write below, this
+  // closes the silent-overwrite-on-collision gap the default write flag
+  // had.
+  const buildPath = (id: string): string =>
+    join(getToolResultsDir(), `${safeFilenameFromToolUseId(id)}.${ext}`)
+
+  let filepath = buildPath(persistId)
   try {
-    await writeFile(filepath, bytes)
+    await writeFile(filepath, bytes, { flag: 'wx' })
   } catch (error) {
-    const err = toError(error)
-    logError(err)
-    return { error: err.message }
+    if (getErrnoCode(error) === 'EEXIST') {
+      // Binary persistence is NOT replay-idempotent — every call comes
+      // from a fresh MCP invocation. On collision, retry once with a
+      // disambiguating UUID suffix on the raw ID before sanitization.
+      const retryId = `${persistId}-${randomUUID()}`
+      filepath = buildPath(retryId)
+      try {
+        await writeFile(filepath, bytes, { flag: 'wx' })
+      } catch (retryError) {
+        const err = toError(retryError)
+        logError(err)
+        return { error: err.message }
+      }
+    } else {
+      const err = toError(error)
+      logError(err)
+      return { error: err.message }
+    }
   }
 
   // mime type and extension are safe fixed-vocabulary strings (not paths/code)

@@ -385,18 +385,24 @@ export async function getAnthropicClient({
       //
       // Header-merge gotcha: the SDK applies defaultHeaders AFTER
       // authHeaders (see @anthropic-ai/sdk/src/client.ts:984-985), so a
-      // stray `Authorization` populated by configureApiKeyHeaders (from
-      // ANTHROPIC_AUTH_TOKEN or the api-key helper) would override the
-      // SDK's Bearer derived from authToken. Build a copy of ARGS that
-      // pins `Authorization` to the OpenCode key so the request really
-      // carries the OpenCode credential and no stray Anthropic token
-      // leaks to the OpenCode gateway.
+      // stray `Authorization` or `x-api-key` populated by
+      // configureApiKeyHeaders, the api-key helper, or
+      // ANTHROPIC_CUSTOM_HEADERS would override the SDK's headers
+      // derived from apiKey/authToken and leak an Anthropic credential
+      // to the OpenCode gateway. Round 8: strip any inherited auth
+      // headers case-insensitively, then explicitly pin BOTH the Bearer
+      // (per OpenCode docs) and X-Api-Key (Anthropic Messages
+      // convention) to the OpenCode key.
       const anthropicBaseUrl = getOpenCodeAnthropicBaseUrl()
+      const filteredInheritedHeaders = stripInheritedAuthHeaders(
+        ARGS.defaultHeaders ?? {},
+      )
       const argsForOpenCode = {
         ...ARGS,
         defaultHeaders: {
-          ...(ARGS.defaultHeaders ?? {}),
+          ...filteredInheritedHeaders,
           Authorization: `Bearer ${openCodeGoApiKey}`,
+          'X-Api-Key': openCodeGoApiKey,
         },
       }
       const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
@@ -499,6 +505,27 @@ async function configureApiKeyHeaders(
   if (token) {
     headers['Authorization'] = `Bearer ${token}`
   }
+}
+
+/**
+ * Round 8: when routing to a non-Anthropic backend that needs its own
+ * credentials (currently OpenCode Zen), inherited defaultHeaders may
+ * carry `Authorization` or `x-api-key` set by `configureApiKeyHeaders`,
+ * the api-key helper, or `ANTHROPIC_CUSTOM_HEADERS`. Spreading those
+ * into the backend's client config would either leak the Anthropic
+ * credential to the gateway or get the wrong key picked up by SDK
+ * header dedup. Strip them case-insensitively before re-pinning the
+ * backend's own credentials.
+ */
+function stripInheritedAuthHeaders(
+  headers: Record<string, string>,
+): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(headers)) {
+    if (/^(authorization|x-api-key)$/i.test(key)) continue
+    out[key] = value
+  }
+  return out
 }
 
 function getCustomHeaders(): Record<string, string> {

@@ -3,7 +3,7 @@
  */
 
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import { mkdir, writeFile } from 'fs/promises'
 import { basename, dirname, join } from 'path'
 import {
@@ -167,11 +167,31 @@ export function sanitizeToolResultId(id: string): string {
 }
 
 /**
+ * Produce a collision-resistant filename component from a raw ID. The
+ * sanitizer alone collapses distinct inputs to the same string (`a/b`
+ * and `a:b` both → `a_b`); combined with persistToolResult's `wx`-flag
+ * EEXIST-as-success path that would silently alias the second write to
+ * the first file's content. We append a short deterministic sha256
+ * suffix so distinct raw IDs always produce distinct filenames while
+ * preserving replay-idempotency (same raw ID → same filename → same
+ * EEXIST-success behavior on retry).
+ *
+ * 64-bit (≈11 char base64url) suffix is sufficient: at 1B persisted
+ * tool results, P(any collision) is ≈ 2.7×10⁻². At realistic session
+ * sizes (≤10K) the probability is ≈ 2.7×10⁻¹⁶.
+ */
+export function safeFilenameFromToolUseId(rawId: string): string {
+  const prefix = sanitizeToolResultId(rawId).slice(0, 32)
+  const hash = createHash('sha256').update(rawId).digest('base64url').slice(0, 11)
+  return `${prefix}-${hash}`
+}
+
+/**
  * Get the filepath where a tool result would be persisted.
  */
 export function getToolResultPath(id: string, isJson: boolean): string {
   const ext = isJson ? 'json' : 'txt'
-  return join(getToolResultsDir(), `${sanitizeToolResultId(id)}.${ext}`)
+  return join(getToolResultsDir(), `${safeFilenameFromToolUseId(id)}.${ext}`)
 }
 
 /**

@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test'
-import { sanitizeToolResultId } from './toolResultStorage.js'
+import {
+  safeFilenameFromToolUseId,
+  sanitizeToolResultId,
+} from './toolResultStorage.js'
 
 describe('sanitizeToolResultId', () => {
   // Codex follow-up: path traversal defense for tool_use_id used as
@@ -44,5 +47,58 @@ describe('sanitizeToolResultId', () => {
     // mostly fires on the empty-string case rather than via stripping.
     const result = sanitizeToolResultId('')
     expect(result.startsWith('toolu_anon_')).toBe(true)
+  })
+})
+
+describe('safeFilenameFromToolUseId', () => {
+  // Round 8: distinct raw IDs must produce distinct filenames even when
+  // the sanitizer alone would collapse them. Without this, persistToolResult's
+  // `wx + EEXIST = success` behavior would silently alias the second
+  // write to the first file's content (data corruption).
+  test('distinct IDs that collapse under sanitization map to distinct filenames', () => {
+    const a = safeFilenameFromToolUseId('a/b')
+    const b = safeFilenameFromToolUseId('a:b')
+    const c = safeFilenameFromToolUseId('a\\b')
+    const d = safeFilenameFromToolUseId('a;b')
+    // Sanitizer alone: all four → 'a_b'. Hash suffix keeps them distinct.
+    expect(a).not.toBe(b)
+    expect(b).not.toBe(c)
+    expect(c).not.toBe(d)
+    expect(a).not.toBe(d)
+  })
+
+  test('same raw ID always produces the same filename (replay idempotent)', () => {
+    expect(safeFilenameFromToolUseId('toolu_01ABC')).toBe(
+      safeFilenameFromToolUseId('toolu_01ABC'),
+    )
+    expect(safeFilenameFromToolUseId('mcp-server-tool-xyz')).toBe(
+      safeFilenameFromToolUseId('mcp-server-tool-xyz'),
+    )
+  })
+
+  test('preserves readable sanitized prefix before the hash suffix', () => {
+    const name = safeFilenameFromToolUseId('toolu_01ABC')
+    // Prefix is the sanitizer output truncated to ≤32 chars; then `-`;
+    // then 11 base64url hash chars. So the name starts with the
+    // sanitized prefix.
+    expect(name.startsWith('toolu_01ABC-')).toBe(true)
+  })
+
+  test('truncates very long IDs but keeps them distinct via hash', () => {
+    const long = 'a'.repeat(100)
+    const longPlusOne = 'a'.repeat(100) + 'b'
+    const name1 = safeFilenameFromToolUseId(long)
+    const name2 = safeFilenameFromToolUseId(longPlusOne)
+    // Prefix is capped at 32 chars so the prefixes match; the hash
+    // suffix differs.
+    expect(name1).not.toBe(name2)
+  })
+
+  test('hash suffix is filesystem-safe (no /, +, =, or path chars)', () => {
+    const name = safeFilenameFromToolUseId('any-input-value-here')
+    // base64url uses [A-Za-z0-9_-]; no /, +, = expected.
+    expect(name).not.toContain('/')
+    expect(name).not.toContain('+')
+    expect(name).not.toContain('=')
   })
 })
