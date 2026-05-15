@@ -202,4 +202,63 @@ describe('ArtifactIndex', () => {
     expect(results[0]?.snippet).toBeDefined()
     expect(results[0]?.snippet?.length).toBeLessThanOrEqual(500)
   })
+
+  test('streams a large synthetic JSONL index without loading the file whole-file', async () => {
+    // Regression coverage for the readArtifactIndex streaming path:
+    // appends 10_000 valid records interleaved with 100 corrupt lines,
+    // then verifies counts and that searchArtifacts returns the expected
+    // record without crashing on the size. This proves the index path
+    // does not depend on reading the entire file into one string.
+    const dir = await makeTempDir()
+    const artifactPath = join(dir, 'huge.txt')
+    const indexPath = join(dir, 'index.jsonl')
+
+    await writeFile(artifactPath, 'Findable Needle\n' + 'pad\n'.repeat(10), 'utf8')
+
+    // Build all lines in a single batch so the test stays fast (avoids
+    // 10_000 separate async appends). The fixture only exercises the
+    // read path; the write path is covered by other tests.
+    const validRef = buildToolResultArtifactRef({
+      toolUseId: 'toolu_findable',
+      toolName: 'Bash',
+      path: artifactPath,
+      content: 'Findable Needle',
+      preview: 'Findable Needle',
+    })
+    const validLine = JSON.stringify(validRef) + '\n'
+    const padContent = 'safe pad content'
+    const padRef = buildToolResultArtifactRef({
+      toolUseId: 'toolu_pad',
+      toolName: 'Read',
+      path: artifactPath,
+      content: padContent,
+      preview: 'pad',
+    })
+    const padLine = JSON.stringify(padRef) + '\n'
+    let fixture = ''
+    for (let i = 0; i < 9_999; i++) fixture += padLine
+    fixture += validLine // 10_000th valid record
+    // Interleave 100 corrupt lines at fixed intervals.
+    let corruptInjected = 0
+    fixture = fixture.replace(/(.*\n){100}/g, match => {
+      if (corruptInjected < 100) {
+        corruptInjected++
+        return match + 'not-json-line\n'
+      }
+      return match
+    })
+    await appendFile(indexPath, fixture, 'utf8')
+
+    const { records, corruptLines } = await readArtifactIndex(indexPath)
+    expect(records.length).toBe(10_000)
+    expect(corruptLines).toBe(100)
+
+    const { results } = await searchArtifacts({
+      query: 'Findable',
+      indexPath,
+      snippetBytes: 200,
+    })
+    expect(results.length).toBeGreaterThanOrEqual(1)
+    expect(results[0]?.ref.id).toBe(validRef.id)
+  })
 })

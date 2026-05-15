@@ -1,6 +1,8 @@
 import { createHash } from 'crypto'
-import { appendFile, mkdir, open, readFile, realpath } from 'fs/promises'
+import { createReadStream } from 'fs'
+import { appendFile, mkdir, open, realpath } from 'fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'path'
+import { createInterface } from 'readline'
 import { getTranscriptPath } from '../../utils/sessionStorage.js'
 import { isFsInaccessible } from '../../utils/errors.js'
 import { redactSecrets } from '../../utils/redaction.js'
@@ -91,27 +93,37 @@ export async function appendArtifactRecord(
 export async function readArtifactIndex(
   indexPath = getArtifactIndexPath(),
 ): Promise<{ records: ContextArtifactRef[]; corruptLines: number }> {
-  let raw: string
+  // Stream the JSONL index line-by-line so the parse phase never holds
+  // 2x the file size in memory (raw string + array of slice copies).
+  // Peak memory after parse is dominated by the records array; the
+  // raw bytes pass through small chunks and are GC'd.
+  // Contract preserved from the prior readFile + split implementation:
+  //   - Missing file (ENOENT) returns empty records, 0 corrupt.
+  //   - Blank lines are skipped (not counted as corrupt).
+  //   - Lines failing JSON.parse OR isContextArtifactRef → corruptLines++.
+  //   - Records returned in append order (duplicates preserved).
+  const records: ContextArtifactRef[] = []
+  let corruptLines = 0
+  const stream = createReadStream(indexPath, { encoding: 'utf8' })
+  const lines = createInterface({ input: stream, crlfDelay: Infinity })
   try {
-    raw = await readFile(indexPath, 'utf8')
+    for await (const line of lines) {
+      if (!line.trim()) continue
+      try {
+        const parsed = JSON.parse(line) as unknown
+        if (isContextArtifactRef(parsed)) records.push(parsed)
+        else corruptLines++
+      } catch {
+        corruptLines++
+      }
+    }
   } catch (error) {
     if ((error as { code?: string }).code === 'ENOENT') {
       return { records: [], corruptLines: 0 }
     }
     throw error
-  }
-
-  const records: ContextArtifactRef[] = []
-  let corruptLines = 0
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue
-    try {
-      const parsed = JSON.parse(line) as unknown
-      if (isContextArtifactRef(parsed)) records.push(parsed)
-      else corruptLines++
-    } catch {
-      corruptLines++
-    }
+  } finally {
+    stream.destroy()
   }
   return { records, corruptLines }
 }
