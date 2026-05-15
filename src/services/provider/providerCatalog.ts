@@ -91,8 +91,13 @@ export function createOpenAIChatCompletionsCapabilities(): ProviderCapabilities 
     supportsNativeCompaction: false,
     supportsCacheEdits: false,
     supportsTokenCounting: false,
+    // M18: many chat-completions gateways (especially local/Ollama-style
+    // template renderers) require alternating user/assistant roles.
+    // Default true; per-gateway override possible when a profile is wired
+    // through the resolver (the adapter itself now coalesces unconditionally,
+    // so this flag mostly informs capability reporting).
     requiresStrictJsonSchema: false,
-    requiresAlternatingRoles: false,
+    requiresAlternatingRoles: true,
     acceptsToolResultBlocks: true,
     maxContextTokens: DEFAULT_PROVIDER_CONTEXT_TOKENS,
     maxOutputTokens: DEFAULT_PROVIDER_OUTPUT_TOKENS,

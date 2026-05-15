@@ -44,8 +44,11 @@ import { createBedrockConverseFetch } from './bedrock-converse-fetch-adapter.js'
 import { createOpenAIChatCompletionsFetch } from './openai-chat-completions-fetch-adapter.js'
 import { getRequiredNonClaudeAdapterForModel } from '../../utils/model/providerCapabilities.js'
 import {
+  getOpenCodeAnthropicBaseUrl,
   getOpenCodeGoApiKey,
   getOpenCodeGoBaseUrl,
+  getOpenCodeGoModel,
+  getOpenCodeTransportForModel,
   isOpenCodeGoEnabled,
 } from '../provider/openCodeGo.js'
 
@@ -338,6 +341,90 @@ export async function getAnthropicClient({
     return new AnthropicVertex(vertexArgs) as unknown as Anthropic
   }
 
+  // B5: explicit OpenCode Zen flag wins over OpenAI key. Previously a
+  // lingering `OPENAI_API_KEY` in the shell silently shadowed the explicit
+  // `CLAUDE_CODE_USE_OPENCODE_GO=1` selection because the OpenAI Responses
+  // branch was evaluated first. Reordered: OpenCode is checked first when
+  // its flag is set.
+  //
+  // B14: per-model transport routing. OpenCode Zen routes Claude → /messages,
+  // GPT → /responses, Gemini → /models/{id}, others → /chat/completions.
+  // The previous single-adapter implementation forced everything through
+  // /chat/completions, sending Claude/GPT/Gemini requests to the wrong
+  // endpoint.
+  if (getAPIProvider() === 'openai' && isOpenCodeGoEnabled()) {
+    const openCodeGoApiKey = getOpenCodeGoApiKey()
+    if (!openCodeGoApiKey) {
+      throw new Error(
+        'OpenCode Zen requires OPENCODE_API_KEY, OPENCODE_GO_API_KEY, or FREE_CODE_OPENCODE_GO_API_KEY',
+      )
+    }
+    const effectiveModel = model || getOpenCodeGoModel()
+    if (!effectiveModel) {
+      throw new Error(
+        'OpenCode Zen requires OPENCODE_MODEL, OPENCODE_GO_MODEL, FREE_CODE_OPENCODE_GO_MODEL, or OPENAI_MODEL',
+      )
+    }
+    const transport = getOpenCodeTransportForModel(effectiveModel)
+
+    if (transport === 'gemini_native') {
+      throw new Error(
+        `OpenCode Zen gemini-* models route to /models/{id} which is not yet supported. ` +
+          `Use a chat-completions model (qwen/kimi/glm/minimax/deepseek), Claude model, or GPT model instead.`,
+      )
+    }
+
+    if (transport === 'anthropic_messages') {
+      // Claude through OpenCode → /v1/messages. Anthropic SDK appends
+      // /v1/messages itself, so strip the trailing /v1 from the canonical
+      // OpenCode base URL.
+      //
+      // OpenCode's gateway authenticates via `Authorization: Bearer`.
+      // Send via `authToken` so the SDK emits that header; also pass the
+      // same value as `apiKey` because the SDK still uses `x-api-key` as
+      // a backup credential signal in some envelopes. Both headers carry
+      // the same OpenCode API key — gateway accepts whichever it parses.
+      const anthropicBaseUrl = getOpenCodeAnthropicBaseUrl()
+      const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
+        apiKey: openCodeGoApiKey,
+        authToken: openCodeGoApiKey,
+        baseURL: anthropicBaseUrl,
+        ...ARGS,
+        ...(isDebugToStdErr() && { logger: createStderrLogger() }),
+      }
+      return new Anthropic(clientConfig)
+    }
+
+    if (transport === 'openai_responses') {
+      // GPT through OpenCode → /responses.
+      const openAIFetch = createOpenAIResponsesFetch(
+        openCodeGoApiKey,
+        getOpenCodeGoBaseUrl(),
+      )
+      const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
+        apiKey: 'opencode-zen-placeholder',
+        ...ARGS,
+        fetch: openAIFetch as unknown as typeof globalThis.fetch,
+        ...(isDebugToStdErr() && { logger: createStderrLogger() }),
+      }
+      return new Anthropic(clientConfig)
+    }
+
+    // Default: openai_chat_completions for qwen/kimi/glm/minimax/deepseek.
+    const openCodeGoFetch = createOpenAIChatCompletionsFetch(openCodeGoApiKey, {
+      baseUrl: getOpenCodeGoBaseUrl(),
+      authHeader: 'Authorization',
+      authScheme: 'bearer',
+    })
+    const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
+      apiKey: 'opencode-zen-placeholder',
+      ...ARGS,
+      fetch: openCodeGoFetch as unknown as typeof globalThis.fetch,
+      ...(isDebugToStdErr() && { logger: createStderrLogger() }),
+    }
+    return new Anthropic(clientConfig)
+  }
+
   // Prefer explicit OpenAI API keys over ChatGPT Codex OAuth when both exist.
   if (getAPIProvider() === 'openai' && process.env.OPENAI_API_KEY) {
     const openAIFetch = createOpenAIResponsesFetch(process.env.OPENAI_API_KEY)
@@ -345,27 +432,6 @@ export async function getAnthropicClient({
       apiKey: 'openai-placeholder',
       ...ARGS,
       fetch: openAIFetch as unknown as typeof globalThis.fetch,
-      ...(isDebugToStdErr() && { logger: createStderrLogger() }),
-    }
-    return new Anthropic(clientConfig)
-  }
-
-  if (getAPIProvider() === 'openai' && isOpenCodeGoEnabled()) {
-    const openCodeGoApiKey = getOpenCodeGoApiKey()
-    if (!openCodeGoApiKey) {
-      throw new Error(
-        'OpenCode Go requires OPENCODE_API_KEY, OPENCODE_GO_API_KEY, or FREE_CODE_OPENCODE_GO_API_KEY',
-      )
-    }
-    const openCodeGoFetch = createOpenAIChatCompletionsFetch(openCodeGoApiKey, {
-      baseUrl: getOpenCodeGoBaseUrl(),
-      authHeader: 'Authorization',
-      authScheme: 'bearer',
-    })
-    const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
-      apiKey: 'opencode-go-placeholder',
-      ...ARGS,
-      fetch: openCodeGoFetch as unknown as typeof globalThis.fetch,
       ...(isDebugToStdErr() && { logger: createStderrLogger() }),
     }
     return new Anthropic(clientConfig)

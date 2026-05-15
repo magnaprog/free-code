@@ -1,5 +1,22 @@
+import { randomUUID } from 'crypto'
 import { normalizeOpenCodeGoModel } from '../provider/openCodeGo.js'
 import { redactSecrets } from '../../utils/redaction.js'
+import { logEvent } from '../analytics/index.js'
+
+// B6: Date.now() has millisecond resolution; concurrent requests collide.
+// Use crypto.randomUUID() for stable per-request IDs.
+function generateMessageId(): string {
+  return `msg_chat_${randomUUID()}`
+}
+
+// M3: cap raw image bytes routed through the data-URI inflation path.
+// 1MB warn / 5MB hard reject. Base64 inflates by ~1.37x, plus JSON framing.
+const IMAGE_WARN_BYTES = 1_000_000
+const IMAGE_REJECT_BYTES = 5_000_000
+
+// M13: cap raw provider error bodies so they cannot smuggle arbitrarily
+// large prompt echoes back through the error channel.
+const MAX_ERROR_BODY_CHARS = 1_000
 
 type AnthropicContentBlock = {
   type: string
@@ -80,7 +97,12 @@ function contentBlocksToText(blocks: AnthropicContentBlock[]): string {
         if (typeof block.content === 'string') return block.content
         if (Array.isArray(block.content)) return contentBlocksToText(block.content)
       }
-      if (block.type === 'image') return '[Image attached]'
+      if (block.type === 'image') {
+        // M2: emit telemetry so callers can detect when image context is
+        // discarded (Chat Completions does not support images in tool role).
+        logEvent('chat_completions_image_dropped_from_tool_result', {})
+        return '[Image attached]'
+      }
       return ''
     })
     .filter(Boolean)
@@ -100,6 +122,25 @@ function contentBlocksToUserContent(
       block.source.media_type &&
       block.source.data
     ) {
+      // M3: guard against image base64 inflation. Reject anything past
+      // hard cap; warn near the soft cap. Base64-decoded byte length is
+      // ~3/4 of the string length.
+      const decodedBytes = Math.floor((block.source.data.length * 3) / 4)
+      if (decodedBytes > IMAGE_REJECT_BYTES) {
+        logEvent('chat_completions_image_rejected_too_large', {
+          decodedBytes,
+        })
+        // Drop the image but keep a marker so the model knows something
+        // was elided rather than silently disappearing context.
+        content.push({
+          type: 'text',
+          text: `[Image dropped — exceeded ${IMAGE_REJECT_BYTES} byte limit]`,
+        })
+        continue
+      }
+      if (decodedBytes > IMAGE_WARN_BYTES) {
+        logEvent('chat_completions_image_large', { decodedBytes })
+      }
       content.push({
         type: 'image_url',
         image_url: {
@@ -116,6 +157,27 @@ function contentBlocksToUserContent(
 }
 
 function translateMessages(messages: AnthropicMessage[]): ChatMessage[] {
+  // B15: pre-scan to collect every tool_use ID emitted by an assistant
+  // message. Any user tool_result whose tool_use_id is NOT in this set
+  // is an orphan (the matching tool_use was compacted/pruned/dropped).
+  // OpenAI Chat Completions returns 400 on orphan `tool` messages, so
+  // we drop them with telemetry and convert their content to a user
+  // text block so the model still sees the information.
+  const knownToolUseIds = new Set<string>()
+  for (const msg of messages) {
+    if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue
+    for (const block of msg.content) {
+      if (block.type === 'tool_use' && block.id) {
+        knownToolUseIds.add(block.id)
+      }
+    }
+  }
+
+  // B17: track thinking-block drops for telemetry. Chat Completions
+  // does not support reasoning continuity; we drop thinking blocks and
+  // emit a single event per request so callers can see reasoning loss.
+  let thinkingBlocksDropped = 0
+
   const out: ChatMessage[] = []
   for (const msg of messages) {
     if (typeof msg.content === 'string') {
@@ -125,8 +187,17 @@ function translateMessages(messages: AnthropicMessage[]): ChatMessage[] {
     if (!Array.isArray(msg.content)) continue
 
     if (msg.role === 'user') {
-      const toolResults = msg.content.filter(block => block.type === 'tool_result')
-      for (const block of toolResults) {
+      const orphanResults: AnthropicContentBlock[] = []
+      const validResults: AnthropicContentBlock[] = []
+      for (const block of msg.content) {
+        if (block.type !== 'tool_result') continue
+        if (block.tool_use_id && knownToolUseIds.has(block.tool_use_id)) {
+          validResults.push(block)
+        } else {
+          orphanResults.push(block)
+        }
+      }
+      for (const block of validResults) {
         out.push({
           role: 'tool',
           tool_call_id: block.tool_use_id || '',
@@ -138,9 +209,39 @@ function translateMessages(messages: AnthropicMessage[]): ChatMessage[] {
                 : '',
         })
       }
-      const nonToolBlocks = msg.content.filter(block => block.type !== 'tool_result')
-      if (nonToolBlocks.length > 0) {
-        out.push({ role: 'user', content: contentBlocksToUserContent(nonToolBlocks) })
+      if (orphanResults.length > 0) {
+        logEvent('chat_completions_orphan_tool_result_dropped', {
+          dropped: orphanResults.length,
+        })
+      }
+      const nonToolBlocks = msg.content.filter(
+        block => block.type !== 'tool_result',
+      )
+      // Surface orphan tool_result content as plain user text so the
+      // model still has the information (with a marker noting the
+      // tool call is missing).
+      const orphanText = orphanResults
+        .map(block =>
+          typeof block.content === 'string'
+            ? block.content
+            : Array.isArray(block.content)
+              ? contentBlocksToText(block.content)
+              : '',
+        )
+        .filter(Boolean)
+        .join('\n')
+      const synthOrphanBlocks: AnthropicContentBlock[] =
+        orphanText.length > 0
+          ? [
+              {
+                type: 'text',
+                text: `[orphan tool_result content — matching tool_use missing from history]\n${orphanText}`,
+              },
+            ]
+          : []
+      const userBlocks = [...nonToolBlocks, ...synthOrphanBlocks]
+      if (userBlocks.length > 0) {
+        out.push({ role: 'user', content: contentBlocksToUserContent(userBlocks) })
       }
       continue
     }
@@ -150,6 +251,11 @@ function translateMessages(messages: AnthropicMessage[]): ChatMessage[] {
         .filter(block => block.type === 'text' && typeof block.text === 'string')
         .map(block => block.text)
         .join('\n')
+      // B17: count thinking blocks (silently dropped; Chat Completions
+      // has no equivalent surface for reasoning continuity).
+      for (const block of msg.content) {
+        if (block.type === 'thinking') thinkingBlocksDropped++
+      }
       const toolCalls = msg.content
         .filter(block => block.type === 'tool_use')
         .map(block => ({
@@ -167,7 +273,62 @@ function translateMessages(messages: AnthropicMessage[]): ChatMessage[] {
       })
     }
   }
+
+  if (thinkingBlocksDropped > 0) {
+    logEvent('chat_completions_thinking_blocks_dropped', {
+      dropped: thinkingBlocksDropped,
+    })
+  }
+
+  // B16: coalesce consecutive same-role messages. Strict gateways
+  // (Ollama, LM Studio, some local templates) require alternating
+  // user/assistant roles. Merge sequential user→user or assistant→
+  // assistant by joining their text content. Tool calls are preserved
+  // (assistant messages with tool_calls don't coalesce with bare text
+  // assistants — keep them distinct to avoid losing structure).
+  return coalesceConsecutiveRoles(out)
+}
+
+function coalesceConsecutiveRoles(messages: ChatMessage[]): ChatMessage[] {
+  const out: ChatMessage[] = []
+  for (const msg of messages) {
+    const prev = out[out.length - 1]
+    if (
+      prev !== undefined &&
+      prev.role === msg.role &&
+      // Don't coalesce if either message has tool_calls — preserves
+      // the assistant→tool→assistant ordering required by tool flow.
+      !prev.tool_calls &&
+      !msg.tool_calls &&
+      // tool role is per-result; never coalesce tool messages.
+      prev.role !== 'tool' &&
+      msg.role !== 'tool'
+    ) {
+      prev.content = mergeChatContent(prev.content, msg.content)
+      continue
+    }
+    out.push(msg)
+  }
   return out
+}
+
+function mergeChatContent(
+  a: ChatMessage['content'],
+  b: ChatMessage['content'],
+): ChatMessage['content'] {
+  // Both strings: join with newline.
+  if (typeof a === 'string' && typeof b === 'string') {
+    return a && b ? `${a}\n${b}` : a || b
+  }
+  // Either is array: normalize both to arrays and concat.
+  const toArray = (
+    c: ChatMessage['content'],
+  ): Array<Record<string, unknown>> => {
+    if (c === null || c === undefined) return []
+    if (typeof c === 'string') return c ? [{ type: 'text', text: c }] : []
+    return c
+  }
+  return [...toArray(a), ...toArray(b)]
 }
 
 function translateTools(tools: AnthropicTool[]): Array<Record<string, unknown>> {
@@ -176,9 +337,57 @@ function translateTools(tools: AnthropicTool[]): Array<Record<string, unknown>> 
     function: {
       name: tool.name,
       description: tool.description || '',
-      parameters: tool.input_schema || { type: 'object', properties: {} },
+      parameters: normalizeToolSchema(
+        tool.input_schema || { type: 'object', properties: {} },
+      ),
     },
   }))
+}
+
+/**
+ * B18: normalize tool input schemas for strict OpenAI-compatible
+ * gateways. Strict providers require `additionalProperties: false` and
+ * an explicit `required` array. We don't force strict mode on the
+ * request itself (that would break lenient gateways), but we DO
+ * normalize the schema shape so it works for both strict and lenient
+ * gateways. Specifically:
+ *   - All object schemas get `additionalProperties: false` if not set.
+ *   - `required` is preserved as-is (don't auto-fill: a missing
+ *     `required` means "all properties optional" in JSON Schema, which
+ *     is the Anthropic convention).
+ *
+ * Walks nested object schemas recursively (properties, items, anyOf,
+ * oneOf, allOf).
+ */
+function normalizeToolSchema(schema: unknown): unknown {
+  if (!schema || typeof schema !== 'object') return schema
+  if (Array.isArray(schema)) return schema.map(normalizeToolSchema)
+
+  const obj = schema as Record<string, unknown>
+  const out: Record<string, unknown> = { ...obj }
+
+  if (out.type === 'object') {
+    if (out.additionalProperties === undefined) {
+      out.additionalProperties = false
+    }
+    if (out.properties && typeof out.properties === 'object') {
+      const props = out.properties as Record<string, unknown>
+      const normalizedProps: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(props)) {
+        normalizedProps[k] = normalizeToolSchema(v)
+      }
+      out.properties = normalizedProps
+    }
+  }
+
+  // Recurse into combinators.
+  for (const key of ['items', 'anyOf', 'oneOf', 'allOf', 'not']) {
+    if (out[key] !== undefined) {
+      out[key] = normalizeToolSchema(out[key])
+    }
+  }
+
+  return out
 }
 
 function translateToolChoice(toolChoice: unknown): unknown {
@@ -286,7 +495,7 @@ async function translateChatResponseToAnthropic(
     })
   }
   const usage = json.usage as Record<string, number> | undefined
-  const id = typeof json.id === 'string' ? json.id : `msg_chat_${Date.now()}`
+  const id = typeof json.id === 'string' ? json.id : generateMessageId()
   return new Response(
     JSON.stringify({
       id,
@@ -310,6 +519,15 @@ function getStopReason(
 ): 'end_turn' | 'max_tokens' | 'stop_sequence' {
   if (finishReason === 'length') return 'max_tokens'
   if (finishReason === 'stop') return 'end_turn'
+  // B8: 'content_filter' was previously silently collapsed to 'end_turn',
+  // hiding gateway-side moderation from the caller. We cannot add a new
+  // stop_reason value without breaking the Anthropic SDK consumer type,
+  // so log + telemetry, then surface as end_turn. Downstream callers that
+  // want to detect filtered responses must read the telemetry channel.
+  if (finishReason === 'content_filter') {
+    logEvent('chat_completions_content_filter', {})
+    return 'end_turn'
+  }
   return 'end_turn'
 }
 
@@ -317,22 +535,45 @@ async function translateChatStreamToAnthropic(
   chatResponse: Response,
   model: string,
 ): Promise<Response> {
-  const messageId = `msg_chat_${Date.now()}`
+  const messageId = generateMessageId()
   const readable = new ReadableStream({
     async start(controller) {
       const encoder = new TextEncoder()
-      let contentBlockIndex = 0
-      let textStarted = false
+      // B7: track block indices locally. Each unique block (text, or each
+      // distinct provider toolCall.index) gets a monotonically increasing
+      // local index assigned on first appearance. Previously the code did
+      // `contentBlockIndex + provider's toolCall.index` which collided
+      // when (a) text was emitted before any tool_call (contentBlockIndex=0,
+      // tool at +0=0), or (b) tool indices were not consecutive from 0.
+      let nextLocalIndex = 0
+      let textLocalIndex: number | undefined = undefined
+      let textOpen = false
       let inputTokens = 0
       let outputTokens = 0
       let stopReason: 'end_turn' | 'max_tokens' = 'end_turn'
-      const toolCallBuffers = new Map<
-        number,
-        { id: string; name: string; arguments: string; started: boolean }
-      >()
+      type ToolEntry = {
+        localIndex: number
+        started: boolean
+        id: string
+        name: string
+        arguments: string
+      }
+      // Map provider toolCall.index → our local block index. Lets us
+      // accept non-consecutive or out-of-order provider indices safely.
+      const toolByProviderIndex = new Map<number, ToolEntry>()
 
       const enqueue = (event: string, data: Record<string, unknown>) => {
         controller.enqueue(encoder.encode(formatSSE(event, JSON.stringify(data))))
+      }
+
+      const closeTextIfOpen = (): void => {
+        if (textOpen && textLocalIndex !== undefined) {
+          enqueue('content_block_stop', {
+            type: 'content_block_stop',
+            index: textLocalIndex,
+          })
+          textOpen = false
+        }
       }
 
       enqueue('message_start', {
@@ -366,78 +607,111 @@ async function translateChatStreamToAnthropic(
             if (!trimmed.startsWith('data: ')) continue
             const data = trimmed.slice(6)
             if (data === '[DONE]') continue
-            const event = JSON.parse(data) as Record<string, unknown>
+            // M11: per-event try/catch so one malformed SSE event doesn't
+            // kill the entire stream.
+            let event: Record<string, unknown>
+            try {
+              event = JSON.parse(data) as Record<string, unknown>
+            } catch {
+              continue
+            }
             const choice = (Array.isArray(event.choices) ? event.choices[0] : {}) as
               | { delta?: Record<string, unknown>; finish_reason?: string }
               | undefined
             const delta = choice?.delta ?? {}
+
+            // Text content.
             if (typeof delta.content === 'string' && delta.content) {
-              if (!textStarted) {
+              if (!textOpen) {
+                textLocalIndex = nextLocalIndex++
                 enqueue('content_block_start', {
                   type: 'content_block_start',
-                  index: contentBlockIndex,
+                  index: textLocalIndex,
                   content_block: { type: 'text', text: '' },
                 })
-                textStarted = true
+                textOpen = true
               }
               enqueue('content_block_delta', {
                 type: 'content_block_delta',
-                index: contentBlockIndex,
+                index: textLocalIndex!,
                 delta: { type: 'text_delta', text: delta.content },
               })
             }
+
+            // Tool calls.
             const toolCalls = Array.isArray(delta.tool_calls) ? delta.tool_calls : []
             for (const rawToolCall of toolCalls) {
               if (!rawToolCall || typeof rawToolCall !== 'object') continue
               const toolCall = rawToolCall as Record<string, unknown>
-              const index = typeof toolCall.index === 'number' ? toolCall.index : 0
+              const providerIdx =
+                typeof toolCall.index === 'number' ? toolCall.index : 0
               const fn = toolCall.function as Record<string, unknown> | undefined
-              const current = toolCallBuffers.get(index) ?? {
-                id: typeof toolCall.id === 'string' ? toolCall.id : `call_${index}`,
-                name: '',
-                arguments: '',
-                started: false,
-              }
-              if (typeof toolCall.id === 'string') current.id = toolCall.id
-              if (typeof fn?.name === 'string') current.name = fn.name
-              if (!current.started) {
-                if (textStarted) {
-                  enqueue('content_block_stop', {
-                    type: 'content_block_stop',
-                    index: contentBlockIndex,
-                  })
-                  contentBlockIndex++
-                  textStarted = false
+
+              let entry = toolByProviderIndex.get(providerIdx)
+              if (!entry) {
+                // First time we see this provider index. Close any open
+                // text block first — Anthropic streaming convention is
+                // sequential blocks, and consumers may not handle text
+                // and tool_use blocks open simultaneously.
+                closeTextIfOpen()
+                entry = {
+                  localIndex: nextLocalIndex++,
+                  started: false,
+                  id:
+                    typeof toolCall.id === 'string'
+                      ? toolCall.id
+                      : `call_${providerIdx}`,
+                  name: '',
+                  arguments: '',
                 }
+                toolByProviderIndex.set(providerIdx, entry)
+              }
+
+              if (typeof toolCall.id === 'string') entry.id = toolCall.id
+              if (typeof fn?.name === 'string') entry.name = fn.name
+
+              if (!entry.started) {
                 enqueue('content_block_start', {
                   type: 'content_block_start',
-                  index: contentBlockIndex + index,
+                  index: entry.localIndex,
                   content_block: {
                     type: 'tool_use',
-                    id: current.id,
-                    name: current.name,
+                    id: entry.id,
+                    name: entry.name,
                     input: {},
                   },
                 })
-                current.started = true
+                entry.started = true
               }
               if (typeof fn?.arguments === 'string' && fn.arguments) {
-                current.arguments += fn.arguments
+                entry.arguments += fn.arguments
                 enqueue('content_block_delta', {
                   type: 'content_block_delta',
-                  index: contentBlockIndex + index,
+                  index: entry.localIndex,
                   delta: {
                     type: 'input_json_delta',
                     partial_json: fn.arguments,
                   },
                 })
               }
-              toolCallBuffers.set(index, current)
             }
+
             if (choice?.finish_reason === 'length') stopReason = 'max_tokens'
+            // B8: surface content_filter to telemetry even in streaming path.
+            if (choice?.finish_reason === 'content_filter') {
+              logEvent('chat_completions_content_filter', {})
+            }
+            // M12: most Chat-Completions gateways emit cumulative usage in
+            // the final chunk. Some emit per-delta or never emit. Latest
+            // value wins; explicitly typed so per-delta gateways are
+            // detectable via the diff (telemetry could be added later).
             const usage = event.usage as Record<string, number> | undefined
-            inputTokens = usage?.prompt_tokens ?? inputTokens
-            outputTokens = usage?.completion_tokens ?? outputTokens
+            if (typeof usage?.prompt_tokens === 'number') {
+              inputTokens = usage.prompt_tokens
+            }
+            if (typeof usage?.completion_tokens === 'number') {
+              outputTokens = usage.completion_tokens
+            }
           }
         }
       } catch (error) {
@@ -452,24 +726,18 @@ async function translateChatStreamToAnthropic(
         return
       }
 
-      if (textStarted) {
+      closeTextIfOpen()
+      for (const entry of toolByProviderIndex.values()) {
+        if (!entry.started) continue
         enqueue('content_block_stop', {
           type: 'content_block_stop',
-          index: contentBlockIndex,
-        })
-        contentBlockIndex++
-      }
-      for (const [index, toolCall] of toolCallBuffers) {
-        if (!toolCall.started) continue
-        enqueue('content_block_stop', {
-          type: 'content_block_stop',
-          index: contentBlockIndex + index,
+          index: entry.localIndex,
         })
       }
       enqueue('message_delta', {
         type: 'message_delta',
         delta: {
-          stop_reason: toolCallBuffers.size > 0 ? 'tool_use' : stopReason,
+          stop_reason: toolByProviderIndex.size > 0 ? 'tool_use' : stopReason,
           stop_sequence: null,
         },
         usage: { input_tokens: inputTokens, output_tokens: outputTokens },
@@ -509,15 +777,15 @@ export function createOpenAIChatCompletionsFetch(
 
     const anthropicBody = await parseAnthropicBody(init)
     const { chatBody, model } = translateToChatBody(anthropicBody)
-    if (
-      !model ||
-      model === 'model-required' ||
-      model.startsWith('claude-') ||
-      model.includes('anthropic.claude')
-    ) {
+    // M1: drop the model.startsWith('claude-') blacklist. Some legitimate
+    // gateways (LiteLLM, OpenRouter, OpenCode Zen) proxy Claude models via
+    // the chat/completions endpoint with alias names that may start with
+    // 'claude-'. Let the upstream gateway reject unknown models with its
+    // own error. We still guard against empty/sentinel model values.
+    if (!model || model === 'model-required') {
       return createErrorResponse(
         400,
-        'OpenAI-compatible chat completion provider requires an explicit non-Claude model',
+        'OpenAI-compatible chat completion provider requires an explicit model',
       )
     }
 
@@ -532,9 +800,18 @@ export function createOpenAIChatCompletionsFetch(
     })
 
     if (!chatResponse.ok) {
+      // M13: cap raw provider error body. Some gateways echo prompt
+      // content in error messages; redactSecrets catches headline secrets
+      // but won't redact arbitrary prompt content. Truncate aggressively
+      // so an error blob can't smuggle large prompt echoes back through
+      // the error channel.
+      const rawBody = await chatResponse.text()
+      const truncated = rawBody.length > MAX_ERROR_BODY_CHARS
+        ? `${rawBody.slice(0, MAX_ERROR_BODY_CHARS)}…[truncated ${rawBody.length - MAX_ERROR_BODY_CHARS} chars]`
+        : rawBody
       return createErrorResponse(
         chatResponse.status,
-        `OpenAI-compatible chat API error (${chatResponse.status}): ${await chatResponse.text()}`,
+        `OpenAI-compatible chat API error (${chatResponse.status}): ${truncated}`,
       )
     }
 

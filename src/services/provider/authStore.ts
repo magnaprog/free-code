@@ -74,8 +74,30 @@ export class ProviderAuthStore {
   }
 }
 
+// M8: win32 lacks POSIX file permissions; chmod is a no-op. The auth
+// file (potentially containing OAuth tokens) gets the parent dir's
+// default ACL, which is usually user-only on Windows but does NOT match
+// the 0o600 we apply on Unix. Emit a one-time warning so users running
+// on Windows are aware their auth file relies on the parent directory's
+// ACL rather than explicit per-file restriction. Long-term fix:
+// integrate Windows DPAPI to wrap the file contents.
+let warnedAboutWin32AuthFile = false
+
 async function chmodAuthFile(path: string): Promise<void> {
-  if (process.platform === 'win32') return
+  if (process.platform === 'win32') {
+    if (!warnedAboutWin32AuthFile) {
+      warnedAboutWin32AuthFile = true
+      const msg =
+        `[free-code] Auth file at ${path} relies on parent directory ACL ` +
+        `for protection on Windows (POSIX 0o600 not enforceable). ` +
+        `Use BitLocker or restrict the parent directory ACL manually.`
+      // Use process.stderr directly: log infrastructure may not yet be
+      // initialized when authStore is constructed; we want the warning
+      // visible regardless.
+      process.stderr.write(`${msg}\n`)
+    }
+    return
+  }
   await chmod(path, 0o600)
 }
 

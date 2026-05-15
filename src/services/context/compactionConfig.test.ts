@@ -39,11 +39,9 @@ describe('compaction config', () => {
     expect(getCompactionConfig('test-model').summary.structured).toBe(false)
 
     process.env.CLAUDE_CODE_STRUCTURED_COMPACT = '1'
-    process.env.CLAUDE_CODE_COMPACT_SUMMARY_VERIFIER = '1'
 
     const config = getCompactionConfig('test-model')
     expect(config.summary.structured).toBe(true)
-    expect(config.summary.verifier).toBe(true)
     expect(formatCompactionConfigSummary(config)).toContain(
       'structured-summary:on',
     )

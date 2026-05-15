@@ -28,9 +28,6 @@ export type TokenLedger = {
   messageTokens: number
   mediaTokens: number
   toolResultTokens: number
-  rawTailTokens: number
-  summaryTokens: number
-  postCompactAttachmentTokens: number
   estimatedTotalInputTokens: number
   threshold: {
     warn: number
@@ -121,9 +118,6 @@ export function buildTokenLedger({
     messageTokens,
     mediaTokens: messageBreakdown?.attachmentTokens ?? 0,
     toolResultTokens: messageBreakdown?.toolResultTokens ?? 0,
-    rawTailTokens: 0,
-    summaryTokens: 0,
-    postCompactAttachmentTokens: 0,
     estimatedTotalInputTokens: data.totalTokens,
     threshold: thresholds,
     topContributors: contributors

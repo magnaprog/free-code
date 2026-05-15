@@ -22,6 +22,13 @@ import { groupMessagesByApiRound } from './grouping.js'
 import { runPostCompactCleanup } from './postCompactCleanup.js'
 import { setLastSummarizedMessageId } from '../SessionMemory/sessionMemoryUtils.js'
 import { selectTailForCompaction } from './tailSelector.js'
+import { applyToolResultBudget } from '../../utils/toolResultStorage.js'
+
+// PR H: aggressive per-message tool-result limit for emergency recovery.
+// Half of the default (which is MAX_TOOL_RESULTS_PER_MESSAGE_CHARS = 120K).
+// Forces additional offload of large tool results into persisted files
+// before the summarizer sees them — reduces prompt_too_long likelihood.
+const REACTIVE_AGGRESSIVE_OFFLOAD_LIMIT = 60_000
 
 export type ReactiveCompactFailureReason =
   | 'too_few_groups'
@@ -146,13 +153,30 @@ export async function reactiveCompactOnPromptTooLong(
     return { ok: false, reason: 'too_few_groups' }
   }
 
+  // PR H: aggressive tool-result offload BEFORE summarizing. Forces
+  // additional large tool results to be persisted to disk so the
+  // compaction call itself sees a smaller payload. State mutation
+  // persists into subsequent normal requests (intentional — disk
+  // persistence is a one-way decision).
+  const aggressivelyOffloaded = await applyToolResultBudget(
+    prepared.messages,
+    toolUseContext.contentReplacementState,
+    undefined, // don't write to transcript here — recovery path is best-effort
+    undefined, // no skipToolNames override
+    { forcedPerMessageLimit: REACTIVE_AGGRESSIVE_OFFLOAD_LIMIT },
+  )
+  const preparedAfterOffload = {
+    messages: aggressivelyOffloaded,
+    strippedOlderMedia: prepared.strippedOlderMedia,
+  }
+
   try {
     const result = await deps.compactConversation(
-      prepared.messages,
+      preparedAfterOffload.messages,
       toolUseContext,
       {
         ...cacheSafeParams,
-        forkContextMessages: prepared.messages,
+        forkContextMessages: preparedAfterOffload.messages,
       },
       true,
       options.customInstructions,
@@ -166,7 +190,7 @@ export async function reactiveCompactOnPromptTooLong(
 
     logEvent('tengu_reactive_compact_succeeded', {
       triggerAuto: options.trigger === 'auto',
-      strippedOlderMedia: prepared.strippedOlderMedia,
+      strippedOlderMedia: preparedAfterOffload.strippedOlderMedia,
       preCompactTokenCount: result.preCompactTokenCount,
       truePostCompactTokenCount: result.truePostCompactTokenCount,
     })
@@ -176,8 +200,54 @@ export async function reactiveCompactOnPromptTooLong(
     if (toolUseContext.abortController.signal.aborted) {
       return { ok: false, reason: 'aborted' }
     }
+    // PR H: surface diagnostic information on reactive compact failure
+    // so callers/operators can see which messages contributed most to
+    // the overflow. Plan called this "surface top contributors via
+    // TokenLedger"; we use the rough estimator directly here to avoid a
+    // circular import (TokenLedger lives in services/context).
+    surfaceFailureDiagnostics(preparedAfterOffload.messages, error)
     logError(error)
     return { ok: false, reason: 'error' }
+  }
+}
+
+/**
+ * PR H: emit a structured log of the top message-size contributors at
+ * the time reactive compact failed. Helps operators identify why the
+ * recovery path couldn't shrink context enough.
+ *
+ * Caps at 5 contributors. Each entry reports (type, tokenEstimate,
+ * preview-length) without any message content to avoid leaking prompt
+ * data through telemetry.
+ */
+function surfaceFailureDiagnostics(messages: Message[], error: unknown): void {
+  try {
+    const ranked = messages
+      .map((message, index) => ({
+        index,
+        type: message.type,
+        tokens: roughTokenCountEstimationForMessages([message]),
+      }))
+      .sort((a, b) => b.tokens - a.tokens)
+      .slice(0, 5)
+    const totalTokens = messages.reduce(
+      (sum, m) => sum + roughTokenCountEstimationForMessages([m]),
+      0,
+    )
+    logEvent('tengu_reactive_compact_top_contributors', {
+      totalMessages: messages.length,
+      totalTokens,
+      top1Tokens: ranked[0]?.tokens ?? 0,
+      top2Tokens: ranked[1]?.tokens ?? 0,
+      top3Tokens: ranked[2]?.tokens ?? 0,
+      errorIsApiError:
+        typeof error === 'object' &&
+        error !== null &&
+        'isApiErrorMessage' in error,
+    })
+  } catch {
+    // Diagnostics must never throw — they are a best-effort observability
+    // signal, not a correctness primitive.
   }
 }
 

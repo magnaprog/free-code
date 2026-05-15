@@ -43,7 +43,6 @@ export type CompactionConfig = {
   }
   summary: {
     structured: boolean
-    verifier: boolean
     targetTokens: number
     emergencyTokens: number
   }
@@ -89,7 +88,6 @@ export const DEFAULT_COMPACTION_CONFIG = {
   },
   summary: {
     structured: false,
-    verifier: false,
     targetTokens: 8_000,
     emergencyTokens: 4_000,
   },
@@ -197,7 +195,6 @@ export function getCompactionConfig(model?: string): CompactionConfig {
     summary: {
       ...DEFAULT_COMPACTION_CONFIG.summary,
       structured: isEnvTruthy(process.env.CLAUDE_CODE_STRUCTURED_COMPACT),
-      verifier: isEnvTruthy(process.env.CLAUDE_CODE_COMPACT_SUMMARY_VERIFIER),
     },
   }
 }

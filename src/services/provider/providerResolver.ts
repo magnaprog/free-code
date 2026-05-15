@@ -17,7 +17,9 @@ import {
   getOpenCodeGoApiKey,
   getOpenCodeGoBaseUrl,
   getOpenCodeGoModel,
+  getOpenCodeTransportForModel,
   isOpenCodeGoEnabled,
+  type OpenCodeTransport,
 } from './openCodeGo.js'
 import { getProviderProfile } from './providerProfiles.js'
 import type {
@@ -103,11 +105,15 @@ export function resolveProviderRuntime(
   const apiProvider =
     explicitProfile?.apiProvider ?? options.apiProvider ?? getLegacyAPIProvider(env)
   if (apiProvider === 'openai') {
-    if (env.OPENAI_API_KEY || options.authByProviderId?.['openai-responses']) {
-      return resolveOpenAIResponses(options, env, 'openai-responses')
-    }
+    // B5: explicit OpenCode Zen flag wins over a lingering OPENAI_API_KEY.
+    // Matches client.ts runtime evaluation order. Without this, the
+    // resolver would say "use OpenAI" while client.ts says "use OpenCode"
+    // — two sources of truth diverging.
     if (isOpenCodeGoEnabled(env) || options.authByProviderId?.['opencode-go']) {
       return resolveOpenCodeGo(options, env, 'opencode-go')
+    }
+    if (env.OPENAI_API_KEY || options.authByProviderId?.['openai-responses']) {
+      return resolveOpenAIResponses(options, env, 'openai-responses')
     }
     return resolveChatGptCodex(options, env, 'chatgpt-codex')
   }
@@ -169,7 +175,7 @@ function resolveOpenCodeGo(
       providerId,
       model,
       message:
-        'OpenCode Go requires OPENCODE_MODEL, OPENCODE_GO_MODEL, FREE_CODE_OPENCODE_GO_MODEL, OPENAI_MODEL, or an explicit model override',
+        'OpenCode Zen requires OPENCODE_MODEL, OPENCODE_GO_MODEL, FREE_CODE_OPENCODE_GO_MODEL, OPENAI_MODEL, or an explicit model override',
     })
   }
   if (!auth) {
@@ -177,7 +183,21 @@ function resolveOpenCodeGo(
       providerId,
       model,
       message:
-        'OpenCode Go requires OPENCODE_API_KEY, OPENCODE_GO_API_KEY, FREE_CODE_OPENCODE_GO_API_KEY, or stored provider auth',
+        'OpenCode Zen requires OPENCODE_API_KEY, OPENCODE_GO_API_KEY, FREE_CODE_OPENCODE_GO_API_KEY, or stored provider auth',
+    })
+  }
+
+  // B14: per-model transport. Resolver must match runtime so diagnostics
+  // accurately describe what would be called. Gemini models fail closed
+  // until the /models/{id} endpoint adapter is implemented.
+  const transport: OpenCodeTransport = getOpenCodeTransportForModel(model)
+  if (transport === 'gemini_native') {
+    return fail('not_implemented', {
+      providerId,
+      model,
+      message:
+        `OpenCode Zen gemini-* models route to /models/{id}:generate which is not yet supported. ` +
+        `Use a chat-completions model (qwen/kimi/glm/minimax/deepseek), Claude model, or GPT model instead.`,
     })
   }
 
@@ -191,9 +211,31 @@ function resolveOpenCodeGo(
       authSource: getOpenCodeGoApiKey(env)
         ? 'OPENCODE_API_KEY'
         : 'provider-auth-store',
-      capabilities: createOpenAIChatCompletionsCapabilities(),
+      // Capability surface mirrors the transport chosen at runtime.
+      capabilities:
+        transport === 'anthropic_messages'
+          ? createAnthropicMessagesCapabilities(model)
+          : transport === 'openai_responses'
+            ? createOpenAIResponsesCapabilities(
+                getKnownNonClaudeModelCapability(model, 'openai-responses') ?? {
+                  // Unknown GPT alias routed via OpenCode Zen. Capability
+                  // values are conservative defaults; the upstream gateway
+                  // (not free-code) validates the model.
+                  id: model,
+                  provider: 'openai-responses',
+                  supportsTools: true,
+                  supportsStreaming: true,
+                  supportsReasoningEffort: false,
+                  supportsStructuredOutputs: false,
+                  supportsTokenCounting: false,
+                },
+              )
+            : createOpenAIChatCompletionsCapabilities(),
       baseUrl: getOpenCodeGoBaseUrl(env),
-      diagnostics: ['resolved OpenCode Go provider'],
+      diagnostics: [
+        `resolved OpenCode Zen provider`,
+        `model '${model}' routes via ${transport}`,
+      ],
     }),
     options.requiredCapabilities,
   )

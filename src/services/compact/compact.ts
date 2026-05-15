@@ -422,12 +422,18 @@ function getPostCompactAttachmentPriority(message: AttachmentMessage): number {
   }
 }
 
+// B4: priority-≤1 attachments may exceed the regular budget but cannot
+// exceed this absolute multiple of the budget. A 200K plan_file_reference
+// would otherwise blow compaction; this caps the worst case.
+const PRIORITY_BYPASS_CEILING_MULTIPLIER = 2
+
 export function applyPostCompactAttachmentBudget(
   attachments: AttachmentMessage[],
   budgetTokens = POST_COMPACT_TOKEN_BUDGET,
 ): AttachmentMessage[] {
   let usedTokens = 0
   let droppedCount = 0
+  let droppedHighPriority = 0
   const kept: Array<{ index: number; message: AttachmentMessage }> = []
   const prioritized = attachments
     .map((message, index) => ({
@@ -438,21 +444,42 @@ export function applyPostCompactAttachmentBudget(
     }))
     .sort((a, b) => a.priority - b.priority || a.index - b.index)
 
+  const bypassCeiling = budgetTokens * PRIORITY_BYPASS_CEILING_MULTIPLIER
+
   for (const item of prioritized) {
-    if (usedTokens + item.tokens <= budgetTokens || item.priority <= 1) {
+    const fitsRegular = usedTokens + item.tokens <= budgetTokens
+    const fitsBypass =
+      item.priority <= 1 && usedTokens + item.tokens <= bypassCeiling
+
+    if (fitsRegular || fitsBypass) {
       usedTokens += item.tokens
       kept.push({ index: item.index, message: item.message })
+    } else if (item.priority <= 1) {
+      // High-priority attachment exceeded even the bypass ceiling.
+      // Drop with a distinct counter so caller telemetry is honest.
+      droppedHighPriority++
     } else {
       droppedCount++
     }
   }
 
-  if (droppedCount > 0) {
+  if (droppedCount > 0 || droppedHighPriority > 0) {
+    const parts: string[] = [POST_COMPACT_ATTACHMENT_TRUNCATION_MARKER]
+    if (droppedCount > 0) {
+      parts.push(
+        `Omitted ${droppedCount} low-priority ${droppedCount === 1 ? 'attachment' : 'attachments'}.`,
+      )
+    }
+    if (droppedHighPriority > 0) {
+      parts.push(
+        `Dropped ${droppedHighPriority} high-priority ${droppedHighPriority === 1 ? 'attachment' : 'attachments'} that exceeded the bypass ceiling — re-read the source files if needed.`,
+      )
+    }
     kept.push({
       index: Number.MAX_SAFE_INTEGER,
       message: createAttachmentMessage({
         type: 'critical_system_reminder',
-        content: `${POST_COMPACT_ATTACHMENT_TRUNCATION_MARKER} Omitted ${droppedCount} low-priority ${droppedCount === 1 ? 'attachment' : 'attachments'}.`,
+        content: parts.join(' '),
       }),
     })
   }
@@ -592,14 +619,60 @@ export async function compactConversation(
     })
     let usedEmergencyCompactPrompt = false
 
-    const tailSelection = selectTailForCompaction(
+    let tailSelection = selectTailForCompaction(
       messages,
       compactionConfig.tail,
       roughTokenCountEstimationForMessages,
     )
+
+    // B11: If the selector says "everything is tail; nothing to summarize",
+    // don't silently fall back to summarizing all messages WHEN tail
+    // preservation could meaningfully apply. For conversations large enough
+    // to support a real tail/prefix split, retry once with a halved tail
+    // config; if still empty, refuse to compact instead of silently
+    // disengaging tail preservation.
+    //
+    // For very short conversations (under the tail-meaningful threshold)
+    // there is no way to preserve a tail anyway — keep the legacy behavior
+    // of summarizing everything so manual /compact on small histories still
+    // works and short-conversation callers (test fixtures, scripted flows)
+    // are not broken.
+    const tailMeaningfulThreshold = Math.max(
+      2,
+      compactionConfig.tail.minTextMessages * 2,
+    )
+    if (tailSelection.prefixToSummarize.length === 0) {
+      if (messages.length >= tailMeaningfulThreshold) {
+        // Large enough to expect tail preservation. Retry with halved
+        // config so the prefix becomes non-empty.
+        const halvedTailConfig = {
+          ...compactionConfig.tail,
+          targetTokens: Math.max(
+            1,
+            Math.floor(compactionConfig.tail.targetTokens / 2),
+          ),
+          minTextMessages: Math.max(
+            1,
+            Math.floor(compactionConfig.tail.minTextMessages / 2),
+          ),
+        }
+        tailSelection = selectTailForCompaction(
+          messages,
+          halvedTailConfig,
+          roughTokenCountEstimationForMessages,
+        )
+        if (tailSelection.prefixToSummarize.length === 0) {
+          throw new Error(ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)
+        }
+      }
+      // else: short conversation — fall through to legacy behavior below.
+    }
+
     const shouldKeepTail = tailSelection.prefixToSummarize.length > 0
     const messagesToKeep = shouldKeepTail ? tailSelection.tailToKeep : []
-    let messagesToSummarize = shouldKeepTail ? tailSelection.prefixToSummarize : messages
+    let messagesToSummarize = shouldKeepTail
+      ? tailSelection.prefixToSummarize
+      : messages
     let retryCacheSafeParams = {
       ...cacheSafeParams,
       forkContextMessages: messagesToSummarize,

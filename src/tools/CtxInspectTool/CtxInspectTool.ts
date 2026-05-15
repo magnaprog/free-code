@@ -14,8 +14,12 @@ const outputSchema = lazySchema(() =>
 type OutputSchema = ReturnType<typeof outputSchema>
 type Output = z.infer<OutputSchema>
 
+// M7: model receives this as a normal tool result (is_error: false).
+// is_error: true caused the previous implementation to look like a tool
+// failure each call, prompting retries. With is_error: false the model
+// reads the informational status and learns not to call it again.
 const MESSAGE =
-  'CONTEXT_COLLAPSE is compiled in but inactive in this build; ctx_inspect is unavailable.'
+  'ctx_inspect is currently unavailable: CONTEXT_COLLAPSE feature is compiled in but its runtime state is inactive. Do not call this tool until the feature reports active.'
 
 export const CtxInspectTool = buildTool({
   name: 'ctx_inspect',
@@ -57,7 +61,10 @@ export const CtxInspectTool = buildTool({
       tool_use_id: toolUseID,
       type: 'tool_result',
       content: output.message,
-      is_error: true,
+      // M7: not is_error. The status field carries the unimplemented
+      // signal; the model should reason about the response rather than
+      // treat it as a transient failure to retry.
+      is_error: false,
     }
   },
 } satisfies ToolDef<InputSchema, Output>)

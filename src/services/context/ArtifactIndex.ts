@@ -1,8 +1,19 @@
 import { createHash } from 'crypto'
-import { appendFile, mkdir, readFile } from 'fs/promises'
-import { basename, dirname, join } from 'path'
+import { appendFile, mkdir, open, readFile } from 'fs/promises'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'path'
 import { getTranscriptPath } from '../../utils/sessionStorage.js'
 import { redactSecrets } from '../../utils/redaction.js'
+
+// Tool-results dir is at `${sessionDir}/tool-results`; we derive sessionDir
+// from the transcript path to avoid importing from toolResultStorage.ts
+// (which itself imports from this file — circular).
+const TOOL_RESULTS_SUBDIR = 'tool-results'
+const ARTIFACTS_SUBDIR = 'artifacts'
+
+function getSessionDirFromTranscript(transcriptPath: string): string {
+  const stem = basename(transcriptPath).replace(/\.jsonl$/, '')
+  return join(dirname(transcriptPath), stem)
+}
 
 export type ContextArtifactRef =
   | {
@@ -61,8 +72,7 @@ const MAX_SNIPPET_BYTES = 20_000
 const DEFAULT_LIMIT = 5
 
 export function getArtifactIndexPath(transcriptPath = getTranscriptPath()): string {
-  const stem = basename(transcriptPath).replace(/\.jsonl$/, '')
-  return join(dirname(transcriptPath), stem, 'artifacts', 'index.jsonl')
+  return join(getSessionDirFromTranscript(transcriptPath), ARTIFACTS_SUBDIR, 'index.jsonl')
 }
 
 export function sha256Text(text: string): string {
@@ -118,9 +128,11 @@ export async function searchArtifacts(
     0,
     Math.min(input.snippetBytes ?? DEFAULT_SNIPPET_BYTES, MAX_SNIPPET_BYTES),
   )
-  const results: ArtifactSearchResult[] = []
+  const candidates: ArtifactSearchResult[] = []
   const seenIds = new Set<string>()
 
+  // Phase 1: score and filter, do NOT read snippets yet (B9 fix avoids
+  // reading megabytes for results we'll drop after sort+limit).
   for (const ref of records.slice().reverse()) {
     if (seenIds.has(ref.id)) continue
     seenIds.add(ref.id)
@@ -139,19 +151,65 @@ export async function searchArtifacts(
       else if (haystack.includes(query)) score += 20
       else continue
     }
-    const result: ArtifactSearchResult = { ref, score }
-    if ('path' in ref) {
-      const snippet = await readArtifactSnippet(ref.path, snippetBytes)
+    candidates.push({ ref, score })
+  }
+
+  // Phase 2: sort + limit, THEN read snippets only for top-K results.
+  const ranked = candidates
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+
+  const effectiveIndexPath = input.indexPath ?? getArtifactIndexPath()
+  const allowedRoots = getAllowedArtifactRoots(effectiveIndexPath)
+
+  for (const result of ranked) {
+    if ('path' in result.ref) {
+      const snippet = await readArtifactSnippet(
+        result.ref.path,
+        snippetBytes,
+        allowedRoots,
+      )
       if (snippet === null) result.missing = true
       else result.snippet = snippet
     }
-    results.push(result)
   }
 
-  return {
-    results: results.sort((a, b) => b.score - a.score).slice(0, limit),
-    corruptLines,
+  return { results: ranked, corruptLines }
+}
+
+/**
+ * B13: validate that `path` points inside one of the allowed session
+ * artifact roots. Rejects absolute paths outside roots, `../..` traversal,
+ * and any path that resolves outside the expected directories.
+ *
+ * Note: this does NOT resolve symlinks (avoids fs.realpath which fails on
+ * missing files). A symlink pointing outside an allowed root would slip
+ * past this check. Treat the disk layout as trusted; only the JSONL index
+ * is the threat surface.
+ */
+/**
+ * Allowed roots for artifact paths, derived from the index path itself.
+ * In production: ${sessionDir}/artifacts/index.jsonl → allowed roots are
+ *   ${sessionDir}/artifacts (where index lives)
+ *   ${sessionDir}/tool-results (sibling — where persisted results live)
+ * Co-locating roots with the index file keeps the threat model contained:
+ * a tampered JSONL can only reference files inside the same session tree.
+ */
+function getAllowedArtifactRoots(indexPath: string): string[] {
+  const artifactsDir = dirname(indexPath)
+  const sessionDir = dirname(artifactsDir)
+  return [artifactsDir, join(sessionDir, TOOL_RESULTS_SUBDIR)]
+}
+
+function isPathInAllowedRoot(targetPath: string, allowedRoots: string[]): boolean {
+  const absolute = isAbsolute(targetPath) ? targetPath : resolve(targetPath)
+  for (const root of allowedRoots) {
+    const rel = relative(resolve(root), absolute)
+    if (rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))) {
+      return true
+    }
   }
+  return false
 }
 
 export function buildToolResultArtifactRef(input: {
@@ -178,13 +236,29 @@ export function buildToolResultArtifactRef(input: {
 async function readArtifactSnippet(
   path: string,
   snippetBytes: number,
+  allowedRoots: string[],
 ): Promise<string | null> {
+  // B13: reject paths outside allowed session roots before opening.
+  if (!isPathInAllowedRoot(path, allowedRoots)) {
+    return null
+  }
+  if (snippetBytes <= 0) {
+    return ''
+  }
+  // B9: partial read instead of loading the whole file into memory.
+  let fh
   try {
-    const raw = await readFile(path, 'utf8')
-    return redactSecrets(raw.slice(0, snippetBytes))
+    fh = await open(path, 'r')
   } catch (error) {
     if ((error as { code?: string }).code === 'ENOENT') return null
     throw error
+  }
+  try {
+    const buf = Buffer.alloc(snippetBytes)
+    const { bytesRead } = await fh.read(buf, 0, snippetBytes, 0)
+    return redactSecrets(buf.toString('utf8', 0, bytesRead))
+  } finally {
+    await fh.close()
   }
 }
 

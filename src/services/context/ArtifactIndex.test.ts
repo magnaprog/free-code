@@ -118,4 +118,69 @@ describe('ArtifactIndex', () => {
     expect(missing.results[0]?.missing).toBe(true)
     expect(missing.results[0]?.snippet).toBeUndefined()
   })
+
+  // B13: artifact records pointing outside the session root must be
+  // rejected (treated as missing) to prevent local file disclosure via a
+  // tampered/corrupted index.
+  test('rejects artifact paths outside allowed roots', async () => {
+    const dir = await makeTempDir()
+    const indexPath = join(dir, 'index.jsonl')
+    // Path traversal target outside the index's allowed-root tree.
+    const outsidePath = '/etc/passwd'
+
+    await appendArtifactRecord(
+      buildToolResultArtifactRef({
+        toolUseId: 'toolu_traversal',
+        toolName: 'Bash',
+        path: outsidePath,
+        content: 'unused',
+        preview: 'unused',
+      }),
+      indexPath,
+    )
+
+    const { results } = await searchArtifacts({
+      toolName: 'Bash',
+      indexPath,
+    })
+
+    // Either no results returned, OR the result is flagged as missing.
+    // Either is acceptable; what matters is no leak of /etc/passwd.
+    if (results.length > 0) {
+      expect(results[0]?.missing).toBe(true)
+      expect(results[0]?.snippet).toBeUndefined()
+    }
+  })
+
+  // B9: snippet read must be bounded — should not load the whole file
+  // into memory even when the file is huge.
+  test('snippet read is bounded regardless of file size', async () => {
+    const dir = await makeTempDir()
+    const artifactPath = join(dir, 'huge.txt')
+    const indexPath = join(dir, 'index.jsonl')
+
+    // 5MB file. Old implementation would readFile() and slice — allocates 5MB.
+    // New implementation should partial-read 500 bytes only.
+    const content = 'A'.repeat(5_000_000)
+    await writeFile(artifactPath, content, 'utf8')
+    await appendArtifactRecord(
+      buildToolResultArtifactRef({
+        toolUseId: 'toolu_huge',
+        toolName: 'Bash',
+        path: artifactPath,
+        content,
+        preview: 'A',
+      }),
+      indexPath,
+    )
+
+    const { results } = await searchArtifacts({
+      toolName: 'Bash',
+      indexPath,
+      snippetBytes: 500,
+    })
+
+    expect(results[0]?.snippet).toBeDefined()
+    expect(results[0]?.snippet?.length).toBeLessThanOrEqual(500)
+  })
 })

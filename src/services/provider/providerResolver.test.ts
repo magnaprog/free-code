@@ -124,10 +124,14 @@ describe('provider resolver', () => {
     expect(resolution.runtime.transport).toBe('openai_chat_completions')
     expect(resolution.runtime.adapterId).toBe('opencode-go')
     expect(resolution.runtime.auth.type).toBe('api')
-    expect(resolution.runtime.baseUrl).toBe('https://opencode.ai/zen/go/v1')
+    expect(resolution.runtime.baseUrl).toBe('https://opencode.ai/zen/v1')
   })
 
-  test('OpenAI API key still wins over OpenCode Go env', () => {
+  // B5: explicit OpenCode Zen flag wins over a lingering OPENAI_API_KEY.
+  // The previous behavior ("OpenAI key wins") was silently surprising —
+  // an unrelated env var in the shell shadowed an explicit provider
+  // selection. Resolver and client.ts now agree on this precedence.
+  test('explicit OpenCode flag wins over lingering OPENAI_API_KEY', () => {
     const resolution = resolveProviderRuntime({
       env: {
         CLAUDE_CODE_USE_OPENCODE_GO: '1',
@@ -140,8 +144,56 @@ describe('provider resolver', () => {
 
     expect(resolution.ok).toBe(true)
     if (!resolution.ok) throw new Error(resolution.message)
-    expect(resolution.runtime.providerId).toBe('openai-responses')
-    expect(resolution.runtime.authSource).toBe('OPENAI_API_KEY')
+    expect(resolution.runtime.providerId).toBe('opencode-go')
+    expect(resolution.runtime.transport).toBe('openai_chat_completions')
+  })
+
+  // B14: per-model transport routing. Claude models route to anthropic_messages.
+  test('OpenCode with claude-* model resolves to anthropic_messages transport', () => {
+    const resolution = resolveProviderRuntime({
+      env: {
+        CLAUDE_CODE_USE_OPENCODE_GO: '1',
+        OPENCODE_API_KEY: 'fake-opencode-key',
+        OPENCODE_MODEL: 'claude-sonnet-4-6',
+      },
+    })
+
+    expect(resolution.ok).toBe(true)
+    if (!resolution.ok) throw new Error(resolution.message)
+    expect(resolution.runtime.providerId).toBe('opencode-go')
+    expect(resolution.runtime.transport).toBe('anthropic_messages')
+  })
+
+  // B14: GPT models route to openai_responses transport.
+  test('OpenCode with gpt-* model resolves to openai_responses transport', () => {
+    const resolution = resolveProviderRuntime({
+      env: {
+        CLAUDE_CODE_USE_OPENCODE_GO: '1',
+        OPENCODE_API_KEY: 'fake-opencode-key',
+        OPENCODE_MODEL: 'gpt-5.5',
+      },
+    })
+
+    expect(resolution.ok).toBe(true)
+    if (!resolution.ok) throw new Error(resolution.message)
+    expect(resolution.runtime.providerId).toBe('opencode-go')
+    expect(resolution.runtime.transport).toBe('openai_responses')
+  })
+
+  // B14: Gemini models fail closed until /models/{id} adapter is wired.
+  test('OpenCode with gemini-* model fails closed as not_implemented', () => {
+    const resolution = resolveProviderRuntime({
+      env: {
+        CLAUDE_CODE_USE_OPENCODE_GO: '1',
+        OPENCODE_API_KEY: 'fake-opencode-key',
+        OPENCODE_MODEL: 'gemini-3.1-pro',
+      },
+    })
+
+    expect(resolution.ok).toBe(false)
+    if (resolution.ok) throw new Error('expected fail-closed for gemini')
+    expect(resolution.reason).toBe('not_implemented')
+    expect(resolution.message).toContain('gemini')
   })
 
   test('OpenCode Go fails clearly without model or auth', () => {

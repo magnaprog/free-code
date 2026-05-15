@@ -53,8 +53,9 @@ function hasToolUseWithIds(message: Message, toolUseIds: Set<string>): boolean {
 export function adjustIndexToPreserveAPIInvariants(
   messages: Message[],
   startIndex: number,
+  floor: number = 0,
 ): number {
-  if (startIndex <= 0 || startIndex >= messages.length) return startIndex
+  if (startIndex <= floor || startIndex >= messages.length) return startIndex
 
   let adjustedIndex = startIndex
   const allToolResultIds: string[] = []
@@ -76,7 +77,9 @@ export function adjustIndexToPreserveAPIInvariants(
     const neededToolUseIds = new Set(
       allToolResultIds.filter(id => !toolUseIdsInKeptRange.has(id)),
     )
-    for (let i = adjustedIndex - 1; i >= 0 && neededToolUseIds.size > 0; i--) {
+    // Clamp descent at `floor` so we never drag prior compact boundary or
+    // pre-boundary content into the kept tail.
+    for (let i = adjustedIndex - 1; i >= floor && neededToolUseIds.size > 0; i--) {
       const message = messages[i]!
       if (!hasToolUseWithIds(message, neededToolUseIds)) continue
       adjustedIndex = i
@@ -96,7 +99,7 @@ export function adjustIndexToPreserveAPIInvariants(
     }
   }
 
-  for (let i = adjustedIndex - 1; i >= 0; i--) {
+  for (let i = adjustedIndex - 1; i >= floor; i--) {
     const message = messages[i]!
     if (
       message.type === 'assistant' &&
@@ -131,9 +134,24 @@ export function selectTailForCompaction(
   let textMessages = 0
   const reasons: string[] = []
 
+  // Hard cap multiplier — break unconditionally if tail would overshoot
+  // maxTokens by this factor. Prevents tool-result-heavy histories (few
+  // text messages) from running away when soft minimums are not yet met.
+  const HARD_CAP_MULTIPLIER = 1.5
+
   for (let i = messages.length - 1; i >= floor; i--) {
     const message = messages[i]!
     const messageTokens = tokenCounter([message])
+
+    // Hard cap: break regardless of soft minimums.
+    if (
+      startIndex < messages.length &&
+      totalTokens + messageTokens > config.maxTokens * HARD_CAP_MULTIPLIER
+    ) {
+      reasons.push('max_tokens_hard')
+      break
+    }
+
     const wouldExceedMax =
       startIndex < messages.length && totalTokens + messageTokens > config.maxTokens
     if (
@@ -161,12 +179,16 @@ export function selectTailForCompaction(
   const adjustedStartIndex = adjustIndexToPreserveAPIInvariants(
     messages,
     startIndex,
+    floor,
   )
   if (adjustedStartIndex !== startIndex) reasons.push('api_invariants')
   if (adjustedStartIndex === floor) reasons.push('boundary_floor')
 
+  // Slice from `floor`, not 0. Prior compact boundary and its summary stay
+  // out of the prefix; otherwise each subsequent compact would re-summarize
+  // the prior summary and inflate context.
   return {
-    prefixToSummarize: messages.slice(0, adjustedStartIndex),
+    prefixToSummarize: messages.slice(floor, adjustedStartIndex),
     tailToKeep: messages.slice(adjustedStartIndex),
     startIndex: adjustedStartIndex,
     reasons,

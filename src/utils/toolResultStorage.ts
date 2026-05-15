@@ -18,6 +18,7 @@ import {
   appendArtifactRecord,
   buildToolResultArtifactRef,
 } from '../services/context/ArtifactIndex.js'
+import { isArtifactIndexingEnabled } from '../services/context/contextRecallEnabled.js'
 import { sanitizeToolNameForAnalytics } from '../services/analytics/metadata.js'
 import type { Message } from '../types/message.js'
 import { logForDebugging } from './debug.js'
@@ -127,6 +128,8 @@ async function recordToolResultArtifact(input: {
   content: string
   preview: string
 }): Promise<void> {
+  // B10: gate on opt-in flag. Plan: feature-off should have zero side effect.
+  if (!isArtifactIndexingEnabled()) return
   if (indexedToolResultArtifacts.has(input.toolUseId)) return
   indexedToolResultArtifacts.add(input.toolUseId)
   try {
@@ -772,9 +775,24 @@ function replaceToolResultContents(
 
 async function buildReplacement(
   candidate: ToolResultCandidate,
+  toolName: string | undefined,
 ): Promise<{ content: string; originalSize: number } | null> {
   const result = await persistToolResult(candidate.content, candidate.toolUseId)
   if (isPersistError(result)) return null
+
+  // B12: index the persisted artifact from the aggregate-budget path too,
+  // not just the single-large-result path. Without this, ContextRecall is
+  // blind to half the persisted tool results in a session.
+  if (toolName !== undefined) {
+    await recordToolResultArtifact({
+      toolUseId: candidate.toolUseId,
+      toolName,
+      path: result.filepath,
+      content: stringifyPersistableToolResultContent(candidate.content),
+      preview: result.preview,
+    })
+  }
+
   return {
     content: buildLargeToolResultMessage(result),
     originalSize: result.originalSize,
@@ -815,20 +833,33 @@ export async function enforceToolResultBudget(
   messages: Message[],
   state: ContentReplacementState,
   skipToolNames: ReadonlySet<string> = new Set(),
+  opts: { forcedPerMessageLimit?: number } = {},
 ): Promise<{
   messages: Message[]
   newlyReplaced: ToolResultReplacementRecord[]
 }> {
   const candidatesByMessage = collectCandidatesByMessage(messages)
-  const nameByToolUseId =
-    skipToolNames.size > 0 ? buildToolNameMap(messages) : undefined
+  // Build the tool_use_id → toolName map when either (a) we need it for
+  // skipToolNames filtering, or (b) artifact indexing is on (so we can
+  // record toolName with each persisted replacement). Building it always
+  // would be cheap, but preserving the original conditional minimizes
+  // changes when indexing is off.
+  const needsNameMap =
+    skipToolNames.size > 0 || isArtifactIndexingEnabled()
+  const nameByToolUseId = needsNameMap ? buildToolNameMap(messages) : undefined
   const shouldSkip = (id: string): boolean =>
     nameByToolUseId !== undefined &&
     skipToolNames.has(nameByToolUseId.get(id) ?? '')
   // Resolve once per call. A mid-session flag change only affects FRESH
   // messages (prior decisions are frozen via seenIds/replacements), so
   // prompt cache for already-seen content is preserved regardless.
-  const limit = getPerMessageBudgetLimit()
+  //
+  // PR H: reactive compact may force a lower limit for emergency
+  // recovery from prompt_too_long errors. The state is mutated as usual,
+  // so the more-aggressive replacements persist into subsequent calls
+  // — that is intentional: once persisted to disk, the preview is what
+  // future requests should see (prompt cache stability vs token saving).
+  const limit = opts.forcedPerMessageLimit ?? getPerMessageBudgetLimit()
 
   // Walk each API-level message group independently. For previously-processed messages
   // (all IDs in seenIds) this just re-applies cached replacements. For the
@@ -898,7 +929,10 @@ export async function enforceToolResultBudget(
   // Fresh: concurrent persist for all selected candidates across all
   // messages. In practice toPersist comes from a single message per turn.
   const freshReplacements = await Promise.all(
-    toPersist.map(async c => [c, await buildReplacement(c)] as const),
+    toPersist.map(
+      async c =>
+        [c, await buildReplacement(c, nameByToolUseId?.get(c.toolUseId))] as const,
+    ),
   )
   const newlyReplaced: ToolResultReplacementRecord[] = []
   let replacedSize = 0
@@ -971,9 +1005,15 @@ export async function applyToolResultBudget(
   state: ContentReplacementState | undefined,
   writeToTranscript?: (records: ToolResultReplacementRecord[]) => void,
   skipToolNames?: ReadonlySet<string>,
+  opts: { forcedPerMessageLimit?: number } = {},
 ): Promise<Message[]> {
   if (!state) return messages
-  const result = await enforceToolResultBudget(messages, state, skipToolNames)
+  const result = await enforceToolResultBudget(
+    messages,
+    state,
+    skipToolNames,
+    opts,
+  )
   if (result.newlyReplaced.length > 0) {
     writeToTranscript?.(result.newlyReplaced)
   }
