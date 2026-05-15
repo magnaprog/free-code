@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
   __resetPreconnectForTesting,
+  PRECONNECT_SKIP_ENV_KEYS,
   preconnectAnthropicApi,
 } from './apiPreconnect.js'
 
@@ -12,19 +13,9 @@ const providerEnvKeys = [
   'CLAUDE_CODE_USE_FOUNDRY',
 ] as const
 
-const preconnectSkipEnvKeys = [
-  'HTTPS_PROXY',
-  'https_proxy',
-  'HTTP_PROXY',
-  'http_proxy',
-  'ANTHROPIC_UNIX_SOCKET',
-  'CLAUDE_CODE_CLIENT_CERT',
-  'CLAUDE_CODE_CLIENT_KEY',
-] as const
-
 const trackedEnvKeys = [
   ...providerEnvKeys,
-  ...preconnectSkipEnvKeys,
+  ...PRECONNECT_SKIP_ENV_KEYS,
   'CLAUDE_CODE_CUSTOM_OAUTH_URL',
   'ANTHROPIC_BASE_URL',
 ] as const
@@ -40,7 +31,7 @@ function clearEnv(keys: readonly string[]): void {
 
 function useFirstPartyApiBaseUrl(): void {
   clearEnv(providerEnvKeys)
-  clearEnv(preconnectSkipEnvKeys)
+  clearEnv(PRECONNECT_SKIP_ENV_KEYS)
   process.env.ANTHROPIC_BASE_URL = 'https://api.anthropic.com'
 }
 
@@ -71,6 +62,23 @@ describe('preconnectAnthropicApi', () => {
 
     expect(() => preconnectAnthropicApi()).not.toThrow()
     expect(fetchCalled).toBe(false)
+  })
+
+  test('skips warming when proxy, unix socket, or mTLS env is configured', () => {
+    for (const key of PRECONNECT_SKIP_ENV_KEYS) {
+      __resetPreconnectForTesting()
+      useFirstPartyApiBaseUrl()
+      process.env[key] = key === 'ANTHROPIC_UNIX_SOCKET' ? '/tmp/x.sock' : '1'
+
+      let fetchCalled = false
+      globalThis.fetch = (() => {
+        fetchCalled = true
+        return Promise.resolve(new Response(null, { status: 200 }))
+      }) as typeof globalThis.fetch
+
+      preconnectAnthropicApi()
+      expect(fetchCalled).toBe(false)
+    }
   })
 
   test('warms the explicit ANTHROPIC_BASE_URL on the first-party path', () => {

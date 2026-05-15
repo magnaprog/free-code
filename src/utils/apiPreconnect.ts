@@ -28,6 +28,16 @@ import { getAPIProvider } from './model/providers.js'
 
 let fired = false
 
+export const PRECONNECT_SKIP_ENV_KEYS = [
+  'HTTPS_PROXY',
+  'https_proxy',
+  'HTTP_PROXY',
+  'http_proxy',
+  'ANTHROPIC_UNIX_SOCKET',
+  'CLAUDE_CODE_CLIENT_CERT',
+  'CLAUDE_CODE_CLIENT_KEY',
+] as const
+
 /**
  * Reset the module-level `fired` flag. Test-only — prevents subsequent
  * tests from seeing the latched true and trivially passing.
@@ -43,17 +53,7 @@ export function preconnectAnthropicApi(): void {
   // Non-first-party providers use different endpoints and auth.
   if (getAPIProvider() !== 'firstParty') return
   // Skip if proxy/mTLS/unix — SDK's custom dispatcher won't reuse this pool
-  if (
-    process.env.HTTPS_PROXY ||
-    process.env.https_proxy ||
-    process.env.HTTP_PROXY ||
-    process.env.http_proxy ||
-    process.env.ANTHROPIC_UNIX_SOCKET ||
-    process.env.CLAUDE_CODE_CLIENT_CERT ||
-    process.env.CLAUDE_CODE_CLIENT_KEY
-  ) {
-    return
-  }
+  if (PRECONNECT_SKIP_ENV_KEYS.some(key => process.env[key])) return
 
   // Use configured base URL. This is best-effort startup warming, so bad
   // OAuth config must not abort CLI startup.
