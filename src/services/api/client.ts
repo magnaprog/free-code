@@ -52,7 +52,7 @@ import {
   getOpenCodeTransportForModel,
   isOpenCodeGoEnabled,
   normalizeOpenCodeGoModel,
-} from '../provider/openCodeGo.js'
+} from './openCodeGo.js'
 
 /**
  * Environment variables for different client types:

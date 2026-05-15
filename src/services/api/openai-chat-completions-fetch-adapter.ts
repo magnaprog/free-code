@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto'
-import { normalizeOpenCodeGoModel } from '../provider/openCodeGo.js'
+import { normalizeOpenCodeGoModel } from './openCodeGo.js'
 import { redactSecrets } from '../../utils/redaction.js'
 import { logEvent } from '../analytics/index.js'
 
