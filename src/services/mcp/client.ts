@@ -1,4 +1,5 @@
 import { feature } from 'bun:bundle'
+import { randomUUID } from 'crypto'
 import type {
   Base64ImageSource,
   ContentBlockParam,
@@ -2780,9 +2781,12 @@ export async function processMCPResult(
     return await truncateMcpContentIfNeeded(content)
   }
 
-  // Generate a unique ID for the persisted file (server__tool-timestamp)
-  const timestamp = Date.now()
-  const persistId = `mcp-${normalizeNameForMCP(name)}-${normalizeNameForMCP(tool)}-${timestamp}`
+  // Generate a unique ID for the persisted file. Timestamp + random
+  // suffix avoids collisions between two same-(server,tool) calls within
+  // the same millisecond — persistToolResult uses the `wx` flag and
+  // treats EEXIST as success, so an ID collision would silently make
+  // the second artifact reference the first file's content.
+  const persistId = `mcp-${normalizeNameForMCP(name)}-${normalizeNameForMCP(tool)}-${Date.now()}-${randomUUID()}`
   // Convert to string for persistence (persistToolResult expects string or specific block types)
   const contentStr =
     typeof content === 'string' ? content : jsonStringify(content, null, 2)

@@ -342,6 +342,98 @@ describe('OpenAI chat completions fetch adapter', () => {
     expect(concatenatedJson).toBe('{"path":"/etc/hosts"}')
   })
 
+  // Codex follow-up: malformed upstream stream sends tool_call args but
+  // never sends a function name. Previously stop_reason was set to
+  // 'tool_use' because toolByProviderIndex.size > 0, even though no
+  // tool_use block was actually emitted. Consumers reading stop_reason
+  // would then look for tool_use blocks that don't exist. The fix counts
+  // STARTED entries only.
+  test('emits end_turn when tool_call has args but no name (no block started)', async () => {
+    const upstreamChunks = [
+      `data: ${JSON.stringify({
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                { index: 0, id: 'call_no_name', function: { arguments: '{"x":' } },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      })}`,
+      `data: ${JSON.stringify({
+        choices: [
+          {
+            delta: {
+              tool_calls: [{ index: 0, function: { arguments: '1}' } }],
+            },
+            finish_reason: 'stop',
+          },
+        ],
+      })}`,
+      `data: [DONE]`,
+    ]
+    const sseBody = upstreamChunks.map(c => `${c}\n\n`).join('')
+
+    globalThis.fetch = (() => {
+      return Promise.resolve(
+        new Response(sseBody, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      )
+    }) as typeof globalThis.fetch
+
+    const fetch = createOpenAIChatCompletionsFetch('k', {
+      baseUrl: 'https://opencode.example/zen/v1',
+    })
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      body: JSON.stringify({
+        model: 'qwen-test',
+        messages: [{ role: 'user', content: 'hi' }],
+        stream: true,
+      }),
+    })
+
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let out = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      out += decoder.decode(value, { stream: true })
+    }
+
+    const events = out
+      .split('\n\n')
+      .filter(line => line.startsWith('event: '))
+      .map(block => {
+        const [, dataLine] = block.split('\n')
+        const dataPayload = dataLine?.slice('data: '.length)
+        return dataPayload ? JSON.parse(dataPayload) : null
+      })
+      .filter(Boolean) as Array<Record<string, unknown>>
+
+    // No tool_use block was emitted (name never arrived).
+    const toolStarts = events.filter(
+      e =>
+        e.type === 'content_block_start' &&
+        (e as { content_block?: { type?: string } }).content_block?.type ===
+          'tool_use',
+    )
+    expect(toolStarts).toHaveLength(0)
+
+    // message_delta's stop_reason should be end_turn (not tool_use),
+    // because no tool_use block was ever started.
+    const messageDelta = events.find(e => e.type === 'message_delta')
+    expect(messageDelta).toBeDefined()
+    expect(
+      (messageDelta as { delta: { stop_reason: string } }).delta.stop_reason,
+    ).toBe('end_turn')
+  })
+
   // M1: claude- prefixed models are no longer eagerly rejected — the
   // upstream gateway decides whether the alias is supported. Verify the
   // adapter does call upstream (i.e. doesn't short-circuit) for claude-*.

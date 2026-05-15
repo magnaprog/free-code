@@ -750,17 +750,26 @@ async function translateChatStreamToAnthropic(
       }
 
       closeTextIfOpen()
+      let startedToolCount = 0
       for (const entry of toolByProviderIndex.values()) {
         if (!entry.started) continue
+        startedToolCount++
         enqueue('content_block_stop', {
           type: 'content_block_stop',
           index: entry.localIndex,
         })
       }
+      // Use the count of STARTED entries (i.e. entries that actually
+      // emitted a content_block_start). A malformed upstream stream that
+      // sent tool_call args but never a function name would have buffered
+      // entries that never started; counting them in toolByProviderIndex.size
+      // would emit stop_reason: tool_use with no actual tool_use block —
+      // inconsistent and breaks consumers that read stop_reason as a
+      // signal to look for tool_use blocks.
       enqueue('message_delta', {
         type: 'message_delta',
         delta: {
-          stop_reason: toolByProviderIndex.size > 0 ? 'tool_use' : stopReason,
+          stop_reason: startedToolCount > 0 ? 'tool_use' : stopReason,
           stop_sequence: null,
         },
         usage: { input_tokens: inputTokens, output_tokens: outputTokens },

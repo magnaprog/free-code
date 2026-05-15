@@ -3,6 +3,7 @@
  */
 
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
+import { randomUUID } from 'crypto'
 import { mkdir, writeFile } from 'fs/promises'
 import { basename, dirname, join } from 'path'
 import {
@@ -150,11 +151,27 @@ export async function recordToolResultArtifact(input: {
 }
 
 /**
+ * Sanitize a tool_use_id for use as a filename component. Provider
+ * streams (especially gateway-mediated ones) can emit attacker-controlled
+ * IDs; a value like `../escape` would otherwise let join() write outside
+ * the tool-results dir. Strip every character outside a conservative
+ * allowlist; empty results fall back to a random UUID so the call still
+ * succeeds and the artifact is referenceable.
+ */
+export function sanitizeToolResultId(id: string): string {
+  const cleaned = id.replace(/[^a-zA-Z0-9._-]/g, '_')
+  // Reject leading dots so `.` and `..` cannot collide with parent dirs
+  // even though join() would resolve `..` away; defense in depth.
+  const safe = cleaned.replace(/^\.+/, '_')
+  return safe.length > 0 ? safe : `toolu_anon_${randomUUID()}`
+}
+
+/**
  * Get the filepath where a tool result would be persisted.
  */
 export function getToolResultPath(id: string, isJson: boolean): string {
   const ext = isJson ? 'json' : 'txt'
-  return join(getToolResultsDir(), `${id}.${ext}`)
+  return join(getToolResultsDir(), `${sanitizeToolResultId(id)}.${ext}`)
 }
 
 /**

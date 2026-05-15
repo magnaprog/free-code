@@ -383,23 +383,27 @@ export async function getAnthropicClient({
       // /v1/messages itself, so strip the trailing /v1 from the canonical
       // OpenCode base URL.
       //
-      // OpenCode Zen's documented `/messages` route is implemented via
-      // @ai-sdk/anthropic which expects the Anthropic-native `x-api-key`
-      // header. The gateway's general auth guidance is `Authorization:
-      // Bearer`. The Anthropic SDK source (client.ts authHeaders) emits
-      // BOTH `X-Api-Key` and `Authorization: Bearer` when `apiKey` and
-      // `authToken` are both set — verified against
-      // node_modules/@anthropic-ai/sdk/src/client.ts:476-492. Sending
-      // both is intentionally defensive; if a specific OpenCode build
-      // rejects one of the two headers, file an issue and we'll narrow
-      // the scheme. As of 2026-05-14 (OpenCode docs check) no rejection
-      // is documented.
+      // Header-merge gotcha: the SDK applies defaultHeaders AFTER
+      // authHeaders (see @anthropic-ai/sdk/src/client.ts:984-985), so a
+      // stray `Authorization` populated by configureApiKeyHeaders (from
+      // ANTHROPIC_AUTH_TOKEN or the api-key helper) would override the
+      // SDK's Bearer derived from authToken. Build a copy of ARGS that
+      // pins `Authorization` to the OpenCode key so the request really
+      // carries the OpenCode credential and no stray Anthropic token
+      // leaks to the OpenCode gateway.
       const anthropicBaseUrl = getOpenCodeAnthropicBaseUrl()
+      const argsForOpenCode = {
+        ...ARGS,
+        defaultHeaders: {
+          ...(ARGS.defaultHeaders ?? {}),
+          Authorization: `Bearer ${openCodeGoApiKey}`,
+        },
+      }
       const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
         apiKey: openCodeGoApiKey,
         authToken: openCodeGoApiKey,
         baseURL: anthropicBaseUrl,
-        ...ARGS,
+        ...argsForOpenCode,
         fetch: createAnthropicModelMappingFetch(
           resolvedFetch,
           normalizeOpenCodeGoModel,
