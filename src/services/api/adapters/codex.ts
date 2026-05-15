@@ -20,13 +20,13 @@
 import {
   getCodexOAuthTokens,
   getFreshCodexOAuthTokens,
-} from '../../utils/auth.js'
+} from '../../../utils/auth.js'
 import {
   CHATGPT_CODEX_MODELS,
   DEFAULT_CODEX_MODEL,
   isKnownOpenAIResponsesModel,
-} from '../../utils/model/providerCapabilities.js'
-import { redactSecrets } from '../../utils/redaction.js'
+} from '../../../utils/model/providerCapabilities.js'
+import { redactSecrets } from '../../../utils/redaction.js'
 
 // ── Available Codex models ──────────────────────────────────────────
 export const CODEX_MODELS = CHATGPT_CODEX_MODELS.map(m => ({
@@ -87,7 +87,7 @@ export function isCodexModel(model: string): boolean {
 import {
   classifyAnthropicMessagesUrl,
   countTokensUnsupportedResponse,
-} from './anthropicMessagesPath.js'
+} from '../anthropicMessagesPath.js'
 
 function cloneRecord(record: Record<string, unknown>): Record<string, unknown> {
   try {

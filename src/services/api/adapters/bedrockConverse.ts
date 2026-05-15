@@ -11,7 +11,7 @@ import type {
   ToolChoice,
   ToolResultContentBlock,
 } from '@aws-sdk/client-bedrock-runtime'
-import { createBedrockRuntimeClient } from '../../utils/model/bedrock.js'
+import { createBedrockRuntimeClient } from '../../../utils/model/bedrock.js'
 
 interface AnthropicContentBlock {
   type: string
@@ -56,7 +56,7 @@ type BedrockRuntimeClientFactory = () => Promise<BedrockRuntimeClientLike>
 import {
   classifyAnthropicMessagesUrl,
   countTokensUnsupportedResponse,
-} from './anthropicMessagesPath.js'
+} from '../anthropicMessagesPath.js'
 
 function formatSSE(event: string, data: string): string {
   return `event: ${event}\ndata: ${data}\n\n`

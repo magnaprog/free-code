@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { createOpenAIChatCompletionsFetch } from './openai-chat-completions-fetch-adapter.js'
+import { createOpenAIChatCompletionsFetch } from './openaiChatCompletions.js'
 
 const originalFetch = globalThis.fetch
 

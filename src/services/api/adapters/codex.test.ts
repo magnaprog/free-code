@@ -3,7 +3,7 @@ import {
   codexFetchAdapterTestHooks,
   createCodexFetch,
   isCodexModel,
-} from './codex-fetch-adapter.js'
+} from './codex.js'
 
 function sseResponse(events: Record<string, unknown>[]): Response {
   return new Response(

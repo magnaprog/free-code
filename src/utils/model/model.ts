@@ -36,7 +36,7 @@ import {
   OPENAI_RESPONSES_MODELS,
   getKnownNonClaudeModelCapability,
 } from './providerCapabilities.js'
-import { getOpenCodeGoModel } from '../../services/provider/openCodeGo.js'
+import { getOpenCodeGoModel } from '../../services/api/openCodeGo.js'
 
 export type ModelShortName = string
 export type ModelName = string

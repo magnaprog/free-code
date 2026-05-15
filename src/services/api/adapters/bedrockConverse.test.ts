@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { bedrockConverseFetchAdapterTestHooks } from './bedrock-converse-fetch-adapter.js'
+import { bedrockConverseFetchAdapterTestHooks } from './bedrockConverse.js'
 
 function parseSseData(text: string): Record<string, unknown>[] {
   return text

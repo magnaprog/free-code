@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto'
-import { normalizeOpenCodeGoModel } from './openCodeGo.js'
-import { redactSecrets } from '../../utils/redaction.js'
-import { logEvent } from '../analytics/index.js'
+import { normalizeOpenCodeGoModel } from '../openCodeGo.js'
+import { redactSecrets } from '../../../utils/redaction.js'
+import { logEvent } from '../../analytics/index.js'
 
 // B6: Date.now() has millisecond resolution; concurrent requests collide.
 // Use crypto.randomUUID() for stable per-request IDs.
@@ -24,7 +24,7 @@ const MAX_ERROR_BODY_CHARS = 1_000
 import {
   classifyAnthropicMessagesUrl,
   countTokensUnsupportedResponse,
-} from './anthropicMessagesPath.js'
+} from '../anthropicMessagesPath.js'
 
 type AnthropicContentBlock = {
   type: string

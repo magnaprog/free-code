@@ -40,9 +40,9 @@ import {
 import {
   createCodexFetch,
   createOpenAIResponsesFetch,
-} from './codex-fetch-adapter.js'
-import { createBedrockConverseFetch } from './bedrock-converse-fetch-adapter.js'
-import { createOpenAIChatCompletionsFetch } from './openai-chat-completions-fetch-adapter.js'
+} from './adapters/codex.js'
+import { createBedrockConverseFetch } from './adapters/bedrockConverse.js'
+import { createOpenAIChatCompletionsFetch } from './adapters/openaiChatCompletions.js'
 import { getRequiredNonClaudeAdapterForModel } from '../../utils/model/providerCapabilities.js'
 import {
   getOpenCodeAnthropicBaseUrl,
