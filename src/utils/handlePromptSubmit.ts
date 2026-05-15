@@ -18,6 +18,7 @@ import {
   type QueuedCommand,
 } from '../types/textInputTypes.js'
 import { createAbortController } from './abortController.js'
+import { notifyCommandLifecycle } from './commandLifecycle.js'
 import type { PastedContent } from './config.js'
 import { logForDebugging } from './debug.js'
 import type { EffortValue } from './effort.js'
@@ -474,6 +475,16 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
     // duplicating turn-level context (IDE selection, todos, diffs).
     const commands = queuedCommands ?? []
 
+    // Bridge/remote delivery reports: fire 'started' for every queued
+    // command with a uuid before processing. Previously this only fired
+    // for commands consumed mid-turn (query.ts:queuedCommandsSnapshot),
+    // which excluded the queue-processor path. Without it, CCR clients
+    // never receive the 'processing' delivery report for queued prompts
+    // and may resubmit them on reconnect.
+    for (const cmd of commands) {
+      if (cmd.uuid) notifyCommandLifecycle(cmd.uuid, 'started')
+    }
+
     // Compute the workload tag for this turn. queueProcessor can batch a
     // cron prompt with a same-tick human prompt; only tag when EVERY
     // command agrees on the same non-undefined workload — a human in the
@@ -597,6 +608,11 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
           primaryInput,
           effort,
         )
+        // Mirror query.ts asymmetric semantics: only fire 'completed' if
+        // onQuery returned normally. Errors propagate before this point.
+        for (const cmd of commands) {
+          if (cmd.uuid) notifyCommandLifecycle(cmd.uuid, 'completed')
+        }
       } else {
         // Local slash commands that skip messages (e.g., /model, /theme).
         // Release the guard BEFORE clearing toolJSX to prevent spinner flash —
@@ -611,6 +627,11 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
         })
         resetHistory()
         setAbortController(null)
+        // Local-only slash commands still count as processed for bridge
+        // delivery reporting.
+        for (const cmd of commands) {
+          if (cmd.uuid) notifyCommandLifecycle(cmd.uuid, 'completed')
+        }
       }
 
       // Handle nextInput from commands that want to chain (e.g., /discover activation)

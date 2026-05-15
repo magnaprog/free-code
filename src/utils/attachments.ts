@@ -1042,7 +1042,7 @@ async function maybe<A>(label: string, f: () => Promise<A[]>): Promise<A[]> {
   }
 }
 
-const INLINE_NOTIFICATION_MODES = new Set(['prompt', 'task-notification'])
+const INLINE_NOTIFICATION_MODES = new Set(['task-notification'])
 
 export async function getQueuedCommandAttachments(
   queuedCommands: QueuedCommand[],
@@ -1050,11 +1050,16 @@ export async function getQueuedCommandAttachments(
   if (!queuedCommands) {
     return []
   }
-  // Include both 'prompt' and 'task-notification' commands as attachments.
-  // During proactive agentic loops, task-notification commands would otherwise
-  // stay in the queue permanently (useQueueProcessor can't run while a query
-  // is active), causing hasPendingNotifications() to return true and Sleep to
-  // wake immediately with 0ms duration in an infinite loop.
+  // Only task-notification commands fold into the running turn. During
+  // proactive agentic loops they'd otherwise stay queued forever
+  // (useQueueProcessor can't run while a query is active), causing
+  // hasPendingNotifications() to return true and Sleep to wake immediately
+  // with 0ms duration in an infinite loop.
+  //
+  // User prompts intentionally do NOT drain mid-turn — folding them into a
+  // running task short-circuited the "queue waits for current turn" UX. They
+  // stay in the queue and the prompt-area preview, and the queue processor
+  // pulls them between turns.
   const filtered = queuedCommands.filter(_ =>
     INLINE_NOTIFICATION_MODES.has(_.mode),
   )
