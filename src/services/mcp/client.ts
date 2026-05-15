@@ -103,6 +103,7 @@ import { subprocessEnv } from '../../utils/subprocessEnv.js'
 import {
   isPersistError,
   persistToolResult,
+  recordToolResultArtifact,
 } from '../../utils/toolResultStorage.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -2804,6 +2805,20 @@ export async function processMCPResult(
     sizeEstimateTokens,
     persistedSizeChars: persistResult.originalSize,
   } as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS)
+
+  // Index the persisted MCP output so ContextRecall sees it alongside
+  // regular tool-result artifacts. tool_use_id format for MCP is
+  // `mcp-<server>-<tool>-<timestamp>`; toolName for the artifact ref is
+  // the synthetic mcp__server__tool surface (matches how MCP tool names
+  // are normalized elsewhere in the codebase). Gated by feature flag.
+  const mcpArtifactToolName = `mcp__${normalizeNameForMCP(name)}__${normalizeNameForMCP(tool)}`
+  await recordToolResultArtifact({
+    toolUseId: persistId,
+    toolName: mcpArtifactToolName,
+    path: persistResult.filepath,
+    content: contentStr,
+    preview: persistResult.preview,
+  })
 
   const formatDescription = getFormatDescription(type, schema)
   return getLargeOutputInstructions(

@@ -625,47 +625,30 @@ export async function compactConversation(
       roughTokenCountEstimationForMessages,
     )
 
-    // B11: If the selector says "everything is tail; nothing to summarize",
-    // don't silently fall back to summarizing all messages WHEN tail
-    // preservation could meaningfully apply. For conversations large enough
-    // to support a real tail/prefix split, retry once with a halved tail
-    // config; if still empty, refuse to compact instead of silently
-    // disengaging tail preservation.
-    //
-    // For very short conversations (under the tail-meaningful threshold)
-    // there is no way to preserve a tail anyway — keep the legacy behavior
-    // of summarizing everything so manual /compact on small histories still
-    // works and short-conversation callers (test fixtures, scripted flows)
-    // are not broken.
-    const tailMeaningfulThreshold = Math.max(
-      2,
-      compactionConfig.tail.minTextMessages * 2,
-    )
-    if (tailSelection.prefixToSummarize.length === 0) {
-      if (messages.length >= tailMeaningfulThreshold) {
-        // Large enough to expect tail preservation. Retry with halved
-        // config so the prefix becomes non-empty.
-        const halvedTailConfig = {
-          ...compactionConfig.tail,
-          targetTokens: Math.max(
-            1,
-            Math.floor(compactionConfig.tail.targetTokens / 2),
-          ),
-          minTextMessages: Math.max(
-            1,
-            Math.floor(compactionConfig.tail.minTextMessages / 2),
-          ),
-        }
-        tailSelection = selectTailForCompaction(
-          messages,
-          halvedTailConfig,
-          roughTokenCountEstimationForMessages,
-        )
-        if (tailSelection.prefixToSummarize.length === 0) {
-          throw new Error(ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)
-        }
+    if (
+      tailSelection.prefixToSummarize.length === 0 &&
+      roughTokenCountEstimationForMessages(messages) >
+        compactionConfig.tail.targetTokens
+    ) {
+      const halvedTailConfig = {
+        ...compactionConfig.tail,
+        targetTokens: Math.max(
+          1,
+          Math.floor(compactionConfig.tail.targetTokens / 2),
+        ),
+        minTextMessages: Math.max(
+          1,
+          Math.floor(compactionConfig.tail.minTextMessages / 2),
+        ),
       }
-      // else: short conversation — fall through to legacy behavior below.
+      tailSelection = selectTailForCompaction(
+        messages,
+        halvedTailConfig,
+        roughTokenCountEstimationForMessages,
+      )
+      if (tailSelection.prefixToSummarize.length === 0) {
+        throw new Error(ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)
+      }
     }
 
     const shouldKeepTail = tailSelection.prefixToSummarize.length > 0

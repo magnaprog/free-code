@@ -19,6 +19,7 @@ import {
   getOpenCodeGoModel,
   getOpenCodeTransportForModel,
   isOpenCodeGoEnabled,
+  normalizeOpenCodeGoModel,
   type OpenCodeTransport,
 } from './openCodeGo.js'
 import { getProviderProfile } from './providerProfiles.js'
@@ -105,11 +106,7 @@ export function resolveProviderRuntime(
   const apiProvider =
     explicitProfile?.apiProvider ?? options.apiProvider ?? getLegacyAPIProvider(env)
   if (apiProvider === 'openai') {
-    // B5: explicit OpenCode Zen flag wins over a lingering OPENAI_API_KEY.
-    // Matches client.ts runtime evaluation order. Without this, the
-    // resolver would say "use OpenAI" while client.ts says "use OpenCode"
-    // — two sources of truth diverging.
-    if (isOpenCodeGoEnabled(env) || options.authByProviderId?.['opencode-go']) {
+    if (isOpenCodeGoEnabled(env)) {
       return resolveOpenCodeGo(options, env, 'opencode-go')
     }
     if (env.OPENAI_API_KEY || options.authByProviderId?.['openai-responses']) {
@@ -169,7 +166,8 @@ function resolveOpenCodeGo(
   providerId: ProviderId,
 ): ProviderResolution {
   const auth = getOpenCodeGoAuth(options, env)
-  const model = getModelForProvider(options, env, providerId)
+  const rawModel = getModelForProvider(options, env, providerId)
+  const model = rawModel ? normalizeOpenCodeGoModel(rawModel) : ''
   if (!model) {
     return fail('unknown_model', {
       providerId,
@@ -196,7 +194,7 @@ function resolveOpenCodeGo(
       providerId,
       model,
       message:
-        `OpenCode Zen gemini-* models route to /models/{id}:generate which is not yet supported. ` +
+        `OpenCode Zen gemini-* models route to /models/{id} which is not yet supported. ` +
         `Use a chat-completions model (qwen/kimi/glm/minimax/deepseek), Claude model, or GPT model instead.`,
     })
   }
@@ -214,7 +212,7 @@ function resolveOpenCodeGo(
       // Capability surface mirrors the transport chosen at runtime.
       capabilities:
         transport === 'anthropic_messages'
-          ? createAnthropicMessagesCapabilities(model)
+          ? createAnthropicMessagesCapabilities(model, { isGateway: true })
           : transport === 'openai_responses'
             ? createOpenAIResponsesCapabilities(
                 getKnownNonClaudeModelCapability(model, 'openai-responses') ?? {

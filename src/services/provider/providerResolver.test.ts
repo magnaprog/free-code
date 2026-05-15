@@ -124,6 +124,7 @@ describe('provider resolver', () => {
     expect(resolution.runtime.transport).toBe('openai_chat_completions')
     expect(resolution.runtime.adapterId).toBe('opencode-go')
     expect(resolution.runtime.auth.type).toBe('api')
+    expect(resolution.runtime.model).toBe('qwen-test')
     expect(resolution.runtime.baseUrl).toBe('https://opencode.ai/zen/v1')
   })
 

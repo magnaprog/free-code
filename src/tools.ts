@@ -110,13 +110,10 @@ const OverflowTestTool = feature('OVERFLOW_TEST_TOOL')
 const CtxInspectTool = feature('CONTEXT_COLLAPSE')
   ? require('./tools/CtxInspectTool/CtxInspectTool.js').CtxInspectTool
   : null
-// M19: decouple recall tool from CONTEXT_COLLAPSE. Artifact recall serves
-// its own purpose (re-reading persisted tool results); a no-op
-// contextCollapse flag should not gate it. Use feature('CONTEXT_RECALL')
-// or env CLAUDE_CODE_CONTEXT_RECALL.
-const ContextRecallTool = feature('CONTEXT_RECALL')
-  ? require('./tools/ContextRecallTool/ContextRecallTool.js').ContextRecallTool
-  : null
+const ContextRecallTool =
+  feature('CONTEXT_RECALL') || isEnvTruthy(process.env.CLAUDE_CODE_CONTEXT_RECALL)
+    ? require('./tools/ContextRecallTool/ContextRecallTool.js').ContextRecallTool
+    : null
 const TerminalCaptureTool = feature('TERMINAL_PANEL')
   ? require('./tools/TerminalCaptureTool/TerminalCaptureTool.js')
       .TerminalCaptureTool

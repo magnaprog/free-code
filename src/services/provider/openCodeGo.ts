@@ -16,7 +16,7 @@ export type OpenCodeGoEnv = Record<string, string | undefined>
  * https://opencode.ai/docs/zen on 2026-05-14:
  *   - claude-*  → /messages              (Anthropic Messages)
  *   - gpt-*     → /responses             (OpenAI Responses)
- *   - gemini-*  → /models/{id}:generate  (Gemini native — not wired yet)
+ *   - gemini-*  → /models/{id}  (Gemini native — not wired yet)
  *   - else      → /chat/completions      (OpenAI Chat Completions; qwen,
  *                                          kimi, glm, minimax, deepseek)
  */
@@ -77,12 +77,12 @@ export function getOpenCodeAnthropicBaseUrl(
 export function getOpenCodeGoModel(
   env: OpenCodeGoEnv = process.env,
 ): string | undefined {
-  return (
+  const model =
     env.OPENCODE_MODEL ||
     env.OPENCODE_GO_MODEL ||
     env.FREE_CODE_OPENCODE_GO_MODEL ||
     env.OPENAI_MODEL
-  )
+  return model ? normalizeOpenCodeGoModel(model) : undefined
 }
 
 export function normalizeOpenCodeGoModel(model: string): string {

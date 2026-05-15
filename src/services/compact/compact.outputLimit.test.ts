@@ -134,16 +134,20 @@ function createContext(notifications: unknown[] = []): ToolUseContext {
 }
 
 async function runCompact() {
+  return await runCompactWithMessages([message])
+}
+
+async function runCompactWithMessages(messages: Message[]) {
   const context = createContext()
   return await compactConversation(
-    [message],
+    messages,
     context,
     {
       systemPrompt: asSystemPrompt([]),
       userContext: {},
       systemContext: {},
       toolUseContext: context,
-      forkContextMessages: [message],
+      forkContextMessages: messages,
     },
     false,
     undefined,
@@ -257,6 +261,20 @@ describe('compact output-limit recovery', () => {
     expect(prompts[0]).toContain('Keep the summary under 8,000 tokens')
     expect(prompts[1]).toContain('EMERGENCY COMPACTION RETRY')
     expect(maxOutputTokenOverrides).toEqual([undefined, 4_000])
+    expect(result.summaryMessages[0]?.message.content).toContain(
+      'short continuation state',
+    )
+  })
+
+  test('summarizes many short messages instead of failing tail selection', async () => {
+    responses = ['success']
+    const messages = Array.from({ length: 12 }, (_, i) =>
+      createUserMessage({ content: `short message ${i}` }),
+    )
+
+    const result = await runCompactWithMessages(messages)
+
+    expect(queryModelWithStreaming).toHaveBeenCalledTimes(1)
     expect(result.summaryMessages[0]?.message.content).toContain(
       'short continuation state',
     )

@@ -45,6 +45,21 @@ describe('codex fetch adapter translation', () => {
     expect(codexBody).not.toHaveProperty('tool_choice')
   })
 
+  test('applies explicit model mapper before OpenAI Responses translation', () => {
+    const { codexBody, codexModel } =
+      codexFetchAdapterTestHooks.translateToCodexBody(
+        {
+          model: 'opencode/gpt-5.4-mini',
+          stream: false,
+          messages: [{ role: 'user', content: 'hello' }],
+        },
+        { mapModel: model => model.replace(/^opencode\//, '') },
+      )
+
+    expect(codexModel).toBe('gpt-5.4-mini')
+    expect(codexBody.model).toBe('gpt-5.4-mini')
+  })
+
   test('preserves ChatGPT Codex-supported GPT IDs on the private backend', () => {
     const { codexBody, codexModel } =
       codexFetchAdapterTestHooks.translateToCodexBody(

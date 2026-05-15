@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   getOpenCodeAnthropicBaseUrl,
   getOpenCodeGoBaseUrl,
+  getOpenCodeGoModel,
   getOpenCodeTransportForModel,
   normalizeOpenCodeGoModel,
   OPENCODE_ZEN_DEFAULT_BASE_URL,
@@ -56,6 +57,15 @@ describe('OpenCode Zen helpers', () => {
     expect(normalizeOpenCodeGoModel('opencode/kimi-k2.6')).toBe('kimi-k2.6')
     // No prefix passes through.
     expect(normalizeOpenCodeGoModel('claude-sonnet-4-6')).toBe('claude-sonnet-4-6')
+  })
+
+  test('configured model is normalized before runtime use', () => {
+    expect(getOpenCodeGoModel({ OPENCODE_MODEL: 'opencode/gpt-5.4-mini' })).toBe(
+      'gpt-5.4-mini',
+    )
+    expect(
+      getOpenCodeGoModel({ OPENCODE_GO_MODEL: 'opencode-go/claude-sonnet-4-6' }),
+    ).toBe('claude-sonnet-4-6')
   })
 
   test('per-model transport routing — claude → anthropic_messages', () => {

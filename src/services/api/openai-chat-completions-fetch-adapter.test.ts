@@ -229,6 +229,119 @@ describe('OpenAI chat completions fetch adapter', () => {
     expect(sent.tools[0]!.function.parameters.type).toBe('object')
   })
 
+  // B7-edge: provider streams tool_call.index + id in chunk 1 and the
+  // function.name in chunk 2. Earlier code emitted content_block_start
+  // with name: '' immediately, which is malformed for Anthropic SDK
+  // consumers (block_start cannot be re-issued). The fix defers the
+  // start until the name is known and replays any buffered arguments.
+  test('defers tool_use content_block_start until function name is known', async () => {
+    const upstreamChunks = [
+      `data: ${JSON.stringify({
+        choices: [
+          {
+            delta: {
+              tool_calls: [{ index: 0, id: 'call_xyz' }],
+            },
+            finish_reason: null,
+          },
+        ],
+      })}`,
+      `data: ${JSON.stringify({
+        choices: [
+          {
+            delta: {
+              tool_calls: [{ index: 0, function: { arguments: '{"path":' } }],
+            },
+            finish_reason: null,
+          },
+        ],
+      })}`,
+      `data: ${JSON.stringify({
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                { index: 0, function: { name: 'Read', arguments: '"/etc/hosts"}' } },
+              ],
+            },
+            finish_reason: 'tool_calls',
+          },
+        ],
+      })}`,
+      `data: [DONE]`,
+    ]
+    const sseBody = upstreamChunks.map(c => `${c}\n\n`).join('')
+
+    globalThis.fetch = (() => {
+      return Promise.resolve(
+        new Response(sseBody, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      )
+    }) as typeof globalThis.fetch
+
+    const fetch = createOpenAIChatCompletionsFetch('k', {
+      baseUrl: 'https://opencode.example/zen/v1',
+    })
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      body: JSON.stringify({
+        model: 'qwen-test',
+        messages: [{ role: 'user', content: 'hi' }],
+        stream: true,
+      }),
+    })
+
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let out = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      out += decoder.decode(value, { stream: true })
+    }
+
+    // Parse the SSE events emitted to the consumer.
+    const events = out
+      .split('\n\n')
+      .filter(line => line.startsWith('event: '))
+      .map(block => {
+        const [, dataLine] = block.split('\n')
+        const dataPayload = dataLine?.slice('data: '.length)
+        return dataPayload ? JSON.parse(dataPayload) : null
+      })
+      .filter(Boolean) as Array<Record<string, unknown>>
+
+    // Find content_block_start events for tool_use.
+    const toolStarts = events.filter(
+      e =>
+        e.type === 'content_block_start' &&
+        (e as { content_block?: { type?: string; name?: string } })
+          .content_block?.type === 'tool_use',
+    )
+
+    // Exactly one tool_use start. Must have non-empty name.
+    expect(toolStarts).toHaveLength(1)
+    const block = (toolStarts[0] as {
+      content_block: { name: string; id: string }
+    }).content_block
+    expect(block.name).toBe('Read')
+    expect(block.id).toBe('call_xyz')
+
+    // Buffered args must be replayed as a single delta (the args from
+    // chunk 2 arrived before the name).
+    const toolDeltas = events.filter(
+      e =>
+        e.type === 'content_block_delta' &&
+        (e as { delta?: { type?: string } }).delta?.type === 'input_json_delta',
+    )
+    const concatenatedJson = toolDeltas
+      .map(d => (d as { delta: { partial_json: string } }).delta.partial_json)
+      .join('')
+    expect(concatenatedJson).toBe('{"path":"/etc/hosts"}')
+  })
+
   // M1: claude- prefixed models are no longer eagerly rejected — the
   // upstream gateway decides whether the alias is supported. Verify the
   // adapter does call upstream (i.e. doesn't short-circuit) for claude-*.

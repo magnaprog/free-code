@@ -22,12 +22,12 @@ import { groupMessagesByApiRound } from './grouping.js'
 import { runPostCompactCleanup } from './postCompactCleanup.js'
 import { setLastSummarizedMessageId } from '../SessionMemory/sessionMemoryUtils.js'
 import { selectTailForCompaction } from './tailSelector.js'
-import { applyToolResultBudget } from '../../utils/toolResultStorage.js'
+import {
+  applyToolResultBudget,
+  cloneContentReplacementState,
+} from '../../utils/toolResultStorage.js'
 
-// PR H: aggressive per-message tool-result limit for emergency recovery.
-// Half of the default (which is MAX_TOOL_RESULTS_PER_MESSAGE_CHARS = 120K).
-// Forces additional offload of large tool results into persisted files
-// before the summarizer sees them — reduces prompt_too_long likelihood.
+// Smaller emergency-only cap used before the summarizer runs.
 const REACTIVE_AGGRESSIVE_OFFLOAD_LIMIT = 60_000
 
 export type ReactiveCompactFailureReason =
@@ -153,16 +153,14 @@ export async function reactiveCompactOnPromptTooLong(
     return { ok: false, reason: 'too_few_groups' }
   }
 
-  // PR H: aggressive tool-result offload BEFORE summarizing. Forces
-  // additional large tool results to be persisted to disk so the
-  // compaction call itself sees a smaller payload. State mutation
-  // persists into subsequent normal requests (intentional — disk
-  // persistence is a one-way decision).
+  const offloadState = toolUseContext.contentReplacementState
+    ? cloneContentReplacementState(toolUseContext.contentReplacementState)
+    : undefined
   const aggressivelyOffloaded = await applyToolResultBudget(
     prepared.messages,
-    toolUseContext.contentReplacementState,
-    undefined, // don't write to transcript here — recovery path is best-effort
-    undefined, // no skipToolNames override
+    offloadState,
+    undefined,
+    undefined,
     { forcedPerMessageLimit: REACTIVE_AGGRESSIVE_OFFLOAD_LIMIT },
   )
   const preparedAfterOffload = {
@@ -200,26 +198,12 @@ export async function reactiveCompactOnPromptTooLong(
     if (toolUseContext.abortController.signal.aborted) {
       return { ok: false, reason: 'aborted' }
     }
-    // PR H: surface diagnostic information on reactive compact failure
-    // so callers/operators can see which messages contributed most to
-    // the overflow. Plan called this "surface top contributors via
-    // TokenLedger"; we use the rough estimator directly here to avoid a
-    // circular import (TokenLedger lives in services/context).
     surfaceFailureDiagnostics(preparedAfterOffload.messages, error)
     logError(error)
     return { ok: false, reason: 'error' }
   }
 }
 
-/**
- * PR H: emit a structured log of the top message-size contributors at
- * the time reactive compact failed. Helps operators identify why the
- * recovery path couldn't shrink context enough.
- *
- * Caps at 5 contributors. Each entry reports (type, tokenEstimate,
- * preview-length) without any message content to avoid leaking prompt
- * data through telemetry.
- */
 function surfaceFailureDiagnostics(messages: Message[], error: unknown): void {
   try {
     const ranked = messages
@@ -240,6 +224,8 @@ function surfaceFailureDiagnostics(messages: Message[], error: unknown): void {
       top1Tokens: ranked[0]?.tokens ?? 0,
       top2Tokens: ranked[1]?.tokens ?? 0,
       top3Tokens: ranked[2]?.tokens ?? 0,
+      top4Tokens: ranked[3]?.tokens ?? 0,
+      top5Tokens: ranked[4]?.tokens ?? 0,
       errorIsApiError:
         typeof error === 'object' &&
         error !== null &&

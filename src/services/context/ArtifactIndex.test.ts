@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { appendFile, mkdtemp, rm, writeFile } from 'fs/promises'
+import { appendFile, mkdtemp, rm, symlink, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
@@ -119,14 +119,12 @@ describe('ArtifactIndex', () => {
     expect(missing.results[0]?.snippet).toBeUndefined()
   })
 
-  // B13: artifact records pointing outside the session root must be
-  // rejected (treated as missing) to prevent local file disclosure via a
-  // tampered/corrupted index.
   test('rejects artifact paths outside allowed roots', async () => {
     const dir = await makeTempDir()
+    const outsideDir = await makeTempDir()
     const indexPath = join(dir, 'index.jsonl')
-    // Path traversal target outside the index's allowed-root tree.
-    const outsidePath = '/etc/passwd'
+    const outsidePath = join(outsideDir, 'outside.txt')
+    await writeFile(outsidePath, 'outside secret', 'utf8')
 
     await appendArtifactRecord(
       buildToolResultArtifactRef({
@@ -144,23 +142,44 @@ describe('ArtifactIndex', () => {
       indexPath,
     })
 
-    // Either no results returned, OR the result is flagged as missing.
-    // Either is acceptable; what matters is no leak of /etc/passwd.
-    if (results.length > 0) {
-      expect(results[0]?.missing).toBe(true)
-      expect(results[0]?.snippet).toBeUndefined()
-    }
+    expect(results[0]?.missing).toBe(true)
+    expect(results[0]?.snippet).toBeUndefined()
   })
 
-  // B9: snippet read must be bounded — should not load the whole file
-  // into memory even when the file is huge.
-  test('snippet read is bounded regardless of file size', async () => {
+  test('rejects symlinks that resolve outside allowed roots', async () => {
+    const dir = await makeTempDir()
+    const outsideDir = await makeTempDir()
+    const indexPath = join(dir, 'index.jsonl')
+    const outsidePath = join(outsideDir, 'outside.txt')
+    const linkPath = join(dir, 'link.txt')
+    await writeFile(outsidePath, 'outside secret', 'utf8')
+    await symlink(outsidePath, linkPath)
+
+    await appendArtifactRecord(
+      buildToolResultArtifactRef({
+        toolUseId: 'toolu_symlink',
+        toolName: 'Bash',
+        path: linkPath,
+        content: 'unused',
+        preview: 'unused',
+      }),
+      indexPath,
+    )
+
+    const { results } = await searchArtifacts({
+      toolName: 'Bash',
+      indexPath,
+    })
+
+    expect(results[0]?.missing).toBe(true)
+    expect(results[0]?.snippet).toBeUndefined()
+  })
+
+  test('snippet read is capped regardless of file size', async () => {
     const dir = await makeTempDir()
     const artifactPath = join(dir, 'huge.txt')
     const indexPath = join(dir, 'index.jsonl')
 
-    // 5MB file. Old implementation would readFile() and slice — allocates 5MB.
-    // New implementation should partial-read 500 bytes only.
     const content = 'A'.repeat(5_000_000)
     await writeFile(artifactPath, content, 'utf8')
     await appendArtifactRecord(

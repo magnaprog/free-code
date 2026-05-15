@@ -47,6 +47,7 @@ const reasoningItemsByToolCallId = new Map<string, Record<string, unknown>[]>()
 type TranslationOptions = {
   preserveOpenAIResponsesModelIds?: boolean
   targetBackend?: 'openai-responses' | 'chatgpt-codex'
+  mapModel?: (model: string) => string
 }
 
 export function mapClaudeModelToCodex(
@@ -401,7 +402,9 @@ function translateToCodexBody(
   const shouldStream =
     targetBackend === 'chatgpt-codex' ? true : anthropicBody.stream === true
 
-  const codexModel = mapClaudeModelToCodex(claudeModel, options)
+  const codexModel = options.mapModel && claudeModel
+    ? options.mapModel(claudeModel)
+    : mapClaudeModelToCodex(claudeModel, options)
   const reasoningEffort = mapFreeCodeEffortToOpenAIReasoningEffort(
     outputConfig?.effort,
   )
@@ -1289,6 +1292,7 @@ export function createCodexFetch(
 export function createOpenAIResponsesFetch(
   apiKey: string,
   baseUrl = process.env.OPENAI_BASE_URL || OPENAI_RESPONSES_BASE_URL,
+  options: TranslationOptions = {},
 ): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
   const responsesUrl = baseUrl.endsWith('/responses')
     ? baseUrl
@@ -1314,6 +1318,7 @@ export function createOpenAIResponsesFetch(
     }
 
     const { codexBody, codexModel } = translateToCodexBody(anthropicBody, {
+      ...options,
       preserveOpenAIResponsesModelIds: true,
       targetBackend: 'openai-responses',
     })

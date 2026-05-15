@@ -50,6 +50,7 @@ import {
   getOpenCodeGoModel,
   getOpenCodeTransportForModel,
   isOpenCodeGoEnabled,
+  normalizeOpenCodeGoModel,
 } from '../provider/openCodeGo.js'
 
 /**
@@ -359,7 +360,10 @@ export async function getAnthropicClient({
         'OpenCode Zen requires OPENCODE_API_KEY, OPENCODE_GO_API_KEY, or FREE_CODE_OPENCODE_GO_API_KEY',
       )
     }
-    const effectiveModel = model || getOpenCodeGoModel()
+    const configuredModel = model || getOpenCodeGoModel()
+    const effectiveModel = configuredModel
+      ? normalizeOpenCodeGoModel(configuredModel)
+      : undefined
     if (!effectiveModel) {
       throw new Error(
         'OpenCode Zen requires OPENCODE_MODEL, OPENCODE_GO_MODEL, FREE_CODE_OPENCODE_GO_MODEL, or OPENAI_MODEL',
@@ -379,17 +383,27 @@ export async function getAnthropicClient({
       // /v1/messages itself, so strip the trailing /v1 from the canonical
       // OpenCode base URL.
       //
-      // OpenCode's gateway authenticates via `Authorization: Bearer`.
-      // Send via `authToken` so the SDK emits that header; also pass the
-      // same value as `apiKey` because the SDK still uses `x-api-key` as
-      // a backup credential signal in some envelopes. Both headers carry
-      // the same OpenCode API key — gateway accepts whichever it parses.
+      // OpenCode Zen's documented `/messages` route is implemented via
+      // @ai-sdk/anthropic which expects the Anthropic-native `x-api-key`
+      // header. The gateway's general auth guidance is `Authorization:
+      // Bearer`. The Anthropic SDK source (client.ts authHeaders) emits
+      // BOTH `X-Api-Key` and `Authorization: Bearer` when `apiKey` and
+      // `authToken` are both set — verified against
+      // node_modules/@anthropic-ai/sdk/src/client.ts:476-492. Sending
+      // both is intentionally defensive; if a specific OpenCode build
+      // rejects one of the two headers, file an issue and we'll narrow
+      // the scheme. As of 2026-05-14 (OpenCode docs check) no rejection
+      // is documented.
       const anthropicBaseUrl = getOpenCodeAnthropicBaseUrl()
       const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
         apiKey: openCodeGoApiKey,
         authToken: openCodeGoApiKey,
         baseURL: anthropicBaseUrl,
         ...ARGS,
+        fetch: createAnthropicModelMappingFetch(
+          resolvedFetch,
+          normalizeOpenCodeGoModel,
+        ),
         ...(isDebugToStdErr() && { logger: createStderrLogger() }),
       }
       return new Anthropic(clientConfig)
@@ -400,6 +414,7 @@ export async function getAnthropicClient({
       const openAIFetch = createOpenAIResponsesFetch(
         openCodeGoApiKey,
         getOpenCodeGoBaseUrl(),
+        { mapModel: normalizeOpenCodeGoModel },
       )
       const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
         apiKey: 'opencode-zen-placeholder',
@@ -510,10 +525,31 @@ function getCustomHeaders(): Record<string, string> {
 
 export const CLIENT_REQUEST_ID_HEADER = 'x-client-request-id'
 
+function createAnthropicModelMappingFetch(
+  inner: NonNullable<ClientOptions['fetch']>,
+  mapModel: (model: string) => string,
+): ClientOptions['fetch'] {
+  return async (input, init) => {
+    let body = init?.body
+    if (typeof body === 'string') {
+      try {
+        const url = input instanceof Request ? input.url : String(input)
+        const parsed = JSON.parse(body) as { model?: unknown }
+        if (url.includes('/v1/messages') && typeof parsed.model === 'string') {
+          body = JSON.stringify({ ...parsed, model: mapModel(parsed.model) })
+        }
+      } catch {
+        // leave malformed/non-JSON bodies untouched
+      }
+    }
+    return inner(input, { ...init, body })
+  }
+}
+
 function buildFetch(
   fetchOverride: ClientOptions['fetch'],
   source: string | undefined,
-): ClientOptions['fetch'] {
+): NonNullable<ClientOptions['fetch']> {
   // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
   const inner = fetchOverride ?? globalThis.fetch
   // Only send in explicit upstream attribution mode. Bedrock/Vertex/Foundry

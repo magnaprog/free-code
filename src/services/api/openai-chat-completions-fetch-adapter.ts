@@ -670,7 +670,15 @@ async function translateChatStreamToAnthropic(
               if (typeof toolCall.id === 'string') entry.id = toolCall.id
               if (typeof fn?.name === 'string') entry.name = fn.name
 
-              if (!entry.started) {
+              // Defer content_block_start until the function name is
+              // known. Some gateways stream the index/id in one chunk and
+              // the name in a later chunk; emitting tool_use with name:''
+              // would create a malformed block that the Anthropic SDK
+              // consumer can't fix (block_start cannot be re-issued).
+              // Buffer any arguments that arrive before the name; replay
+              // them as a single delta once the block is started.
+              const canStart = !entry.started && entry.name.length > 0
+              if (canStart) {
                 enqueue('content_block_start', {
                   type: 'content_block_start',
                   index: entry.localIndex,
@@ -682,17 +690,32 @@ async function translateChatStreamToAnthropic(
                   },
                 })
                 entry.started = true
+                if (entry.arguments.length > 0) {
+                  enqueue('content_block_delta', {
+                    type: 'content_block_delta',
+                    index: entry.localIndex,
+                    delta: {
+                      type: 'input_json_delta',
+                      partial_json: entry.arguments,
+                    },
+                  })
+                }
               }
               if (typeof fn?.arguments === 'string' && fn.arguments) {
-                entry.arguments += fn.arguments
-                enqueue('content_block_delta', {
-                  type: 'content_block_delta',
-                  index: entry.localIndex,
-                  delta: {
-                    type: 'input_json_delta',
-                    partial_json: fn.arguments,
-                  },
-                })
+                if (entry.started) {
+                  entry.arguments += fn.arguments
+                  enqueue('content_block_delta', {
+                    type: 'content_block_delta',
+                    index: entry.localIndex,
+                    delta: {
+                      type: 'input_json_delta',
+                      partial_json: fn.arguments,
+                    },
+                  })
+                } else {
+                  // Buffer; replay when block is started.
+                  entry.arguments += fn.arguments
+                }
               }
             }
 

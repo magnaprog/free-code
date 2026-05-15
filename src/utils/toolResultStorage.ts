@@ -4,8 +4,7 @@
 
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import { mkdir, writeFile } from 'fs/promises'
-import { join } from 'path'
-import { getOriginalCwd, getSessionId } from '../bootstrap/state.js'
+import { basename, dirname, join } from 'path'
 import {
   BYTES_PER_TOKEN,
   DEFAULT_MAX_RESULT_SIZE_CHARS,
@@ -25,7 +24,7 @@ import { logForDebugging } from './debug.js'
 import { getErrnoCode, toError } from './errors.js'
 import { formatFileSize } from './format.js'
 import { logError } from './log.js'
-import { getProjectDir } from './sessionStorage.js'
+import { getTranscriptPath } from './sessionStorage.js'
 import { jsonStringify } from './slowOperations.js'
 
 // Subdirectory name for tool results within a session
@@ -100,7 +99,9 @@ export type PersistToolResultError = {
  * Get the session directory (projectDir/sessionId)
  */
 function getSessionDir(): string {
-  return join(getProjectDir(getOriginalCwd()), getSessionId())
+  const transcriptPath = getTranscriptPath()
+  const sessionStem = basename(transcriptPath).replace(/\.jsonl$/, '')
+  return join(dirname(transcriptPath), sessionStem)
 }
 
 /**
@@ -121,7 +122,7 @@ function stringifyPersistableToolResultContent(
   return Array.isArray(content) ? jsonStringify(content, null, 2) : content
 }
 
-async function recordToolResultArtifact(input: {
+export async function recordToolResultArtifact(input: {
   toolUseId: string
   toolName: string
   path: string
@@ -839,17 +840,11 @@ export async function enforceToolResultBudget(
   newlyReplaced: ToolResultReplacementRecord[]
 }> {
   const candidatesByMessage = collectCandidatesByMessage(messages)
-  // Build the tool_use_id → toolName map when either (a) we need it for
-  // skipToolNames filtering, or (b) artifact indexing is on (so we can
-  // record toolName with each persisted replacement). Building it always
-  // would be cheap, but preserving the original conditional minimizes
-  // changes when indexing is off.
-  const needsNameMap =
-    skipToolNames.size > 0 || isArtifactIndexingEnabled()
-  const nameByToolUseId = needsNameMap ? buildToolNameMap(messages) : undefined
+  const nameByToolUseIdForSkip =
+    skipToolNames.size > 0 ? buildToolNameMap(messages) : undefined
   const shouldSkip = (id: string): boolean =>
-    nameByToolUseId !== undefined &&
-    skipToolNames.has(nameByToolUseId.get(id) ?? '')
+    nameByToolUseIdForSkip !== undefined &&
+    skipToolNames.has(nameByToolUseIdForSkip.get(id) ?? '')
   // Resolve once per call. A mid-session flag change only affects FRESH
   // messages (prior decisions are frozen via seenIds/replacements), so
   // prompt cache for already-seen content is preserved regardless.
@@ -926,12 +921,16 @@ export async function enforceToolResultBudget(
     return { messages, newlyReplaced: [] }
   }
 
+  const nameByToolUseIdForIndex =
+    nameByToolUseIdForSkip ??
+    (isArtifactIndexingEnabled() ? buildToolNameMap(messages) : undefined)
+
   // Fresh: concurrent persist for all selected candidates across all
   // messages. In practice toPersist comes from a single message per turn.
   const freshReplacements = await Promise.all(
     toPersist.map(
       async c =>
-        [c, await buildReplacement(c, nameByToolUseId?.get(c.toolUseId))] as const,
+        [c, await buildReplacement(c, nameByToolUseIdForIndex?.get(c.toolUseId))] as const,
     ),
   )
   const newlyReplaced: ToolResultReplacementRecord[] = []

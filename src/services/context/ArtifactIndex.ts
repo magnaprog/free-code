@@ -1,7 +1,8 @@
 import { createHash } from 'crypto'
-import { appendFile, mkdir, open, readFile } from 'fs/promises'
+import { appendFile, mkdir, open, readFile, realpath } from 'fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'path'
 import { getTranscriptPath } from '../../utils/sessionStorage.js'
+import { isFsInaccessible } from '../../utils/errors.js'
 import { redactSecrets } from '../../utils/redaction.js'
 
 // Tool-results dir is at `${sessionDir}/tool-results`; we derive sessionDir
@@ -131,8 +132,7 @@ export async function searchArtifacts(
   const candidates: ArtifactSearchResult[] = []
   const seenIds = new Set<string>()
 
-  // Phase 1: score and filter, do NOT read snippets yet (B9 fix avoids
-  // reading megabytes for results we'll drop after sort+limit).
+  // Score first so dropped candidates never touch disk.
   for (const ref of records.slice().reverse()) {
     if (seenIds.has(ref.id)) continue
     seenIds.add(ref.id)
@@ -154,7 +154,7 @@ export async function searchArtifacts(
     candidates.push({ ref, score })
   }
 
-  // Phase 2: sort + limit, THEN read snippets only for top-K results.
+  // Read snippets only for top-ranked results.
   const ranked = candidates
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
@@ -177,24 +177,6 @@ export async function searchArtifacts(
   return { results: ranked, corruptLines }
 }
 
-/**
- * B13: validate that `path` points inside one of the allowed session
- * artifact roots. Rejects absolute paths outside roots, `../..` traversal,
- * and any path that resolves outside the expected directories.
- *
- * Note: this does NOT resolve symlinks (avoids fs.realpath which fails on
- * missing files). A symlink pointing outside an allowed root would slip
- * past this check. Treat the disk layout as trusted; only the JSONL index
- * is the threat surface.
- */
-/**
- * Allowed roots for artifact paths, derived from the index path itself.
- * In production: ${sessionDir}/artifacts/index.jsonl → allowed roots are
- *   ${sessionDir}/artifacts (where index lives)
- *   ${sessionDir}/tool-results (sibling — where persisted results live)
- * Co-locating roots with the index file keeps the threat model contained:
- * a tampered JSONL can only reference files inside the same session tree.
- */
 function getAllowedArtifactRoots(indexPath: string): string[] {
   const artifactsDir = dirname(indexPath)
   const sessionDir = dirname(artifactsDir)
@@ -210,6 +192,34 @@ function isPathInAllowedRoot(targetPath: string, allowedRoots: string[]): boolea
     }
   }
   return false
+}
+
+async function resolveAllowedArtifactPath(
+  targetPath: string,
+  allowedRoots: string[],
+): Promise<string | null> {
+  if (!isPathInAllowedRoot(targetPath, allowedRoots)) return null
+
+  let realTarget: string
+  try {
+    realTarget = await realpath(targetPath)
+  } catch (error) {
+    if (isFsInaccessible(error)) return null
+    throw error
+  }
+
+  const realRoots = await Promise.all(
+    allowedRoots.map(async root => {
+      try {
+        return await realpath(root)
+      } catch (error) {
+        if (isFsInaccessible(error)) return resolve(root)
+        throw error
+      }
+    }),
+  )
+
+  return isPathInAllowedRoot(realTarget, realRoots) ? realTarget : null
 }
 
 export function buildToolResultArtifactRef(input: {
@@ -238,19 +248,15 @@ async function readArtifactSnippet(
   snippetBytes: number,
   allowedRoots: string[],
 ): Promise<string | null> {
-  // B13: reject paths outside allowed session roots before opening.
-  if (!isPathInAllowedRoot(path, allowedRoots)) {
-    return null
-  }
-  if (snippetBytes <= 0) {
-    return ''
-  }
-  // B9: partial read instead of loading the whole file into memory.
+  const readablePath = await resolveAllowedArtifactPath(path, allowedRoots)
+  if (!readablePath) return null
+  if (snippetBytes <= 0) return ''
+
   let fh
   try {
-    fh = await open(path, 'r')
+    fh = await open(readablePath, 'r')
   } catch (error) {
-    if ((error as { code?: string }).code === 'ENOENT') return null
+    if (isFsInaccessible(error)) return null
     throw error
   }
   try {

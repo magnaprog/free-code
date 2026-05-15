@@ -14,13 +14,3 @@ export function isArtifactIndexingEnabled(): boolean {
   if (feature('CONTEXT_RECALL')) return true
   return isEnvTruthy(process.env.CLAUDE_CODE_CONTEXT_RECALL)
 }
-
-/**
- * Whether to expose the `context_recall` tool to the model. Currently
- * tracks artifact indexing 1:1 — surfacing the tool with no index to read
- * makes no sense. Split if a future state requires read-only recall on
- * pre-existing indexes without continuing to write new ones.
- */
-export function isContextRecallToolEnabled(): boolean {
-  return isArtifactIndexingEnabled()
-}

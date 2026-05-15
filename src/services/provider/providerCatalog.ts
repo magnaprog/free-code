@@ -15,21 +15,29 @@ export const WIRED_PROVIDER_TRANSPORTS = [
 
 export function createAnthropicMessagesCapabilities(
   model: string,
+  opts: { isGateway?: boolean } = {},
 ): ProviderCapabilities {
+  // Gateway-mediated Anthropic Messages (e.g. OpenCode Zen /messages,
+  // OpenRouter, LiteLLM) cannot be assumed to support every Anthropic
+  // Direct capability. Prompt caching headers, cache_control edits,
+  // token-counting endpoint, and SDK beta flags depend on the gateway
+  // proxying those features faithfully. Default to conservative until a
+  // specific gateway is verified.
+  const isGateway = opts.isGateway === true
   return {
     transport: 'anthropic_messages',
     supportsTools: true,
     supportsParallelTools: true,
     supportsStreaming: true,
-    supportsImages: true,
-    supportsPdf: true,
-    supportsReasoning: true,
-    supportsReasoningEffort: true,
-    supportsStructuredOutputs: true,
-    supportsPromptCaching: true,
+    supportsImages: !isGateway,
+    supportsPdf: !isGateway,
+    supportsReasoning: !isGateway,
+    supportsReasoningEffort: !isGateway,
+    supportsStructuredOutputs: !isGateway,
+    supportsPromptCaching: !isGateway,
     supportsNativeCompaction: false,
-    supportsCacheEdits: true,
-    supportsTokenCounting: true,
+    supportsCacheEdits: !isGateway,
+    supportsTokenCounting: !isGateway,
     requiresStrictJsonSchema: false,
     requiresAlternatingRoles: false,
     acceptsToolResultBlocks: true,
