@@ -52,17 +52,11 @@ type BedrockRuntimeClientLike = {
 
 type BedrockRuntimeClientFactory = () => Promise<BedrockRuntimeClientLike>
 
-/**
- * Match only the Anthropic Messages create endpoint, not sub-routes
- * (count_tokens, batches, etc.).
- */
-function isMessagesCreatePath(url: string): boolean {
-  try {
-    return new URL(url).pathname === '/v1/messages'
-  } catch {
-    return /\/v1\/messages(?:\?|$)/.test(url)
-  }
-}
+// Route classification shared with other adapters.
+import {
+  classifyAnthropicMessagesUrl,
+  countTokensUnsupportedResponse,
+} from './anthropicMessagesPath.js'
 
 function formatSSE(event: string, data: string): string {
   return `event: ${event}\ndata: ${data}\n\n`
@@ -682,11 +676,15 @@ export function createBedrockConverseFetch(
     init?: RequestInit,
   ): Promise<Response> => {
     const url = input instanceof Request ? input.url : String(input)
-    // Match only the Anthropic Messages create endpoint, not sub-routes
-    // like /v1/messages/count_tokens. Pass count_tokens through so the
-    // upstream returns 404 and tokenEstimation falls back to its rough
-    // estimate rather than triggering an unintended Converse call.
-    if (!isMessagesCreatePath(url)) {
+    // count_tokens answered locally; other URLs pass through. Note:
+    // tokenEstimation.ts special-cases Bedrock at :152-160 so this
+    // adapter isn't normally reachable for count_tokens; the gate is
+    // defensive in case a future caller routes here directly.
+    const route = classifyAnthropicMessagesUrl(url)
+    if (route === 'count_tokens') {
+      return countTokensUnsupportedResponse()
+    }
+    if (route === 'other') {
       return globalThis.fetch(input, init)
     }
 

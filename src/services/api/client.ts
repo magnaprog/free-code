@@ -182,23 +182,31 @@ export async function getAnthropicClient({
     }),
   }
 
-  // ARGS for the direct first-party Anthropic API client. ANTHROPIC_UNIX_SOCKET
-  // tunneling is scoped here because the unix-socket auth proxy is hard-coded
-  // to api.anthropic.com. Cloud relays (Bedrock/Vertex/Foundry) and gateway
-  // backends (OpenCode/OpenAI/Codex) must NOT inherit this — they target
-  // different endpoints and would be misrouted to the Anthropic auth proxy.
+  // ARGS for the direct first-party Anthropic API client.
+  // ANTHROPIC_UNIX_SOCKET tunneling is scoped to actual api.anthropic.com
+  // requests: the unix-socket auth proxy hard-codes upstream to the
+  // Anthropic API. If a user has overridden ANTHROPIC_BASE_URL to point
+  // at a custom gateway, opting into the unix socket would misroute the
+  // request to the auth proxy. Gate the flag by the actual base URL.
   const ARGS = {
     ...COMMON_ARGS,
     fetchOptions: getProxyFetchOptions({
-      forAnthropicAPI: true,
+      forAnthropicAPI: isFirstPartyAnthropicBaseUrl(),
     }) as ClientOptions['fetchOptions'],
   }
 
   // ARGS for non-direct providers (Bedrock, Vertex, Foundry, OpenCode,
-  // OpenAI Responses, ChatGPT Codex). Standard proxy/TLS still applied;
-  // unix-socket Anthropic-tunnel scoped out.
+  // OpenAI Responses, ChatGPT Codex). Two boundary protections:
+  //   1. No `forAnthropicAPI` → unix-socket scoped out.
+  //   2. Sanitized defaultHeaders → Anthropic-side credentials
+  //      (`Authorization`, `X-Api-Key`) from configureApiKeyHeaders or
+  //      ANTHROPIC_CUSTOM_HEADERS cannot leak into non-direct provider
+  //      requests via SDK right-merge.
+  // Provider branches that need their own credentials re-add them
+  // explicitly after spreading NON_DIRECT_ARGS.
   const NON_DIRECT_ARGS = {
     ...COMMON_ARGS,
+    defaultHeaders: stripInheritedAuthHeaders(defaultHeaders),
     fetchOptions: getProxyFetchOptions() as ClientOptions['fetchOptions'],
   }
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK)) {
@@ -422,13 +430,15 @@ export async function getAnthropicClient({
       // OpenCode talks directly to its own gateway over the regular
       // proxy/TLS configuration.
       const anthropicBaseUrl = getOpenCodeAnthropicBaseUrl()
-      const filteredInheritedHeaders = stripInheritedAuthHeaders(
-        NON_DIRECT_ARGS.defaultHeaders ?? {},
-      )
+      // NON_DIRECT_ARGS.defaultHeaders has already had Authorization
+      // and X-Api-Key stripped (see stripInheritedAuthHeaders). Add
+      // the OpenCode credentials explicitly so SDK right-merge can't
+      // be overridden by a future caller adding stray Anthropic
+      // headers to defaultHeaders.
       const argsForOpenCode = {
         ...NON_DIRECT_ARGS,
         defaultHeaders: {
-          ...filteredInheritedHeaders,
+          ...NON_DIRECT_ARGS.defaultHeaders,
           Authorization: `Bearer ${openCodeGoApiKey}`,
           'X-Api-Key': openCodeGoApiKey,
         },

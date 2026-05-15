@@ -343,20 +343,17 @@ describe('OpenAI chat completions fetch adapter', () => {
   })
 
   // Anthropic SDK calls /v1/messages/count_tokens?beta=true for token
-  // estimation. The adapter used to match by prefix
-  // (`url.includes('/v1/messages')`), which also matched count_tokens.
-  // Translating count_tokens body as a generation request triggers an
-  // unintended paid upstream completion. Fix: pass count_tokens through
-  // to globalThis.fetch unchanged; upstream returns 404 and the SDK
-  // falls back to rough estimation.
-  test('does not intercept /v1/messages/count_tokens (passthrough)', async () => {
-    let upstreamUrl = ''
-    let upstreamBody = ''
-    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-      upstreamUrl = input instanceof Request ? input.url : String(input)
-      upstreamBody = typeof init?.body === 'string' ? init.body : ''
-      // Mimic the upstream's 404 for a non-existent endpoint.
-      return Promise.resolve(new Response('not found', { status: 404 }))
+  // estimation. The adapter must NOT translate this as a generation
+  // request (cost) and must NOT forward it to the network either,
+  // because forwarding would POST the prompt/tool body to
+  // api.anthropic.com (cross-backend data leak). Adapter answers
+  // count_tokens locally with a structured 404; the SDK throws and
+  // tokenEstimation.ts falls back to rough estimation.
+  test('answers /v1/messages/count_tokens locally without network', async () => {
+    let networkCalled = false
+    globalThis.fetch = (() => {
+      networkCalled = true
+      return Promise.resolve(new Response('should not be called', { status: 500 }))
     }) as typeof globalThis.fetch
 
     const fetch = createOpenAIChatCompletionsFetch('k', {
@@ -373,13 +370,52 @@ describe('OpenAI chat completions fetch adapter', () => {
       },
     )
 
-    // Upstream was called with the count_tokens URL unchanged — NOT
-    // translated to /chat/completions.
-    expect(upstreamUrl).toContain('/v1/messages/count_tokens')
-    expect(upstreamUrl).not.toContain('/chat/completions')
-    // Body passed through (still Anthropic-shaped, not chat-shaped).
-    expect(upstreamBody).toContain('claude-sonnet')
+    // Upstream fetch must NOT have been called — count_tokens body
+    // would otherwise leak to api.anthropic.com.
+    expect(networkCalled).toBe(false)
+    // Local synthetic response: 404 with Anthropic-shaped error body.
     expect(response.status).toBe(404)
+    const body = (await response.json()) as { error?: { type?: string } }
+    expect(body.error?.type).toBe('not_found_error')
+  })
+
+  // Path-prefixed base URL support: ANTHROPIC_BASE_URL=https://proxy/anthropic
+  // produces /anthropic/v1/messages — must still be translated.
+  test('translates path-prefixed /anthropic/v1/messages base URLs', async () => {
+    let upstreamCalled = false
+    globalThis.fetch = ((_input: RequestInfo | URL, _init?: RequestInit) => {
+      upstreamCalled = true
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            id: 'x',
+            choices: [
+              { message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' },
+            ],
+            usage: { prompt_tokens: 0, completion_tokens: 0 },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+    }) as typeof globalThis.fetch
+
+    const fetch = createOpenAIChatCompletionsFetch('k', {
+      baseUrl: 'https://opencode.example/zen/v1',
+    })
+    const response = await fetch(
+      'https://proxy.example/anthropic/v1/messages',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          model: 'qwen-test',
+          messages: [{ role: 'user', content: 'hi' }],
+        }),
+      },
+    )
+
+    // Path-prefixed URL was treated as a Messages create and translated.
+    expect(upstreamCalled).toBe(true)
+    expect(response.status).toBe(200)
   })
 
   // Codex follow-up: malformed upstream stream sends tool_call args but

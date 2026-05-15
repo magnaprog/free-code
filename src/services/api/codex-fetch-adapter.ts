@@ -83,19 +83,11 @@ export function isCodexModel(model: string): boolean {
   return CODEX_MODELS.some(m => m.id === model)
 }
 
-/**
- * Match only the Anthropic Messages create endpoint, not sibling routes
- * (count_tokens, batches, etc.). Sub-routes have different bodies and
- * translating them as message-create would trigger unintended paid
- * upstream calls.
- */
-function isMessagesCreatePath(url: string): boolean {
-  try {
-    return new URL(url).pathname === '/v1/messages'
-  } catch {
-    return /\/v1\/messages(?:\?|$)/.test(url)
-  }
-}
+// Route classification shared with other adapters.
+import {
+  classifyAnthropicMessagesUrl,
+  countTokensUnsupportedResponse,
+} from './anthropicMessagesPath.js'
 
 function cloneRecord(record: Record<string, unknown>): Record<string, unknown> {
   try {
@@ -1228,10 +1220,14 @@ export function createCodexFetch(
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = input instanceof Request ? input.url : String(input)
 
-    // Only intercept Anthropic Messages create. Sub-routes like
-    // /v1/messages/count_tokens have a different body shape and would
-    // be mistranslated as generation requests.
-    if (!isMessagesCreatePath(url)) {
+    // count_tokens must be answered locally — forwarding would POST
+    // prompt/tool body to api.anthropic.com. Other non-create URLs
+    // pass through unchanged.
+    const route = classifyAnthropicMessagesUrl(url)
+    if (route === 'count_tokens') {
+      return countTokensUnsupportedResponse()
+    }
+    if (route === 'other') {
       return globalThis.fetch(input, init)
     }
 
@@ -1316,7 +1312,11 @@ export function createOpenAIResponsesFetch(
 
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = input instanceof Request ? input.url : String(input)
-    if (!isMessagesCreatePath(url)) {
+    const route = classifyAnthropicMessagesUrl(url)
+    if (route === 'count_tokens') {
+      return countTokensUnsupportedResponse()
+    }
+    if (route === 'other') {
       return globalThis.fetch(input, init)
     }
 
