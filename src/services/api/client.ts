@@ -393,6 +393,13 @@ export async function getAnthropicClient({
       // headers case-insensitively, then explicitly pin BOTH the Bearer
       // (per OpenCode docs) and X-Api-Key (Anthropic Messages
       // convention) to the OpenCode key.
+      // Round 9: ARGS was built with `getProxyFetchOptions({ forAnthropicAPI:
+      // true })`, which intentionally routes through ANTHROPIC_UNIX_SOCKET when
+      // set (claude ssh auth proxy). Inheriting that here would misroute
+      // OpenCode requests to the Anthropic-only socket regardless of
+      // baseURL. Override fetchOptions to the non-Anthropic variant so
+      // OpenCode talks directly to its own gateway over the regular
+      // proxy/TLS configuration.
       const anthropicBaseUrl = getOpenCodeAnthropicBaseUrl()
       const filteredInheritedHeaders = stripInheritedAuthHeaders(
         ARGS.defaultHeaders ?? {},
@@ -404,6 +411,7 @@ export async function getAnthropicClient({
           Authorization: `Bearer ${openCodeGoApiKey}`,
           'X-Api-Key': openCodeGoApiKey,
         },
+        fetchOptions: getProxyFetchOptions() as ClientOptions['fetchOptions'],
       }
       const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
         apiKey: openCodeGoApiKey,
@@ -517,7 +525,7 @@ async function configureApiKeyHeaders(
  * header dedup. Strip them case-insensitively before re-pinning the
  * backend's own credentials.
  */
-function stripInheritedAuthHeaders(
+export function stripInheritedAuthHeaders(
   headers: Record<string, string>,
 ): Record<string, string> {
   const out: Record<string, string> = {}

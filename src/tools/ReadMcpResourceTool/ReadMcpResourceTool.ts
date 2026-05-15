@@ -2,6 +2,7 @@ import {
   type ReadResourceResult,
   ReadResourceResultSchema,
 } from '@modelcontextprotocol/sdk/types.js'
+import { randomUUID } from 'crypto'
 import { z } from 'zod/v4'
 import { ensureConnectedClient } from '../../services/mcp/client.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
@@ -111,7 +112,7 @@ export const ReadMcpResourceTool = buildTool({
         if (!('blob' in c) || typeof c.blob !== 'string') {
           return { uri: c.uri, mimeType: c.mimeType }
         }
-        const persistId = `mcp-resource-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 8)}`
+        const persistId = `mcp-resource-${Date.now()}-${i}-${randomUUID()}`
         const persisted = await persistBinaryContent(
           Buffer.from(c.blob, 'base64'),
           c.mimeType,

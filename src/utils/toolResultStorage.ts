@@ -172,16 +172,24 @@ export function sanitizeToolResultId(id: string): string {
  * and `a:b` both → `a_b`); combined with persistToolResult's `wx`-flag
  * EEXIST-as-success path that would silently alias the second write to
  * the first file's content. We append a short deterministic sha256
- * suffix so distinct raw IDs always produce distinct filenames while
- * preserving replay-idempotency (same raw ID → same filename → same
- * EEXIST-success behavior on retry).
+ * suffix so distinct raw IDs are collision-resistant while preserving
+ * replay-idempotency (same raw ID → same filename → same EEXIST-success
+ * behavior on retry).
  *
- * 64-bit (≈11 char base64url) suffix is sufficient: at 1B persisted
- * tool results, P(any collision) is ≈ 2.7×10⁻². At realistic session
- * sizes (≤10K) the probability is ≈ 2.7×10⁻¹⁶.
+ * Suffix is 11 base64url chars ≈ 66 bits. Birthday-paradox collision
+ * probability is ~n²/(2·2^66): at 10K session size ≈ 7×10⁻¹³, at 1M ≈
+ * 7×10⁻⁹. Not injective (truncated hash), but the bound is well below
+ * any realistic per-session risk.
+ *
+ * Empty `rawId` uses a deterministic anonymous prefix so two calls with
+ * '' produce the same filename (replay-idempotent for the degenerate
+ * input). Without this, sanitizeToolResultId('') would return a random
+ * UUID prefix and break the invariant.
  */
 export function safeFilenameFromToolUseId(rawId: string): string {
-  const prefix = sanitizeToolResultId(rawId).slice(0, 32)
+  const prefix = rawId.length === 0
+    ? 'toolu_anon_empty'
+    : sanitizeToolResultId(rawId).slice(0, 32)
   const hash = createHash('sha256').update(rawId).digest('base64url').slice(0, 11)
   return `${prefix}-${hash}`
 }

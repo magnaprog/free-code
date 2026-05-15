@@ -1,30 +1,16 @@
 /**
- * Round 8: verify the auth-header strip utility removes case-variants
- * of Authorization and X-Api-Key from inherited headers. Used by the
+ * Verify the auth-header strip utility removes case-variants of
+ * Authorization and X-Api-Key from inherited headers. Used by the
  * OpenCode anthropic_messages branch in client.ts so a stray Anthropic
  * credential from ANTHROPIC_CUSTOM_HEADERS, configureApiKeyHeaders, or
  * the api-key helper does not leak to the OpenCode gateway via the SDK
  * header right-merge.
  *
- * The utility is not exported from client.ts (intentionally — it's an
- * internal helper). We re-implement the same regex contract here and
- * assert by black-box simulation. If client.ts changes the strip rules,
- * this test catches drift.
+ * Round 9: imports the production helper instead of a black-box reimpl,
+ * so test drift against the real implementation cannot occur.
  */
 import { describe, expect, test } from 'bun:test'
-
-const STRIP_REGEX = /^(authorization|x-api-key)$/i
-
-function stripInheritedAuthHeaders(
-  headers: Record<string, string>,
-): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const [key, value] of Object.entries(headers)) {
-    if (STRIP_REGEX.test(key)) continue
-    out[key] = value
-  }
-  return out
-}
+import { stripInheritedAuthHeaders } from './client.js'
 
 describe('stripInheritedAuthHeaders contract', () => {
   test('removes Authorization regardless of case', () => {

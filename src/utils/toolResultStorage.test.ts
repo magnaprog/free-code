@@ -101,4 +101,15 @@ describe('safeFilenameFromToolUseId', () => {
     expect(name).not.toContain('+')
     expect(name).not.toContain('=')
   })
+
+  // Round 9: empty raw ID must be deterministic. The sanitizer alone
+  // returns a random UUID prefix for '', which would break the replay-
+  // idempotency invariant. safeFilenameFromToolUseId routes empty input
+  // through a fixed prefix instead.
+  test('empty raw ID produces deterministic filename (replay idempotent)', () => {
+    expect(safeFilenameFromToolUseId('')).toBe(safeFilenameFromToolUseId(''))
+    expect(safeFilenameFromToolUseId('').startsWith('toolu_anon_empty-')).toBe(
+      true,
+    )
+  })
 })
