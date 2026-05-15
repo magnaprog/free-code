@@ -28,6 +28,14 @@ import { getAPIProvider } from './model/providers.js'
 
 let fired = false
 
+/**
+ * Reset the module-level `fired` flag. Test-only — prevents subsequent
+ * tests from seeing the latched true and trivially passing.
+ */
+export function __resetPreconnectForTesting(): void {
+  fired = false
+}
+
 export function preconnectAnthropicApi(): void {
   if (fired) return
   fired = true

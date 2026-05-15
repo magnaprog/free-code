@@ -23,6 +23,24 @@ export function getAPIProviderForStatsig(): AnalyticsMetadata_I_VERIFIED_THIS_IS
 const ANTHROPIC_API_HOST = 'api.anthropic.com'
 const ANTHROPIC_STAGING_API_HOST = 'api-staging.anthropic.com'
 
+/**
+ * Strict URL gate: returns true only when `baseUrl` is a plain direct
+ * Anthropic API URL. Used by the first-party-only behavior gate
+ * (`isFirstPartyAnthropicBaseUrl`) and the production-only unix-socket
+ * routing gate (`routesToProdAnthropicAPI`).
+ *
+ * Requires:
+ *   - protocol === 'https:'
+ *   - default port (WHATWG normalizes `:443` to empty)
+ *   - no embedded userinfo (e.g. `user:pass@`)
+ *   - hostname exact-match against the prod allowlist (or staging
+ *     allowlist when `allowStaging` is true)
+ *
+ * Does NOT trim the input — that's caller responsibility. WHATWG URL
+ * tolerates surrounding whitespace, but `isFirstPartyAnthropicBaseUrl`
+ * needs trim to distinguish "blank → default prod" from
+ * "explicit URL", so the trim lives there.
+ */
 export function isHttpsAnthropicApiBaseUrl(
   baseUrl: string,
   { allowStaging = false }: { allowStaging?: boolean } = {},
