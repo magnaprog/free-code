@@ -92,6 +92,7 @@ import {
   isToolSearchEnabled,
 } from '../../utils/toolSearch.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
+import { getCompactionConfig } from '../context/compactionConfig.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -114,6 +115,17 @@ import {
   roughTokenCountEstimationForMessages,
 } from '../tokenEstimation.js'
 import { groupMessagesByApiRound } from './grouping.js'
+import { selectTailForCompaction } from './tailSelector.js'
+import {
+  getStructuredCompactPrompt,
+  getStructuredEmergencyCompactPrompt,
+  getStructuredPartialCompactPrompt,
+} from '../context/summary/generateCompactSummary.js'
+import {
+  getRepairCompactSummaryPrompt,
+  renderStructuredCompactSummaryOrFallback,
+  type CompactSummaryMode,
+} from '../context/summary/repairCompactSummary.js'
 import {
   EMERGENCY_COMPACT_MAX_OUTPUT_TOKENS,
   getCompactPrompt,
@@ -131,6 +143,8 @@ export const POST_COMPACT_MAX_TOKENS_PER_FILE = 5_000
 // part. Budget sized to hold ~5 skills at the per-skill cap.
 export const POST_COMPACT_MAX_TOKENS_PER_SKILL = 5_000
 export const POST_COMPACT_SKILLS_TOKEN_BUDGET = 25_000
+const POST_COMPACT_ATTACHMENT_TRUNCATION_MARKER =
+  'Post-compact attachments were truncated to stay within the context budget. Re-read any omitted files/tools if needed.'
 const MAX_COMPACT_STREAMING_RETRIES = 2
 
 /**
@@ -376,6 +390,76 @@ export function buildPostCompactMessages(result: CompactionResult): Message[] {
   ]
 }
 
+function getPostCompactAttachmentPriority(message: AttachmentMessage): number {
+  switch (message.attachment.type) {
+    case 'plan_file_reference':
+    case 'task_reminder':
+    case 'todo_reminder':
+      return 0
+    case 'plan_mode':
+    case 'plan_mode_reentry':
+    case 'verify_plan_reminder':
+      return 1
+    case 'file':
+    case 'compact_file_reference':
+    case 'already_read_file':
+      return 2
+    case 'invoked_skills':
+    case 'dynamic_skill':
+      return 3
+    case 'mcp_instructions_delta':
+      return 4
+    case 'deferred_tools_delta':
+    case 'agent_listing_delta':
+      return 5
+    case 'task_status':
+      return 6
+    case 'async_hook_response':
+    case 'hook_non_blocking_error':
+      return 7
+    default:
+      return 5
+  }
+}
+
+export function applyPostCompactAttachmentBudget(
+  attachments: AttachmentMessage[],
+  budgetTokens = POST_COMPACT_TOKEN_BUDGET,
+): AttachmentMessage[] {
+  let usedTokens = 0
+  let droppedCount = 0
+  const kept: Array<{ index: number; message: AttachmentMessage }> = []
+  const prioritized = attachments
+    .map((message, index) => ({
+      index,
+      message,
+      priority: getPostCompactAttachmentPriority(message),
+      tokens: roughTokenCountEstimationForMessages([message]),
+    }))
+    .sort((a, b) => a.priority - b.priority || a.index - b.index)
+
+  for (const item of prioritized) {
+    if (usedTokens + item.tokens <= budgetTokens || item.priority <= 1) {
+      usedTokens += item.tokens
+      kept.push({ index: item.index, message: item.message })
+    } else {
+      droppedCount++
+    }
+  }
+
+  if (droppedCount > 0) {
+    kept.push({
+      index: Number.MAX_SAFE_INTEGER,
+      message: createAttachmentMessage({
+        type: 'critical_system_reminder',
+        content: `${POST_COMPACT_ATTACHMENT_TRUNCATION_MARKER} Omitted ${droppedCount} low-priority ${droppedCount === 1 ? 'attachment' : 'attachments'}.`,
+      }),
+    })
+  }
+
+  return kept.sort((a, b) => a.index - b.index).map(item => item.message)
+}
+
 /**
  * Annotate a compact boundary with relink metadata for messagesToKeep.
  * Preserved messages keep their original parentUuids on disk (dedup-skipped);
@@ -498,14 +582,28 @@ export async function compactConversation(
       true,
     )
 
-    const compactPrompt = getCompactPrompt(customInstructions)
+    const compactionConfig = getCompactionConfig(context.options.mainLoopModel)
+    const useStructuredSummary = compactionConfig.summary.structured
+    const compactPrompt = useStructuredSummary
+      ? getStructuredCompactPrompt(customInstructions)
+      : getCompactPrompt(customInstructions)
     let summaryRequest = createUserMessage({
       content: compactPrompt,
     })
     let usedEmergencyCompactPrompt = false
 
-    let messagesToSummarize = messages
-    let retryCacheSafeParams = cacheSafeParams
+    const tailSelection = selectTailForCompaction(
+      messages,
+      compactionConfig.tail,
+      roughTokenCountEstimationForMessages,
+    )
+    const shouldKeepTail = tailSelection.prefixToSummarize.length > 0
+    const messagesToKeep = shouldKeepTail ? tailSelection.tailToKeep : []
+    let messagesToSummarize = shouldKeepTail ? tailSelection.prefixToSummarize : messages
+    let retryCacheSafeParams = {
+      ...cacheSafeParams,
+      forkContextMessages: messagesToSummarize,
+    }
     let summaryResponse: AssistantMessage
     let summary: string | null
     let ptlAttempts = 0
@@ -525,7 +623,9 @@ export async function compactConversation(
         if (!usedEmergencyCompactPrompt) {
           usedEmergencyCompactPrompt = true
           summaryRequest = createUserMessage({
-            content: getEmergencyCompactPrompt(customInstructions),
+            content: useStructuredSummary
+              ? getStructuredEmergencyCompactPrompt(customInstructions)
+              : getEmergencyCompactPrompt(customInstructions),
           })
           logEvent('tengu_compact_emergency_retry', {
             preCompactTokenCount,
@@ -599,6 +699,48 @@ export async function compactConversation(
       throw new Error(summary)
     }
 
+    if (useStructuredSummary) {
+      const structuredMode: CompactSummaryMode = usedEmergencyCompactPrompt
+        ? 'emergency'
+        : 'full'
+      const rendered = renderStructuredCompactSummaryOrFallback(
+        summary,
+        structuredMode,
+      )
+      if (rendered.structured) {
+        summary = rendered.rendered
+      } else if (rendered.error) {
+        const repairResponse = await streamCompactSummary({
+          messages: [],
+          summaryRequest: createUserMessage({
+            content: getRepairCompactSummaryPrompt(
+              summary,
+              rendered.error,
+              structuredMode,
+            ),
+          }),
+          appState,
+          context,
+          preCompactTokenCount,
+          cacheSafeParams: retryCacheSafeParams,
+          maxOutputTokensOverride: usedEmergencyCompactPrompt
+            ? getEmergencyCompactMaxOutputTokens(context.options.mainLoopModel)
+            : undefined,
+        })
+        const repairedSummary = getAssistantMessageText(repairResponse)
+        if (repairedSummary) {
+          const repaired = renderStructuredCompactSummaryOrFallback(
+            repairedSummary,
+            structuredMode,
+          )
+          if (repaired.structured) {
+            summary = repaired.rendered
+            summaryResponse = repairResponse
+          }
+        }
+      }
+    }
+
     // Store the current file state before clearing
     const preCompactReadFileState = cacheToObject(context.readFileState)
 
@@ -620,6 +762,7 @@ export async function compactConversation(
         preCompactReadFileState,
         context,
         POST_COMPACT_MAX_FILES_TO_RESTORE,
+        messagesToKeep,
       ),
       createAsyncAgentAttachmentsIfNeeded(context),
     ])
@@ -669,6 +812,10 @@ export async function compactConversation(
     )) {
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
+
+    const budgetedPostCompactAttachments = applyPostCompactAttachmentBudget(
+      postCompactFileAttachments,
+    )
 
     context.onCompactProgress?.({
       type: 'hooks_start',
@@ -723,7 +870,8 @@ export async function compactConversation(
     const truePostCompactTokenCount = roughTokenCountEstimationForMessages([
       boundaryMarker,
       ...summaryMessages,
-      ...postCompactFileAttachments,
+      ...messagesToKeep,
+      ...budgetedPostCompactAttachments,
       ...hookMessages,
     ])
 
@@ -822,9 +970,14 @@ export async function compactConversation(
       .join('\n')
 
     return {
-      boundaryMarker,
+      boundaryMarker: annotateBoundaryWithPreservedSegment(
+        boundaryMarker,
+        summaryMessages[summaryMessages.length - 1]!.uuid,
+        messagesToKeep,
+      ),
       summaryMessages,
-      attachments: postCompactFileAttachments,
+      messagesToKeep,
+      attachments: budgetedPostCompactAttachments,
       hookResults: hookMessages,
       userDisplayMessage: combinedUserDisplayMessage || undefined,
       preCompactTokenCount,
@@ -924,7 +1077,11 @@ export async function partialCompactConversation(
     context.setResponseLength?.(() => 0)
     context.onCompactProgress?.({ type: 'compact_start' })
 
-    const compactPrompt = getPartialCompactPrompt(customInstructions, direction)
+    const compactionConfig = getCompactionConfig(context.options.mainLoopModel)
+    const useStructuredSummary = compactionConfig.summary.structured
+    const compactPrompt = useStructuredSummary
+      ? getStructuredPartialCompactPrompt(customInstructions, direction)
+      : getPartialCompactPrompt(customInstructions, direction)
     let summaryRequest = createUserMessage({
       content: compactPrompt,
     })
@@ -963,7 +1120,9 @@ export async function partialCompactConversation(
         if (!usedEmergencyCompactPrompt) {
           usedEmergencyCompactPrompt = true
           summaryRequest = createUserMessage({
-            content: getEmergencyCompactPrompt(customInstructions, direction),
+            content: useStructuredSummary
+              ? getStructuredEmergencyCompactPrompt(customInstructions, direction)
+              : getEmergencyCompactPrompt(customInstructions, direction),
           })
           logEvent('tengu_partial_compact_emergency_retry', failureMetadata)
           continue
@@ -1020,6 +1179,48 @@ export async function partialCompactConversation(
         ...failureMetadata,
       })
       throw new Error(summary)
+    }
+
+    if (useStructuredSummary) {
+      const structuredMode: CompactSummaryMode = usedEmergencyCompactPrompt
+        ? 'emergency'
+        : 'full'
+      const rendered = renderStructuredCompactSummaryOrFallback(
+        summary,
+        structuredMode,
+      )
+      if (rendered.structured) {
+        summary = rendered.rendered
+      } else if (rendered.error) {
+        const repairResponse = await streamCompactSummary({
+          messages: [],
+          summaryRequest: createUserMessage({
+            content: getRepairCompactSummaryPrompt(
+              summary,
+              rendered.error,
+              structuredMode,
+            ),
+          }),
+          appState: context.getAppState(),
+          context,
+          preCompactTokenCount,
+          cacheSafeParams: retryCacheSafeParams,
+          maxOutputTokensOverride: usedEmergencyCompactPrompt
+            ? getEmergencyCompactMaxOutputTokens(context.options.mainLoopModel)
+            : undefined,
+        })
+        const repairedSummary = getAssistantMessageText(repairResponse)
+        if (repairedSummary) {
+          const repaired = renderStructuredCompactSummaryOrFallback(
+            repairedSummary,
+            structuredMode,
+          )
+          if (repaired.structured) {
+            summary = repaired.rendered
+            summaryResponse = repairResponse
+          }
+        }
+      }
     }
 
     // Store the current file state before clearing
@@ -1081,6 +1282,10 @@ export async function partialCompactConversation(
     )) {
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
+
+    const budgetedPostCompactAttachments = applyPostCompactAttachmentBudget(
+      postCompactFileAttachments,
+    )
 
     context.onCompactProgress?.({
       type: 'hooks_start',
@@ -1195,7 +1400,7 @@ export async function partialCompactConversation(
       ),
       summaryMessages,
       messagesToKeep,
-      attachments: postCompactFileAttachments,
+      attachments: budgetedPostCompactAttachments,
       hookResults: hookMessages,
       userDisplayMessage: postCompactHookResult.userDisplayMessage,
       preCompactTokenCount,

@@ -5,10 +5,13 @@ import {
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
 } from 'src/constants/prompts.js'
 import { microcompactMessages } from 'src/services/compact/microCompact.js'
+import {
+  buildTokenLedger,
+  type TokenLedger,
+} from '../services/context/TokenLedger.js'
 import { getSdkBetas } from '../bootstrap/state.js'
 import { getCommandName } from '../commands.js'
 import { getSystemContext } from '../context.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
   AUTOCOMPACT_BUFFER_TOKENS,
   getEffectiveContextWindowSize,
@@ -229,6 +232,7 @@ export interface ContextData {
     cache_creation_input_tokens: number
     cache_read_input_tokens: number
   } | null
+  readonly tokenLedger?: TokenLedger
 }
 
 export async function countToolDefinitionTokens(
@@ -1112,7 +1116,11 @@ export async function analyzeContextUsage(
   let reservedTokens = 0
   let skipReservedBuffer = false
   if (feature('REACTIVE_COMPACT')) {
-    if (getFeatureValue_CACHED_MAY_BE_STALE('tengu_cobalt_raccoon', false)) {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { isReactiveOnlyMode } =
+      require('../services/compact/reactiveCompact.js') as typeof import('../services/compact/reactiveCompact.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    if (isReactiveOnlyMode()) {
       skipReservedBuffer = true
     }
   }
@@ -1340,7 +1348,7 @@ export async function analyzeContextUsage(
     attachmentsByType: attachmentsByTypeArray,
   }
 
-  return {
+  const result: ContextData = {
     categories: cats,
     totalTokens: finalTotalTokens,
     maxTokens: contextWindow,
@@ -1378,5 +1386,15 @@ export async function analyzeContextUsage(
     isAutoCompactEnabled: isAutoCompact,
     messageBreakdown: formattedMessageBreakdown,
     apiUsage,
+  }
+
+  return {
+    ...result,
+    tokenLedger: buildTokenLedger({
+      data: result,
+      model: runtimeModel,
+      modelContextWindow: contextWindow,
+      effectiveWindow: getEffectiveContextWindowSize(runtimeModel),
+    }),
   }
 }

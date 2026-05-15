@@ -13,7 +13,6 @@ import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { executePreCompactHooks } from '../../utils/hooks.js'
 import { logError } from '../../utils/log.js'
 import { tokenCountWithEstimation } from '../../utils/tokens.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 import { getMaxOutputTokensForModel } from '../api/claude.js'
 import { notifyCompaction } from '../api/promptCacheBreakDetection.js'
 import { setLastSummarizedMessageId } from '../SessionMemory/sessionMemoryUtils.js'
@@ -193,7 +192,11 @@ function isProactiveAutoCompactSuppressedForQuery(
   // trySessionMemoryCompaction in the query loop — the /compact call site
   // still tries session memory first. Revisit if reactive-only graduates.
   if (feature('REACTIVE_COMPACT')) {
-    if (getFeatureValue_CACHED_MAY_BE_STALE('tengu_cobalt_raccoon', false)) {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { isReactiveOnlyMode } =
+      require('./reactiveCompact.js') as typeof import('./reactiveCompact.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    if (isReactiveOnlyMode()) {
       return true
     }
   }

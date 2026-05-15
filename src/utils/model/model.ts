@@ -187,6 +187,15 @@ export function getRuntimeMainLoopModel(params: {
  * @returns The default model setting to use
  */
 export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENCODE_GO)) {
+    return (
+      process.env.OPENCODE_MODEL ||
+      process.env.OPENCODE_GO_MODEL ||
+      process.env.FREE_CODE_OPENCODE_GO_MODEL ||
+      process.env.OPENAI_MODEL ||
+      'opencode-go/model-required'
+    )
+  }
   if (getAPIProvider() === 'openai' && process.env.OPENAI_API_KEY) {
     return process.env.OPENAI_MODEL || DEFAULT_OPENAI_RESPONSES_MODEL
   }

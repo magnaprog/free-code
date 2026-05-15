@@ -10,7 +10,8 @@ export function getAPIProvider(): APIProvider {
       ? 'vertex'
       : isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)
         ? 'foundry'
-        : isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI)
+        : isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI) ||
+            isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENCODE_GO)
           ? 'openai'
           : 'firstParty'
 }

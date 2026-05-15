@@ -1151,7 +1151,9 @@ async function* queryLoop(
           }
         }
       }
-      if ((isWithheld413 || isWithheldMedia) && reactiveCompact) {
+      const reactiveCompactEnabled =
+        reactiveCompact?.isReactiveCompactEnabled() ?? false
+      if ((isWithheld413 || isWithheldMedia) && reactiveCompactEnabled) {
         const compacted = await reactiveCompact.tryReactiveCompact({
           hasAttempted: hasAttemptedReactiveCompact,
           querySource,
@@ -1205,7 +1207,7 @@ async function* queryLoop(
 
       if (
         isWithheld413 &&
-        !reactiveCompact &&
+        !reactiveCompactEnabled &&
         !hasAttemptedContextLimitCompact &&
         isAutoCompactEnabled() &&
         querySource !== 'compact' &&

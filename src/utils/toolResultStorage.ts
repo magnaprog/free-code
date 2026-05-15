@@ -14,6 +14,10 @@ import {
 } from '../constants/toolLimits.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { logEvent } from '../services/analytics/index.js'
+import {
+  appendArtifactRecord,
+  buildToolResultArtifactRef,
+} from '../services/context/ArtifactIndex.js'
 import { sanitizeToolNameForAnalytics } from '../services/analytics/metadata.js'
 import type { Message } from '../types/message.js'
 import { logForDebugging } from './debug.js'
@@ -108,6 +112,39 @@ export function getToolResultsDir(): string {
 // Preview size in bytes for the reference message
 export const PREVIEW_SIZE_BYTES = 2000
 
+const indexedToolResultArtifacts = new Set<string>()
+
+function stringifyPersistableToolResultContent(
+  content: NonNullable<ToolResultBlockParam['content']>,
+): string {
+  return Array.isArray(content) ? jsonStringify(content, null, 2) : content
+}
+
+async function recordToolResultArtifact(input: {
+  toolUseId: string
+  toolName: string
+  path: string
+  content: string
+  preview: string
+}): Promise<void> {
+  if (indexedToolResultArtifacts.has(input.toolUseId)) return
+  indexedToolResultArtifacts.add(input.toolUseId)
+  try {
+    await appendArtifactRecord(
+      buildToolResultArtifactRef({
+        toolUseId: input.toolUseId,
+        toolName: input.toolName,
+        path: input.path,
+        content: input.content,
+        preview: input.preview,
+      }),
+    )
+  } catch (error) {
+    indexedToolResultArtifacts.delete(input.toolUseId)
+    logError(toError(error))
+  }
+}
+
 /**
  * Get the filepath where a tool result would be persisted.
  */
@@ -152,7 +189,7 @@ export async function persistToolResult(
 
   await ensureToolResultsDir()
   const filepath = getToolResultPath(toolUseId, isJson)
-  const contentStr = isJson ? jsonStringify(content, null, 2) : content
+  const contentStr = stringifyPersistableToolResultContent(content)
 
   // tool_use_id is unique per invocation and content is deterministic for a
   // given id, so skip if the file already exists. This prevents re-writing
@@ -317,6 +354,14 @@ async function maybePersistLargeToolResult(
     // If persistence failed, return the original block unchanged
     return toolResultBlock
   }
+
+  await recordToolResultArtifact({
+    toolUseId: toolResultBlock.tool_use_id,
+    toolName,
+    path: result.filepath,
+    content: stringifyPersistableToolResultContent(content),
+    preview: result.preview,
+  })
 
   const message = buildLargeToolResultMessage(result)
 

@@ -110,6 +110,9 @@ const OverflowTestTool = feature('OVERFLOW_TEST_TOOL')
 const CtxInspectTool = feature('CONTEXT_COLLAPSE')
   ? require('./tools/CtxInspectTool/CtxInspectTool.js').CtxInspectTool
   : null
+const ContextRecallTool = feature('CONTEXT_COLLAPSE')
+  ? require('./tools/ContextRecallTool/ContextRecallTool.js').ContextRecallTool
+  : null
 const TerminalCaptureTool = feature('TERMINAL_PANEL')
   ? require('./tools/TerminalCaptureTool/TerminalCaptureTool.js')
       .TerminalCaptureTool
@@ -220,6 +223,7 @@ export function getAllBaseTools(): Tools {
       : []),
     ...(OverflowTestTool ? [OverflowTestTool] : []),
     ...(CtxInspectTool ? [CtxInspectTool] : []),
+    ...(ContextRecallTool ? [ContextRecallTool] : []),
     ...(TerminalCaptureTool ? [TerminalCaptureTool] : []),
     ...(isEnvTruthy(process.env.ENABLE_LSP_TOOL) ? [LSPTool] : []),
     ...(isWorktreeModeEnabled() ? [EnterWorktreeTool, ExitWorktreeTool] : []),

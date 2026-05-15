@@ -41,7 +41,13 @@ import {
   createOpenAIResponsesFetch,
 } from './codex-fetch-adapter.js'
 import { createBedrockConverseFetch } from './bedrock-converse-fetch-adapter.js'
+import { createOpenAIChatCompletionsFetch } from './openai-chat-completions-fetch-adapter.js'
 import { getRequiredNonClaudeAdapterForModel } from '../../utils/model/providerCapabilities.js'
+import {
+  getOpenCodeGoApiKey,
+  getOpenCodeGoBaseUrl,
+  isOpenCodeGoEnabled,
+} from '../provider/openCodeGo.js'
 
 /**
  * Environment variables for different client types:
@@ -339,6 +345,27 @@ export async function getAnthropicClient({
       apiKey: 'openai-placeholder',
       ...ARGS,
       fetch: openAIFetch as unknown as typeof globalThis.fetch,
+      ...(isDebugToStdErr() && { logger: createStderrLogger() }),
+    }
+    return new Anthropic(clientConfig)
+  }
+
+  if (getAPIProvider() === 'openai' && isOpenCodeGoEnabled()) {
+    const openCodeGoApiKey = getOpenCodeGoApiKey()
+    if (!openCodeGoApiKey) {
+      throw new Error(
+        'OpenCode Go requires OPENCODE_API_KEY, OPENCODE_GO_API_KEY, or FREE_CODE_OPENCODE_GO_API_KEY',
+      )
+    }
+    const openCodeGoFetch = createOpenAIChatCompletionsFetch(openCodeGoApiKey, {
+      baseUrl: getOpenCodeGoBaseUrl(),
+      authHeader: 'Authorization',
+      authScheme: 'bearer',
+    })
+    const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
+      apiKey: 'opencode-go-placeholder',
+      ...ARGS,
+      fetch: openCodeGoFetch as unknown as typeof globalThis.fetch,
       ...(isDebugToStdErr() && { logger: createStderrLogger() }),
     }
     return new Anthropic(clientConfig)
