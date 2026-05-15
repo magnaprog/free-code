@@ -86,6 +86,8 @@ describe('direct Anthropic unix-socket routing gate', () => {
     expect(routesToProdAnthropicAPI('https://proxy.example/anthropic')).toBe(false)
     expect(routesToProdAnthropicAPI('http://api.anthropic.com')).toBe(false)
     expect(routesToProdAnthropicAPI('https://api.anthropic.com:8443')).toBe(false)
+    expect(routesToProdAnthropicAPI('https://api.anthropic.com@proxy.example')).toBe(false)
+    expect(routesToProdAnthropicAPI('https://user:pass@api.anthropic.com')).toBe(false)
     expect(routesToProdAnthropicAPI('')).toBe(false)
     expect(routesToProdAnthropicAPI('not a url')).toBe(false)
   })

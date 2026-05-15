@@ -49,6 +49,15 @@ describe('isFirstPartyAnthropicBaseUrl', () => {
     process.env.ANTHROPIC_BASE_URL = 'https://proxy.example/anthropic'
     expect(isFirstPartyAnthropicBaseUrl()).toBe(false)
 
+    process.env.ANTHROPIC_BASE_URL = 'https://api.anthropic.com.evil.com'
+    expect(isFirstPartyAnthropicBaseUrl()).toBe(false)
+
+    process.env.ANTHROPIC_BASE_URL = 'https://api.anthropic.com@proxy.example'
+    expect(isFirstPartyAnthropicBaseUrl()).toBe(false)
+
+    process.env.ANTHROPIC_BASE_URL = 'https://user:pass@api.anthropic.com'
+    expect(isFirstPartyAnthropicBaseUrl()).toBe(false)
+
     process.env.ANTHROPIC_BASE_URL = 'not a url'
     expect(isFirstPartyAnthropicBaseUrl()).toBe(false)
   })

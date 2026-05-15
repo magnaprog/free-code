@@ -20,6 +20,34 @@ export function getAPIProviderForStatsig(): AnalyticsMetadata_I_VERIFIED_THIS_IS
   return getAPIProvider() as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
 }
 
+const ANTHROPIC_API_HOST = 'api.anthropic.com'
+const ANTHROPIC_API_HOSTS = [ANTHROPIC_API_HOST] as const
+const ANTHROPIC_API_HOSTS_WITH_STAGING = [
+  ANTHROPIC_API_HOST,
+  'api-staging.anthropic.com',
+] as const
+
+export function isHttpsAnthropicApiBaseUrl(
+  baseUrl: string,
+  { allowStaging = false }: { allowStaging?: boolean } = {},
+): boolean {
+  try {
+    const url = new URL(baseUrl)
+    const allowedHosts = allowStaging
+      ? ANTHROPIC_API_HOSTS_WITH_STAGING
+      : ANTHROPIC_API_HOSTS
+    return (
+      url.protocol === 'https:' &&
+      url.port === '' &&
+      url.username === '' &&
+      url.password === '' &&
+      allowedHosts.includes(url.hostname)
+    )
+  } catch {
+    return false
+  }
+}
+
 /**
  * Check if ANTHROPIC_BASE_URL is a first-party Anthropic API URL.
  * Returns true if not set (default API) or points to api.anthropic.com
@@ -29,18 +57,7 @@ export function isFirstPartyAnthropicBaseUrl(): boolean {
   const baseUrl = process.env.ANTHROPIC_BASE_URL?.trim()
   if (!baseUrl) return true
 
-  try {
-    const url = new URL(baseUrl)
-    const allowedHosts = ['api.anthropic.com']
-    if (process.env.USER_TYPE === 'ant') {
-      allowedHosts.push('api-staging.anthropic.com')
-    }
-    return (
-      url.protocol === 'https:' &&
-      url.port === '' &&
-      allowedHosts.includes(url.hostname)
-    )
-  } catch {
-    return false
-  }
+  return isHttpsAnthropicApiBaseUrl(baseUrl, {
+    allowStaging: process.env.USER_TYPE === 'ant',
+  })
 }

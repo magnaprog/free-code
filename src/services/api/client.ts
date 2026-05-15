@@ -23,6 +23,7 @@ import { getSmallFastModel } from 'src/utils/model/model.js'
 import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
+  isHttpsAnthropicApiBaseUrl,
 } from 'src/utils/model/providers.js'
 import { getProxyFetchOptions } from 'src/utils/proxy.js'
 import {
@@ -108,16 +109,7 @@ export const NON_DIRECT_ENV_BEARER_SUPPRESSION = {
 } as const
 
 export function routesToProdAnthropicAPI(baseURL: string): boolean {
-  try {
-    const url = new URL(baseURL)
-    return (
-      url.protocol === 'https:' &&
-      url.hostname === 'api.anthropic.com' &&
-      url.port === ''
-    )
-  } catch {
-    return false
-  }
+  return isHttpsAnthropicApiBaseUrl(baseURL)
 }
 
 function createStderrLogger(): ClientOptions['logger'] {
