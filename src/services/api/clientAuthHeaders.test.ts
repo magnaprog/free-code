@@ -8,6 +8,7 @@
  */
 import { describe, expect, test } from 'bun:test'
 import {
+  createFoundrySkipAuthFetch,
   NON_DIRECT_ENV_AUTH_SUPPRESSION,
   NON_DIRECT_ENV_BEARER_SUPPRESSION,
   routesToProdAnthropicAPI,
@@ -71,6 +72,71 @@ describe('non-direct provider auth-suppression helpers', () => {
 
   test('suppresses only SDK bearer token when provider supplies api key', () => {
     expect(NON_DIRECT_ENV_BEARER_SUPPRESSION).toEqual({ authToken: null })
+  })
+})
+
+describe('createFoundrySkipAuthFetch', () => {
+  test('strips x-api-key from outgoing request headers', async () => {
+    let observedHeaders: Headers | undefined
+    const baseFetch = ((input: unknown, init?: RequestInit) => {
+      observedHeaders = new Headers(init?.headers)
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    }) as typeof globalThis.fetch
+    const wrapped = createFoundrySkipAuthFetch(baseFetch)
+    await wrapped('https://foundry.example/anthropic/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': 'foundry-skip-auth-placeholder',
+        'content-type': 'application/json',
+        'x-anthropic-version': '2023-06-01',
+      },
+      body: '{}',
+    })
+    expect(observedHeaders?.get('x-api-key')).toBeNull()
+    expect(observedHeaders?.get('content-type')).toBe('application/json')
+    expect(observedHeaders?.get('x-anthropic-version')).toBe('2023-06-01')
+  })
+
+  test('strips case-variants of x-api-key', async () => {
+    let observedHeaders: Headers | undefined
+    const baseFetch = ((input: unknown, init?: RequestInit) => {
+      observedHeaders = new Headers(init?.headers)
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    }) as typeof globalThis.fetch
+    const wrapped = createFoundrySkipAuthFetch(baseFetch)
+    await wrapped('https://foundry.example/anthropic/v1/messages', {
+      headers: { 'X-Api-Key': 'placeholder', 'X-API-KEY': 'placeholder' },
+    })
+    // Headers normalize names to lowercase; both variants map to the same slot.
+    expect(observedHeaders?.get('x-api-key')).toBeNull()
+  })
+
+  test('passes through input and other init unchanged', async () => {
+    let observedInput: unknown
+    let observedBody: BodyInit | null | undefined
+    let observedMethod: string | undefined
+    const baseFetch = ((input: unknown, init?: RequestInit) => {
+      observedInput = input
+      observedBody = init?.body
+      observedMethod = init?.method
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    }) as typeof globalThis.fetch
+    const wrapped = createFoundrySkipAuthFetch(baseFetch)
+    await wrapped('https://foundry.example/anthropic/v1/messages', {
+      method: 'POST',
+      body: '{"foo":"bar"}',
+      headers: { 'x-api-key': 'placeholder' },
+    })
+    expect(observedInput).toBe('https://foundry.example/anthropic/v1/messages')
+    expect(observedBody).toBe('{"foo":"bar"}')
+    expect(observedMethod).toBe('POST')
+  })
+
+  test('defaults to globalThis.fetch when no base fetch is passed', () => {
+    // Just verify the wrapper returns a function; runtime use of
+    // globalThis.fetch is covered by the SDK integration.
+    const wrapped = createFoundrySkipAuthFetch(undefined)
+    expect(typeof wrapped).toBe('function')
   })
 })
 

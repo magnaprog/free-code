@@ -265,11 +265,15 @@ export async function getAnthropicClient({
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)) {
     const { AnthropicFoundry } = await import('@anthropic-ai/foundry-sdk')
     // Determine Azure AD token provider based on configuration.
-    // The Foundry SDK has no skipAuth flag and requires a non-empty apiKey or
-    // token provider, so skip-auth proxy scenarios use a placeholder key.
+    // The Foundry SDK has no skipAuth flag and requires a non-empty apiKey
+    // or token provider. For skip-auth proxy scenarios we pass a placeholder
+    // apiKey to satisfy the SDK precondition, and a fetch wrapper strips the
+    // x-api-key header before the request leaves the process — so the proxy
+    // never sees the placeholder.
+    const skipFoundryAuth = isEnvTruthy(process.env.CLAUDE_CODE_SKIP_FOUNDRY_AUTH)
     let azureADTokenProvider: (() => Promise<string>) | undefined
     let foundryApiKey: string | undefined
-    if (isEnvTruthy(process.env.CLAUDE_CODE_SKIP_FOUNDRY_AUTH)) {
+    if (skipFoundryAuth) {
       foundryApiKey = 'foundry-skip-auth-placeholder'
     } else if (!process.env.ANTHROPIC_FOUNDRY_API_KEY) {
       const {
@@ -288,6 +292,11 @@ export async function getAnthropicClient({
       ...NON_DIRECT_ENV_BEARER_SUPPRESSION,
       ...(foundryApiKey && { apiKey: foundryApiKey }),
       ...(azureADTokenProvider && { azureADTokenProvider }),
+      ...(skipFoundryAuth && {
+        fetch: createFoundrySkipAuthFetch(
+          resolvedFetch as typeof globalThis.fetch | undefined,
+        ) as ClientOptions['fetch'],
+      }),
       ...(isDebugToStdErr() && { logger: createStderrLogger() }),
     }
     // we have always been lying about the return type - this doesn't support batching or models
@@ -545,6 +554,32 @@ async function configureApiKeyHeaders(
  * custom headers, api-key helpers, or OAuth setup. Provider branches add their
  * own credentials after this boundary strip.
  */
+/**
+ * Wrap a fetch implementation so outgoing requests carry no `x-api-key`
+ * header. Used for the Foundry skip-auth proxy path: the SDK requires a
+ * non-empty `apiKey` at construction time and unconditionally builds an
+ * `x-api-key: <apiKey>` header, but a "skip auth" proxy is responsible
+ * for injecting its own auth and must not see a placeholder credential.
+ *
+ * The strip happens at the fetch boundary so all SDK code paths (initial
+ * request, retries, beta routes) are covered without forking the SDK's
+ * `authHeaders()`.
+ */
+export function createFoundrySkipAuthFetch(
+  baseFetch: typeof globalThis.fetch | undefined,
+): typeof globalThis.fetch {
+  // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
+  const underlying = baseFetch ?? globalThis.fetch
+  return ((
+    input: Parameters<typeof globalThis.fetch>[0],
+    init?: Parameters<typeof globalThis.fetch>[1],
+  ) => {
+    const headers = new Headers(init?.headers)
+    headers.delete('x-api-key')
+    return underlying(input, { ...init, headers })
+  }) as typeof globalThis.fetch
+}
+
 export function stripInheritedAuthHeaders(
   headers: Record<string, string>,
 ): Record<string, string> {
