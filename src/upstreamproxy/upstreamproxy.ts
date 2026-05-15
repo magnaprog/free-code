@@ -115,10 +115,11 @@ export async function initUpstreamProxy(opts?: {
   // sessionHandler.ts). getOauthConfig() is wrong here: it keys off
   // USER_TYPE + USE_{LOCAL,STAGING}_OAUTH, none of which the container sets,
   // so it always returned the prod URL and the CA fetch 404'd.
+  // Trim matches SDK env handling: whitespace ANTHROPIC_BASE_URL falls back
+  // to the default rather than producing an invalid URL for downloadCaBundle.
   const baseUrl =
     opts?.ccrBaseUrl ??
-    process.env.ANTHROPIC_BASE_URL ??
-    'https://api.anthropic.com'
+    (process.env.ANTHROPIC_BASE_URL?.trim() || 'https://api.anthropic.com')
   const caBundlePath =
     opts?.caBundlePath ?? join(homedir(), '.ccr', 'ca-bundle.crt')
 

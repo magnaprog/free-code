@@ -437,12 +437,26 @@ function isGrowthBookEnabled(): boolean {
  * is absent for direct-API users. Hostname only — no path/query/creds.
  */
 export function getApiBaseUrlHost(): string | undefined {
-  const baseUrl = process.env.ANTHROPIC_BASE_URL
+  // Trim to match SDK env handling: whitespace value is treated as unset
+  // (SDK falls back to default prod, so the attribute should be absent).
+  const baseUrl = process.env.ANTHROPIC_BASE_URL?.trim()
   if (!baseUrl) return undefined
   try {
-    const host = new URL(baseUrl).host
-    if (host === 'api.anthropic.com') return undefined
-    return host
+    const url = new URL(baseUrl)
+    // Treat all canonical prod variants as "no attribute" — default https
+    // with default port and the canonical hostname. Any other shape
+    // (insecure scheme, non-default port, custom host, userinfo) is a
+    // non-prod base URL worth labeling for GrowthBook targeting.
+    if (
+      url.protocol === 'https:' &&
+      url.hostname === 'api.anthropic.com' &&
+      url.port === '' &&
+      url.username === '' &&
+      url.password === ''
+    ) {
+      return undefined
+    }
+    return url.host
   } catch {
     return undefined
   }

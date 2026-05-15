@@ -67,10 +67,11 @@ function debug(msg: string): void {
  * skip → web viewer sees inert cards with no file_uuid.
  */
 function getBridgeBaseUrl(): string {
+  // Trim matches SDK env handling: whitespace ANTHROPIC_BASE_URL falls through
+  // to the OAuth-config default rather than carrying spaces into the URL.
   return (
     getBridgeBaseUrlOverride() ??
-    process.env.ANTHROPIC_BASE_URL ??
-    getOauthConfig().BASE_API_URL
+    (process.env.ANTHROPIC_BASE_URL?.trim() || getOauthConfig().BASE_API_URL)
   )
 }
 
