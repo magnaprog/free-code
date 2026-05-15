@@ -90,10 +90,8 @@ describe('OpenAI chat completions fetch adapter', () => {
     expect(await response.text()).toContain('explicit model')
   })
 
-  // B15: orphan tool_result blocks (no matching prior tool_use) get
-  // dropped from the `tool` role and re-surfaced as user text with a
-  // clear marker, so the model still sees the information without OpenAI
-  // returning 400 on orphan tool messages.
+  // Orphan tool_result blocks cannot be sent as OpenAI `tool` messages.
+  // Preserve their content as marked user text instead of dropping it.
   test('drops orphan tool_result and re-surfaces as user text', async () => {
     let bodyText = ''
     globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
@@ -141,8 +139,8 @@ describe('OpenAI chat completions fetch adapter', () => {
     expect(userContent).toContain('leftover stdout')
   })
 
-  // B16: consecutive same-role messages coalesce. Strict gateways
-  // require alternating roles.
+  // Strict gateways require alternating roles, so consecutive same-role
+  // messages are coalesced before sending upstream.
   test('coalesces consecutive user-role messages', async () => {
     let bodyText = ''
     globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
@@ -180,8 +178,8 @@ describe('OpenAI chat completions fetch adapter', () => {
     expect(userMsgs[0]!.content).toContain('second')
   })
 
-  // B18: tool schemas get `additionalProperties: false` injected when
-  // missing, so strict gateways accept them.
+  // Strict gateways require explicit `additionalProperties: false` in
+  // tool schemas.
   test('normalizes tool schema with additionalProperties: false', async () => {
     let bodyText = ''
     globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
@@ -412,35 +410,36 @@ describe('OpenAI chat completions fetch adapter', () => {
         method: 'POST',
         body: JSON.stringify({
           model: 'qwen-test',
+          system: 'system prompt',
+          max_tokens: 128,
           messages: [{ role: 'user', content: 'hi' }],
         }),
       },
     )
 
-    // URL rewritten to the gateway's chat/completions endpoint, NOT
-    // passed through unchanged. A passthrough bug would leave upstreamUrl
-    // as the input /anthropic/v1/messages URL.
     expect(upstreamUrl).toContain('/chat/completions')
     expect(upstreamUrl).not.toContain('/anthropic/v1/messages')
-    // Body is chat-completions-shaped, not Anthropic-shaped: chat
-    // schema lacks Anthropic `system` field but always emits `messages`
-    // with a `system` role entry when one was provided. Here we just
-    // verify the body was translated, not raw-passed.
-    expect(upstreamBody).not.toBe(
-      JSON.stringify({
-        model: 'qwen-test',
-        messages: [{ role: 'user', content: 'hi' }],
-      }),
-    )
+    const chatBody = JSON.parse(upstreamBody) as {
+      model?: string
+      system?: string
+      max_tokens?: number
+      messages?: Array<{ role?: string; content?: string }>
+    }
+    expect(chatBody).toMatchObject({
+      model: 'qwen-test',
+      max_tokens: 128,
+      messages: [
+        { role: 'system', content: 'system prompt' },
+        { role: 'user', content: 'hi' },
+      ],
+    })
+    expect(chatBody.system).toBeUndefined()
     expect(response.status).toBe(200)
   })
 
-  // Codex follow-up: malformed upstream stream sends tool_call args but
-  // never sends a function name. Previously stop_reason was set to
-  // 'tool_use' because toolByProviderIndex.size > 0, even though no
-  // tool_use block was actually emitted. Consumers reading stop_reason
-  // would then look for tool_use blocks that don't exist. The fix counts
-  // STARTED entries only.
+  // Malformed streams can send tool-call arguments without ever naming the
+  // function. That must not produce stop_reason=tool_use unless a tool_use
+  // block was actually emitted.
   test('emits end_turn when tool_call has args but no name (no block started)', async () => {
     const upstreamChunks = [
       `data: ${JSON.stringify({
@@ -527,9 +526,8 @@ describe('OpenAI chat completions fetch adapter', () => {
     ).toBe('end_turn')
   })
 
-  // M1: claude- prefixed models are no longer eagerly rejected — the
-  // upstream gateway decides whether the alias is supported. Verify the
-  // adapter does call upstream (i.e. doesn't short-circuit) for claude-*.
+  // Claude-prefixed aliases may be accepted by gateways; let upstream decide
+  // instead of rejecting them locally.
   test('allows claude-prefixed model names to pass through to upstream', async () => {
     let called = false
     globalThis.fetch = (() => {

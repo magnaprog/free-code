@@ -94,6 +94,27 @@ import {
  * 4. Fallback region (us-east5)
  */
 
+const DEFAULT_ANTHROPIC_BASE_URL = 'https://api.anthropic.com'
+
+// Provider SDKs pass unknown opts through to BaseAnthropic, which otherwise
+// reads ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN from env.
+export const NON_DIRECT_ENV_AUTH_SUPPRESSION = {
+  apiKey: null,
+  authToken: null,
+} as const
+
+export const NON_DIRECT_ENV_BEARER_SUPPRESSION = {
+  authToken: null,
+} as const
+
+export function routesToProdAnthropicAPI(baseURL: string): boolean {
+  try {
+    return new URL(baseURL).host === 'api.anthropic.com'
+  } catch {
+    return false
+  }
+}
+
 function createStderrLogger(): ClientOptions['logger'] {
   return {
     error: (msg, ...args) =>
@@ -169,10 +190,8 @@ export async function getAnthropicClient({
   const resolvedFetch = buildFetch(fetchOverride, source)
 
   // Common args shared by every client construction. fetchOptions is
-  // intentionally NOT included here so that each provider branch can
-  // pick a scope-appropriate variant (only the direct Anthropic path
-  // opts into the Anthropic-only unix-socket tunnel via ARGS below;
-  // every other provider uses NON_DIRECT_ARGS which omits it).
+  // intentionally NOT included here so each provider branch can choose
+  // whether the Anthropic-only unix-socket tunnel is in scope.
   const COMMON_ARGS = {
     defaultHeaders,
     maxRetries,
@@ -183,42 +202,9 @@ export async function getAnthropicClient({
     }),
   }
 
-  // ANTHROPIC_UNIX_SOCKET tunnels through the claude-ssh auth proxy,
-  // which hard-codes the upstream to api.anthropic.com (production).
-  // It can't route to staging or FedStart endpoints. Gate by the FINAL
-  // baseURL the direct client will actually use — not just
-  // ANTHROPIC_BASE_URL — because staging OAuth flow overrides baseURL
-  // later in the direct fallback branch via getOauthConfig().BASE_API_URL.
-  const directFinalBaseURL =
-    process.env.USER_TYPE === 'ant' &&
-    isEnvTruthy(process.env.USE_STAGING_OAUTH)
-      ? getOauthConfig().BASE_API_URL
-      : process.env.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com'
-  const directRoutesToProdAnthropic = (() => {
-    try {
-      return new URL(directFinalBaseURL).host === 'api.anthropic.com'
-    } catch {
-      return false
-    }
-  })()
-
-  // ARGS for the direct first-party Anthropic API client.
-  const ARGS = {
-    ...COMMON_ARGS,
-    fetchOptions: getProxyFetchOptions({
-      forAnthropicAPI: directRoutesToProdAnthropic,
-    }) as ClientOptions['fetchOptions'],
-  }
-
-  // ARGS for non-direct providers (Bedrock, Vertex, Foundry, OpenCode,
-  // OpenAI Responses, ChatGPT Codex). Two boundary protections:
-  //   1. No `forAnthropicAPI` → unix-socket scoped out.
-  //   2. Sanitized defaultHeaders → Anthropic-side credentials
-  //      (`Authorization`, `X-Api-Key`) from configureApiKeyHeaders or
-  //      ANTHROPIC_CUSTOM_HEADERS cannot leak into non-direct provider
-  //      requests via SDK right-merge.
-  // Provider branches that need their own credentials re-add them
-  // explicitly after spreading NON_DIRECT_ARGS.
+  // Non-direct providers must not use the Anthropic-only unix-socket path
+  // or inherited Anthropic auth-bearing default headers. Branches below also
+  // suppress SDK env auth defaults before adding provider-specific credentials.
   const NON_DIRECT_ARGS = {
     ...COMMON_ARGS,
     defaultHeaders: stripInheritedAuthHeaders(defaultHeaders),
@@ -232,12 +218,9 @@ export async function getAnthropicClient({
     ) {
       const bedrockConverseFetch = createBedrockConverseFetch()
       const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
-        apiKey: 'bedrock-converse-placeholder',
-        // Suppress base SDK's env-default for ANTHROPIC_AUTH_TOKEN —
-        // a stray Anthropic bearer token must not be emitted on the
-        // Authorization header for a Bedrock request.
-        authToken: null,
         ...NON_DIRECT_ARGS,
+        ...NON_DIRECT_ENV_BEARER_SUPPRESSION,
+        apiKey: 'bedrock-converse-placeholder',
         fetch: bedrockConverseFetch as unknown as typeof globalThis.fetch,
         ...(isDebugToStdErr() && { logger: createStderrLogger() }),
       }
@@ -254,14 +237,7 @@ export async function getAnthropicClient({
 
     const bedrockArgs: ConstructorParameters<typeof AnthropicBedrock>[0] = {
       ...NON_DIRECT_ARGS,
-      // Suppress base SDK env defaults. BedrockSDK spreads `...opts`
-      // into BaseAnthropic which reads ANTHROPIC_API_KEY /
-      // ANTHROPIC_AUTH_TOKEN from env. Without explicit nulls, those
-      // would leak as X-Api-Key / Authorization onto the Bedrock
-      // request, either authenticating the wrong way to AWS or
-      // colliding with AWS SigV4. Bedrock uses awsAccessKey/etc.
-      apiKey: null,
-      authToken: null,
+      ...NON_DIRECT_ENV_AUTH_SUPPRESSION,
       awsRegion,
       ...(isEnvTruthy(process.env.CLAUDE_CODE_SKIP_BEDROCK_AUTH) && {
         skipAuth: true,
@@ -313,11 +289,8 @@ export async function getAnthropicClient({
 
     const foundryArgs: ConstructorParameters<typeof AnthropicFoundry>[0] = {
       ...NON_DIRECT_ARGS,
-      // Foundry's super() sets `apiKey: azureADTokenProvider ?? apiKey`
-      // BEFORE spreading opts, so leaving apiKey unset here lets
-      // Foundry's normal auth flow win. Only suppress authToken —
-      // ANTHROPIC_AUTH_TOKEN would otherwise leak onto Foundry requests.
-      authToken: null,
+      // Foundry owns apiKey; only suppress the generic Anthropic bearer token.
+      ...NON_DIRECT_ENV_BEARER_SUPPRESSION,
       ...(azureADTokenProvider && { azureADTokenProvider }),
       ...(isDebugToStdErr() && { logger: createStderrLogger() }),
     }
@@ -395,11 +368,7 @@ export async function getAnthropicClient({
 
     const vertexArgs: ConstructorParameters<typeof AnthropicVertex>[0] = {
       ...NON_DIRECT_ARGS,
-      // Suppress base SDK env defaults; Vertex authenticates via the
-      // googleAuth option. ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN
-      // must not leak into Vertex requests.
-      apiKey: null,
-      authToken: null,
+      ...NON_DIRECT_ENV_AUTH_SUPPRESSION,
       region: getVertexRegionForModel(model),
       googleAuth,
       ...(isDebugToStdErr() && { logger: createStderrLogger() }),
@@ -408,17 +377,10 @@ export async function getAnthropicClient({
     return new AnthropicVertex(vertexArgs) as unknown as Anthropic
   }
 
-  // B5: explicit OpenCode Zen flag wins over OpenAI key. Previously a
-  // lingering `OPENAI_API_KEY` in the shell silently shadowed the explicit
-  // `CLAUDE_CODE_USE_OPENCODE_GO=1` selection because the OpenAI Responses
-  // branch was evaluated first. Reordered: OpenCode is checked first when
-  // its flag is set.
-  //
-  // B14: per-model transport routing. OpenCode Zen routes Claude → /messages,
-  // GPT → /responses, Gemini → /models/{id}, others → /chat/completions.
-  // The previous single-adapter implementation forced everything through
-  // /chat/completions, sending Claude/GPT/Gemini requests to the wrong
-  // endpoint.
+  // OpenCode takes precedence over generic OpenAI when explicitly enabled.
+  // Transport is selected by model family: Claude → /messages, GPT →
+  // /responses, Gemini → native Gemini (unsupported here), others →
+  // /chat/completions.
   if (getAPIProvider() === 'openai' && isOpenCodeGoEnabled()) {
     const openCodeGoApiKey = getOpenCodeGoApiKey()
     if (!openCodeGoApiKey) {
@@ -449,23 +411,12 @@ export async function getAnthropicClient({
       // /v1/messages itself, so strip the trailing /v1 from the canonical
       // OpenCode base URL.
       //
-      // Header-merge gotcha: the SDK applies defaultHeaders AFTER
-      // authHeaders (see @anthropic-ai/sdk/src/client.ts:984-985), so a
-      // stray `Authorization` or `x-api-key` populated by
-      // configureApiKeyHeaders, the api-key helper, or
-      // ANTHROPIC_CUSTOM_HEADERS would override the SDK's headers
-      // derived from apiKey/authToken and leak an Anthropic credential
-      // to the OpenCode gateway. Round 8: strip any inherited auth
-      // headers case-insensitively, then explicitly pin BOTH the Bearer
-      // (per OpenCode docs) and X-Api-Key (Anthropic Messages
-      // convention) to the OpenCode key.
-      // Round 9: ARGS was built with `getProxyFetchOptions({ forAnthropicAPI:
-      // true })`, which intentionally routes through ANTHROPIC_UNIX_SOCKET when
-      // set (claude ssh auth proxy). Inheriting that here would misroute
-      // OpenCode requests to the Anthropic-only socket regardless of
-      // baseURL. Override fetchOptions to the non-Anthropic variant so
-      // OpenCode talks directly to its own gateway over the regular
-      // proxy/TLS configuration.
+      // SDK defaultHeaders override SDK auth headers. Strip inherited
+      // Anthropic auth headers, then pin both OpenCode auth forms so custom
+      // Anthropic headers cannot replace the OpenCode key.
+      //
+      // OpenCode must also avoid ANTHROPIC_UNIX_SOCKET: that socket is an
+      // Anthropic-only proxy and would misroute gateway traffic.
       const anthropicBaseUrl = getOpenCodeAnthropicBaseUrl()
       // NON_DIRECT_ARGS.defaultHeaders has already had Authorization
       // and X-Api-Key stripped (see stripInheritedAuthHeaders). Add
@@ -481,10 +432,10 @@ export async function getAnthropicClient({
         },
       }
       const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
+        ...argsForOpenCode,
         apiKey: openCodeGoApiKey,
         authToken: openCodeGoApiKey,
         baseURL: anthropicBaseUrl,
-        ...argsForOpenCode,
         fetch: createAnthropicModelMappingFetch(
           resolvedFetch,
           normalizeOpenCodeGoModel,
@@ -503,9 +454,8 @@ export async function getAnthropicClient({
       )
       const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
         ...NON_DIRECT_ARGS,
+        ...NON_DIRECT_ENV_BEARER_SUPPRESSION,
         apiKey: 'opencode-zen-placeholder',
-        // Suppress ANTHROPIC_AUTH_TOKEN env default; adapter handles auth.
-        authToken: null,
         fetch: openAIFetch as unknown as typeof globalThis.fetch,
         ...(isDebugToStdErr() && { logger: createStderrLogger() }),
       }
@@ -520,8 +470,8 @@ export async function getAnthropicClient({
     })
     const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
       ...NON_DIRECT_ARGS,
+      ...NON_DIRECT_ENV_BEARER_SUPPRESSION,
       apiKey: 'opencode-zen-placeholder',
-      authToken: null,
       fetch: openCodeGoFetch as unknown as typeof globalThis.fetch,
       ...(isDebugToStdErr() && { logger: createStderrLogger() }),
     }
@@ -533,9 +483,8 @@ export async function getAnthropicClient({
     const openAIFetch = createOpenAIResponsesFetch(process.env.OPENAI_API_KEY)
     const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
       ...NON_DIRECT_ARGS,
+      ...NON_DIRECT_ENV_BEARER_SUPPRESSION,
       apiKey: 'openai-placeholder',
-      // Suppress ANTHROPIC_AUTH_TOKEN env default; adapter handles auth.
-      authToken: null,
       fetch: openAIFetch as unknown as typeof globalThis.fetch,
       ...(isDebugToStdErr() && { logger: createStderrLogger() }),
     }
@@ -549,10 +498,8 @@ export async function getAnthropicClient({
       const codexFetch = createCodexFetch(codexTokens.accessToken)
       const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
         ...NON_DIRECT_ARGS,
+        ...NON_DIRECT_ENV_BEARER_SUPPRESSION,
         apiKey: 'codex-placeholder', // SDK requires a key but the fetch adapter handles auth
-        // Suppress ANTHROPIC_AUTH_TOKEN env default; Codex OAuth token
-        // flows through the fetch adapter, not the SDK auth headers.
-        authToken: null,
         fetch: codexFetch as unknown as typeof globalThis.fetch,
         ...(isDebugToStdErr() && { logger: createStderrLogger() }),
       }
@@ -561,17 +508,24 @@ export async function getAnthropicClient({
   }
 
   // Determine authentication method based on available tokens
+  const directUsesOAuthBaseURL =
+    process.env.USER_TYPE === 'ant' && isEnvTruthy(process.env.USE_STAGING_OAUTH)
+  const directBaseURL = directUsesOAuthBaseURL
+    ? getOauthConfig().BASE_API_URL
+    : process.env.ANTHROPIC_BASE_URL?.trim() || DEFAULT_ANTHROPIC_BASE_URL
+  const DIRECT_ARGS = {
+    ...COMMON_ARGS,
+    fetchOptions: getProxyFetchOptions({
+      forAnthropicAPI: routesToProdAnthropicAPI(directBaseURL),
+    }) as ClientOptions['fetchOptions'],
+  }
   const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
     apiKey: isClaudeAISubscriber() ? null : apiKey || getAnthropicApiKey(),
     authToken: isClaudeAISubscriber()
       ? getClaudeAIOAuthTokens()?.accessToken
       : undefined,
-    // Set baseURL from OAuth config when using staging OAuth
-    ...(process.env.USER_TYPE === 'ant' &&
-    isEnvTruthy(process.env.USE_STAGING_OAUTH)
-      ? { baseURL: getOauthConfig().BASE_API_URL }
-      : {}),
-    ...ARGS,
+    ...(directUsesOAuthBaseURL ? { baseURL: directBaseURL } : {}),
+    ...DIRECT_ARGS,
     ...(isDebugToStdErr() && { logger: createStderrLogger() }),
   }
 
@@ -591,14 +545,9 @@ async function configureApiKeyHeaders(
 }
 
 /**
- * Round 8: when routing to a non-Anthropic backend that needs its own
- * credentials (currently OpenCode Zen), inherited defaultHeaders may
- * carry `Authorization` or `x-api-key` set by `configureApiKeyHeaders`,
- * the api-key helper, or `ANTHROPIC_CUSTOM_HEADERS`. Spreading those
- * into the backend's client config would either leak the Anthropic
- * credential to the gateway or get the wrong key picked up by SDK
- * header dedup. Strip them case-insensitively before re-pinning the
- * backend's own credentials.
+ * Non-Anthropic backends must not inherit auth-bearing Anthropic headers from
+ * custom headers, api-key helpers, or OAuth setup. Provider branches add their
+ * own credentials after this boundary strip.
  */
 export function stripInheritedAuthHeaders(
   headers: Record<string, string>,

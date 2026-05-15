@@ -5,12 +5,14 @@
  * credential from ANTHROPIC_CUSTOM_HEADERS, configureApiKeyHeaders, or
  * the api-key helper does not leak to the OpenCode gateway via the SDK
  * header right-merge.
- *
- * Round 9: imports the production helper instead of a black-box reimpl,
- * so test drift against the real implementation cannot occur.
  */
 import { describe, expect, test } from 'bun:test'
-import { stripInheritedAuthHeaders } from './client.js'
+import {
+  NON_DIRECT_ENV_AUTH_SUPPRESSION,
+  NON_DIRECT_ENV_BEARER_SUPPRESSION,
+  routesToProdAnthropicAPI,
+  stripInheritedAuthHeaders,
+} from './client.js'
 
 describe('stripInheritedAuthHeaders contract', () => {
   test('removes Authorization regardless of case', () => {
@@ -59,26 +61,29 @@ describe('stripInheritedAuthHeaders contract', () => {
   })
 })
 
-// Round 12 contract: ensure non-direct provider clients explicitly
-// suppress ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN env defaults so the
-// Anthropic SDK base class does not auto-populate X-Api-Key /
-// Authorization from env onto a Bedrock / Vertex / adapter request.
-//
-// This test is intentionally a contract assertion (not a runtime SDK
-// instantiation). It documents the invariant in code form so future
-// refactors of getAnthropicClient can be checked against it.
-describe('non-direct provider auth-suppression contract', () => {
-  test('all non-direct provider branches set authToken: null', () => {
-    // Read client.ts source and assert each non-direct branch has
-    // `authToken: null` near the construction site.
-    const fs = require('node:fs') as typeof import('node:fs')
-    const src = fs.readFileSync(
-      'src/services/api/client.ts',
-      'utf8',
-    ) as string
+describe('non-direct provider auth-suppression helpers', () => {
+  test('suppresses SDK api key and bearer token defaults when provider owns auth', () => {
+    expect(NON_DIRECT_ENV_AUTH_SUPPRESSION).toEqual({
+      apiKey: null,
+      authToken: null,
+    })
+  })
 
-    // Bedrock SDK
-    expect(src).toContain('apiKey: null')
-    expect(src.match(/authToken: null/g)?.length).toBeGreaterThanOrEqual(5)
+  test('suppresses only SDK bearer token when provider supplies api key', () => {
+    expect(NON_DIRECT_ENV_BEARER_SUPPRESSION).toEqual({ authToken: null })
+  })
+})
+
+describe('direct Anthropic unix-socket routing gate', () => {
+  test('allows only production api.anthropic.com', () => {
+    expect(routesToProdAnthropicAPI('https://api.anthropic.com')).toBe(true)
+    expect(routesToProdAnthropicAPI('https://api.anthropic.com/v1')).toBe(true)
+  })
+
+  test('rejects staging, custom, and malformed base URLs', () => {
+    expect(routesToProdAnthropicAPI('https://api-staging.anthropic.com')).toBe(false)
+    expect(routesToProdAnthropicAPI('https://proxy.example/anthropic')).toBe(false)
+    expect(routesToProdAnthropicAPI('')).toBe(false)
+    expect(routesToProdAnthropicAPI('not a url')).toBe(false)
   })
 })
