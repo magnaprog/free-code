@@ -168,17 +168,38 @@ export async function getAnthropicClient({
 
   const resolvedFetch = buildFetch(fetchOverride, source)
 
-  const ARGS = {
+  // Common args shared by every client construction. The fetchOptions
+  // here intentionally does NOT request the Anthropic-only unix-socket
+  // routing — only the direct first-party Anthropic client should opt
+  // in to that path via `firstPartyAnthropicArgs` below.
+  const COMMON_ARGS = {
     defaultHeaders,
     maxRetries,
     timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
     dangerouslyAllowBrowser: true,
-    fetchOptions: getProxyFetchOptions({
-      forAnthropicAPI: true,
-    }) as ClientOptions['fetchOptions'],
     ...(resolvedFetch && {
       fetch: resolvedFetch,
     }),
+  }
+
+  // ARGS for the direct first-party Anthropic API client. ANTHROPIC_UNIX_SOCKET
+  // tunneling is scoped here because the unix-socket auth proxy is hard-coded
+  // to api.anthropic.com. Cloud relays (Bedrock/Vertex/Foundry) and gateway
+  // backends (OpenCode/OpenAI/Codex) must NOT inherit this — they target
+  // different endpoints and would be misrouted to the Anthropic auth proxy.
+  const ARGS = {
+    ...COMMON_ARGS,
+    fetchOptions: getProxyFetchOptions({
+      forAnthropicAPI: true,
+    }) as ClientOptions['fetchOptions'],
+  }
+
+  // ARGS for non-direct providers (Bedrock, Vertex, Foundry, OpenCode,
+  // OpenAI Responses, ChatGPT Codex). Standard proxy/TLS still applied;
+  // unix-socket Anthropic-tunnel scoped out.
+  const NON_DIRECT_ARGS = {
+    ...COMMON_ARGS,
+    fetchOptions: getProxyFetchOptions() as ClientOptions['fetchOptions'],
   }
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK)) {
     if (
@@ -189,7 +210,7 @@ export async function getAnthropicClient({
       const bedrockConverseFetch = createBedrockConverseFetch()
       const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
         apiKey: 'bedrock-converse-placeholder',
-        ...ARGS,
+        ...NON_DIRECT_ARGS,
         fetch: bedrockConverseFetch as unknown as typeof globalThis.fetch,
         ...(isDebugToStdErr() && { logger: createStderrLogger() }),
       }
@@ -205,7 +226,7 @@ export async function getAnthropicClient({
         : getAWSRegion()
 
     const bedrockArgs: ConstructorParameters<typeof AnthropicBedrock>[0] = {
-      ...ARGS,
+      ...NON_DIRECT_ARGS,
       awsRegion,
       ...(isEnvTruthy(process.env.CLAUDE_CODE_SKIP_BEDROCK_AUTH) && {
         skipAuth: true,
@@ -256,7 +277,7 @@ export async function getAnthropicClient({
     }
 
     const foundryArgs: ConstructorParameters<typeof AnthropicFoundry>[0] = {
-      ...ARGS,
+      ...NON_DIRECT_ARGS,
       ...(azureADTokenProvider && { azureADTokenProvider }),
       ...(isDebugToStdErr() && { logger: createStderrLogger() }),
     }
@@ -333,7 +354,7 @@ export async function getAnthropicClient({
         })
 
     const vertexArgs: ConstructorParameters<typeof AnthropicVertex>[0] = {
-      ...ARGS,
+      ...NON_DIRECT_ARGS,
       region: getVertexRegionForModel(model),
       googleAuth,
       ...(isDebugToStdErr() && { logger: createStderrLogger() }),
@@ -402,16 +423,15 @@ export async function getAnthropicClient({
       // proxy/TLS configuration.
       const anthropicBaseUrl = getOpenCodeAnthropicBaseUrl()
       const filteredInheritedHeaders = stripInheritedAuthHeaders(
-        ARGS.defaultHeaders ?? {},
+        NON_DIRECT_ARGS.defaultHeaders ?? {},
       )
       const argsForOpenCode = {
-        ...ARGS,
+        ...NON_DIRECT_ARGS,
         defaultHeaders: {
           ...filteredInheritedHeaders,
           Authorization: `Bearer ${openCodeGoApiKey}`,
           'X-Api-Key': openCodeGoApiKey,
         },
-        fetchOptions: getProxyFetchOptions() as ClientOptions['fetchOptions'],
       }
       const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
         apiKey: openCodeGoApiKey,
@@ -436,7 +456,7 @@ export async function getAnthropicClient({
       )
       const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
         apiKey: 'opencode-zen-placeholder',
-        ...ARGS,
+        ...NON_DIRECT_ARGS,
         fetch: openAIFetch as unknown as typeof globalThis.fetch,
         ...(isDebugToStdErr() && { logger: createStderrLogger() }),
       }
@@ -451,7 +471,7 @@ export async function getAnthropicClient({
     })
     const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
       apiKey: 'opencode-zen-placeholder',
-      ...ARGS,
+      ...NON_DIRECT_ARGS,
       fetch: openCodeGoFetch as unknown as typeof globalThis.fetch,
       ...(isDebugToStdErr() && { logger: createStderrLogger() }),
     }
@@ -463,7 +483,7 @@ export async function getAnthropicClient({
     const openAIFetch = createOpenAIResponsesFetch(process.env.OPENAI_API_KEY)
     const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
       apiKey: 'openai-placeholder',
-      ...ARGS,
+      ...NON_DIRECT_ARGS,
       fetch: openAIFetch as unknown as typeof globalThis.fetch,
       ...(isDebugToStdErr() && { logger: createStderrLogger() }),
     }
@@ -477,7 +497,7 @@ export async function getAnthropicClient({
       const codexFetch = createCodexFetch(codexTokens.accessToken)
       const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
         apiKey: 'codex-placeholder', // SDK requires a key but the fetch adapter handles auth
-        ...ARGS,
+        ...NON_DIRECT_ARGS,
         fetch: codexFetch as unknown as typeof globalThis.fetch,
         ...(isDebugToStdErr() && { logger: createStderrLogger() }),
       }

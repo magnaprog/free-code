@@ -18,6 +18,24 @@ const IMAGE_REJECT_BYTES = 5_000_000
 // large prompt echoes back through the error channel.
 const MAX_ERROR_BODY_CHARS = 1_000
 
+/**
+ * Match only the Anthropic Messages create endpoint, not sibling routes
+ * under the same prefix (count_tokens, batches, etc.). Sub-routes have
+ * different request shapes and translating them as message-create would
+ * either fail upstream or — worse — trigger an unintended paid
+ * completion. URL parsing is conservative: if the URL doesn't parse,
+ * fall back to suffix match to preserve existing behavior for the
+ * happy path.
+ */
+function isMessagesCreatePath(url: string): boolean {
+  try {
+    const pathname = new URL(url).pathname
+    return pathname === '/v1/messages'
+  } catch {
+    return /\/v1\/messages(?:\?|$)/.test(url)
+  }
+}
+
 type AnthropicContentBlock = {
   type: string
   text?: string
@@ -809,7 +827,14 @@ export function createOpenAIChatCompletionsFetch(
 
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = input instanceof Request ? input.url : String(input)
-    if (!url.includes('/v1/messages')) return globalThis.fetch(input, init)
+    // Only intercept message generation. The Anthropic SDK also calls
+    // /v1/messages/count_tokens?beta=true for token estimation; that
+    // request has the same /v1/messages prefix but is semantically
+    // different. Translating count_tokens body as a generation request
+    // would trigger a paid upstream completion. Pass count_tokens
+    // through so the upstream returns 404 and tokenEstimation falls
+    // back to its rough estimate.
+    if (!isMessagesCreatePath(url)) return globalThis.fetch(input, init)
 
     const anthropicBody = await parseAnthropicBody(init)
     const { chatBody, model } = translateToChatBody(anthropicBody)

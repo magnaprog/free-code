@@ -342,6 +342,46 @@ describe('OpenAI chat completions fetch adapter', () => {
     expect(concatenatedJson).toBe('{"path":"/etc/hosts"}')
   })
 
+  // Anthropic SDK calls /v1/messages/count_tokens?beta=true for token
+  // estimation. The adapter used to match by prefix
+  // (`url.includes('/v1/messages')`), which also matched count_tokens.
+  // Translating count_tokens body as a generation request triggers an
+  // unintended paid upstream completion. Fix: pass count_tokens through
+  // to globalThis.fetch unchanged; upstream returns 404 and the SDK
+  // falls back to rough estimation.
+  test('does not intercept /v1/messages/count_tokens (passthrough)', async () => {
+    let upstreamUrl = ''
+    let upstreamBody = ''
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      upstreamUrl = input instanceof Request ? input.url : String(input)
+      upstreamBody = typeof init?.body === 'string' ? init.body : ''
+      // Mimic the upstream's 404 for a non-existent endpoint.
+      return Promise.resolve(new Response('not found', { status: 404 }))
+    }) as typeof globalThis.fetch
+
+    const fetch = createOpenAIChatCompletionsFetch('k', {
+      baseUrl: 'https://opencode.example/zen/v1',
+    })
+    const response = await fetch(
+      'https://api.anthropic.com/v1/messages/count_tokens?beta=true',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          model: 'claude-sonnet',
+          messages: [{ role: 'user', content: 'hi' }],
+        }),
+      },
+    )
+
+    // Upstream was called with the count_tokens URL unchanged — NOT
+    // translated to /chat/completions.
+    expect(upstreamUrl).toContain('/v1/messages/count_tokens')
+    expect(upstreamUrl).not.toContain('/chat/completions')
+    // Body passed through (still Anthropic-shaped, not chat-shaped).
+    expect(upstreamBody).toContain('claude-sonnet')
+    expect(response.status).toBe(404)
+  })
+
   // Codex follow-up: malformed upstream stream sends tool_call args but
   // never sends a function name. Previously stop_reason was set to
   // 'tool_use' because toolByProviderIndex.size > 0, even though no

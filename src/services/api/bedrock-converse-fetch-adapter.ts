@@ -52,6 +52,18 @@ type BedrockRuntimeClientLike = {
 
 type BedrockRuntimeClientFactory = () => Promise<BedrockRuntimeClientLike>
 
+/**
+ * Match only the Anthropic Messages create endpoint, not sub-routes
+ * (count_tokens, batches, etc.).
+ */
+function isMessagesCreatePath(url: string): boolean {
+  try {
+    return new URL(url).pathname === '/v1/messages'
+  } catch {
+    return /\/v1\/messages(?:\?|$)/.test(url)
+  }
+}
+
 function formatSSE(event: string, data: string): string {
   return `event: ${event}\ndata: ${data}\n\n`
 }
@@ -670,7 +682,11 @@ export function createBedrockConverseFetch(
     init?: RequestInit,
   ): Promise<Response> => {
     const url = input instanceof Request ? input.url : String(input)
-    if (!url.includes('/v1/messages')) {
+    // Match only the Anthropic Messages create endpoint, not sub-routes
+    // like /v1/messages/count_tokens. Pass count_tokens through so the
+    // upstream returns 404 and tokenEstimation falls back to its rough
+    // estimate rather than triggering an unintended Converse call.
+    if (!isMessagesCreatePath(url)) {
       return globalThis.fetch(input, init)
     }
 
