@@ -42,7 +42,7 @@ export const PRECONNECT_SKIP_ENV_KEYS = [
  * Reset the module-level `fired` flag. Test-only — prevents subsequent
  * tests from seeing the latched true and trivially passing.
  */
-export function __resetPreconnectForTesting(): void {
+export function _resetPreconnectForTesting(): void {
   fired = false
 }
 

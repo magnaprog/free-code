@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
-  __resetPreconnectForTesting,
+  _resetPreconnectForTesting,
   PRECONNECT_SKIP_ENV_KEYS,
   preconnectAnthropicApi,
 } from './apiPreconnect.js'
@@ -38,7 +38,7 @@ function useFirstPartyApiBaseUrl(): void {
 beforeEach(() => {
   // preconnect latches `fired = true` on first call. Reset before every
   // test so test order can't make a later assertion pass trivially.
-  __resetPreconnectForTesting()
+  _resetPreconnectForTesting()
 })
 
 afterEach(() => {
@@ -78,7 +78,7 @@ describe('preconnectAnthropicApi', () => {
 
   test('skips warming when proxy, unix socket, or mTLS env is configured', () => {
     for (const key of PRECONNECT_SKIP_ENV_KEYS) {
-      __resetPreconnectForTesting()
+      _resetPreconnectForTesting()
       useFirstPartyApiBaseUrl()
       process.env[key] = key === 'ANTHROPIC_UNIX_SOCKET' ? '/tmp/x.sock' : '1'
 
