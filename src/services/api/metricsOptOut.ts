@@ -51,9 +51,9 @@ async function _fetchMetricsEnabled(): Promise<MetricsEnabledResponse> {
 }
 
 async function _checkMetricsEnabledAPI(): Promise<MetricsStatus> {
-  // Incident kill switch: skip the network call when nonessential traffic is disabled.
-  // Returning enabled:false sheds load at the consumer (bigqueryExporter skips
-  // export). Matches the non-subscriber early-return shape below.
+  // Incident kill switch: skip the network call when nonessential traffic is
+  // disabled. Returning enabled:false sheds load at downstream consumers.
+  // Matches the non-subscriber early-return shape below.
   if (isEssentialTrafficOnly()) {
     return { enabled: false, hasError: false }
   }
@@ -122,8 +122,8 @@ async function refreshMetricsStatus(): Promise<MetricsStatus> {
  * - Disk (24h TTL): survives process restarts. Fresh disk cache → zero network.
  * - In-memory (1h TTL): dedupes the background refresh within a process.
  *
- * The caller (bigqueryExporter) tolerates stale reads — a missed export or
- * an extra one during the 24h window is acceptable.
+ * Callers tolerate stale reads — a missed metrics decision or an extra one
+ * during the 24h window is acceptable.
  */
 export async function checkMetricsEnabled(): Promise<MetricsStatus> {
   // Service key OAuth sessions lack user:profile scope → would 403.

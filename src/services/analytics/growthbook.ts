@@ -98,8 +98,7 @@ let reinitializingPromise: Promise<unknown> | null = null
 // objects at construction time (e.g. firstPartyEventLogger reads
 // tengu_1p_event_batch_config once and builds a LoggerProvider with it) and
 // need to rebuild when config changes. Per-call readers like
-// getEventSamplingConfig / isSinkKilled don't need this — they're already
-// reactive.
+// getEventSamplingConfig don't need this — they're already reactive.
 //
 // NOT cleared by resetGrowthBook — subscribers register once (typically in
 // init.ts) and must survive auth-change resets.
