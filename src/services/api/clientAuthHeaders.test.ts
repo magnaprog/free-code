@@ -75,14 +75,17 @@ describe('non-direct provider auth-suppression helpers', () => {
 })
 
 describe('direct Anthropic unix-socket routing gate', () => {
-  test('allows only production api.anthropic.com', () => {
+  test('allows only production HTTPS api.anthropic.com', () => {
     expect(routesToProdAnthropicAPI('https://api.anthropic.com')).toBe(true)
     expect(routesToProdAnthropicAPI('https://api.anthropic.com/v1')).toBe(true)
+    expect(routesToProdAnthropicAPI('https://api.anthropic.com:443')).toBe(true)
   })
 
-  test('rejects staging, custom, and malformed base URLs', () => {
+  test('rejects staging, custom, insecure, and malformed base URLs', () => {
     expect(routesToProdAnthropicAPI('https://api-staging.anthropic.com')).toBe(false)
     expect(routesToProdAnthropicAPI('https://proxy.example/anthropic')).toBe(false)
+    expect(routesToProdAnthropicAPI('http://api.anthropic.com')).toBe(false)
+    expect(routesToProdAnthropicAPI('https://api.anthropic.com:8443')).toBe(false)
     expect(routesToProdAnthropicAPI('')).toBe(false)
     expect(routesToProdAnthropicAPI('not a url')).toBe(false)
   })

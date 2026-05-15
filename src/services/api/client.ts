@@ -109,7 +109,12 @@ export const NON_DIRECT_ENV_BEARER_SUPPRESSION = {
 
 export function routesToProdAnthropicAPI(baseURL: string): boolean {
   try {
-    return new URL(baseURL).host === 'api.anthropic.com'
+    const url = new URL(baseURL)
+    return (
+      url.protocol === 'https:' &&
+      url.hostname === 'api.anthropic.com' &&
+      url.port === ''
+    )
   } catch {
     return false
   }
@@ -267,30 +272,29 @@ export async function getAnthropicClient({
   }
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)) {
     const { AnthropicFoundry } = await import('@anthropic-ai/foundry-sdk')
-    // Determine Azure AD token provider based on configuration
-    // SDK reads ANTHROPIC_FOUNDRY_API_KEY by default
+    // Determine Azure AD token provider based on configuration.
+    // The Foundry SDK has no skipAuth flag and requires a non-empty apiKey or
+    // token provider, so skip-auth proxy scenarios use a placeholder key.
     let azureADTokenProvider: (() => Promise<string>) | undefined
-    if (!process.env.ANTHROPIC_FOUNDRY_API_KEY) {
-      if (isEnvTruthy(process.env.CLAUDE_CODE_SKIP_FOUNDRY_AUTH)) {
-        // Mock token provider for testing/proxy scenarios (similar to Vertex mock GoogleAuth)
-        azureADTokenProvider = () => Promise.resolve('')
-      } else {
-        // Use real Azure AD authentication with DefaultAzureCredential
-        const {
-          DefaultAzureCredential: AzureCredential,
-          getBearerTokenProvider,
-        } = await import('@azure/identity')
-        azureADTokenProvider = getBearerTokenProvider(
-          new AzureCredential(),
-          'https://cognitiveservices.azure.com/.default',
-        )
-      }
+    let foundryApiKey: string | undefined
+    if (isEnvTruthy(process.env.CLAUDE_CODE_SKIP_FOUNDRY_AUTH)) {
+      foundryApiKey = 'foundry-skip-auth-placeholder'
+    } else if (!process.env.ANTHROPIC_FOUNDRY_API_KEY) {
+      const {
+        DefaultAzureCredential: AzureCredential,
+        getBearerTokenProvider,
+      } = await import('@azure/identity')
+      azureADTokenProvider = getBearerTokenProvider(
+        new AzureCredential(),
+        'https://cognitiveservices.azure.com/.default',
+      )
     }
 
     const foundryArgs: ConstructorParameters<typeof AnthropicFoundry>[0] = {
       ...NON_DIRECT_ARGS,
       // Foundry owns apiKey; only suppress the generic Anthropic bearer token.
       ...NON_DIRECT_ENV_BEARER_SUPPRESSION,
+      ...(foundryApiKey && { apiKey: foundryApiKey }),
       ...(azureADTokenProvider && { azureADTokenProvider }),
       ...(isDebugToStdErr() && { logger: createStderrLogger() }),
     }

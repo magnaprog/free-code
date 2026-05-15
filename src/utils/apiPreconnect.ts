@@ -20,11 +20,11 @@
  * Skipped when:
  * - proxy/mTLS/unix socket configured (preconnect would use wrong transport —
  *   the SDK passes a custom dispatcher/agent that doesn't share the global pool)
- * - Bedrock/Vertex/Foundry (different endpoints, different auth)
+ * - non-first-party providers (different endpoints, different auth)
  */
 
 import { getOauthConfig } from '../constants/oauth.js'
-import { isEnvTruthy } from './envUtils.js'
+import { getAPIProvider } from './model/providers.js'
 
 let fired = false
 
@@ -32,14 +32,8 @@ export function preconnectAnthropicApi(): void {
   if (fired) return
   fired = true
 
-  // Skip if using a cloud provider — different endpoint + auth
-  if (
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK) ||
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX) ||
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)
-  ) {
-    return
-  }
+  // Non-first-party providers use different endpoints and auth.
+  if (getAPIProvider() !== 'firstParty') return
   // Skip if proxy/mTLS/unix — SDK's custom dispatcher won't reuse this pool
   if (
     process.env.HTTPS_PROXY ||
@@ -53,11 +47,15 @@ export function preconnectAnthropicApi(): void {
     return
   }
 
-  // Use configured base URL (staging, local, or custom gateway). Covers
-  // ANTHROPIC_BASE_URL env + USE_STAGING_OAUTH + USE_LOCAL_OAUTH in one lookup.
-  // NODE_EXTRA_CA_CERTS no longer a skip — init.ts applied it before this fires.
-  const baseUrl =
-    process.env.ANTHROPIC_BASE_URL || getOauthConfig().BASE_API_URL
+  // Use configured base URL. This is best-effort startup warming, so bad
+  // OAuth config must not abort CLI startup.
+  let baseUrl: string
+  try {
+    baseUrl =
+      process.env.ANTHROPIC_BASE_URL?.trim() || getOauthConfig().BASE_API_URL
+  } catch {
+    return
+  }
 
   // Fire and forget. HEAD means no response body — the connection is eligible
   // for keep-alive pool reuse immediately after headers arrive. 10s timeout
