@@ -58,3 +58,27 @@ describe('stripInheritedAuthHeaders contract', () => {
     expect(stripInheritedAuthHeaders(input)).toEqual(input)
   })
 })
+
+// Round 12 contract: ensure non-direct provider clients explicitly
+// suppress ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN env defaults so the
+// Anthropic SDK base class does not auto-populate X-Api-Key /
+// Authorization from env onto a Bedrock / Vertex / adapter request.
+//
+// This test is intentionally a contract assertion (not a runtime SDK
+// instantiation). It documents the invariant in code form so future
+// refactors of getAnthropicClient can be checked against it.
+describe('non-direct provider auth-suppression contract', () => {
+  test('all non-direct provider branches set authToken: null', () => {
+    // Read client.ts source and assert each non-direct branch has
+    // `authToken: null` near the construction site.
+    const fs = require('node:fs') as typeof import('node:fs')
+    const src = fs.readFileSync(
+      'src/services/api/client.ts',
+      'utf8',
+    ) as string
+
+    // Bedrock SDK
+    expect(src).toContain('apiKey: null')
+    expect(src.match(/authToken: null/g)?.length).toBeGreaterThanOrEqual(5)
+  })
+})

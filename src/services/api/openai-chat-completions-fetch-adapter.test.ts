@@ -380,11 +380,15 @@ describe('OpenAI chat completions fetch adapter', () => {
   })
 
   // Path-prefixed base URL support: ANTHROPIC_BASE_URL=https://proxy/anthropic
-  // produces /anthropic/v1/messages — must still be translated.
-  test('translates path-prefixed /anthropic/v1/messages base URLs', async () => {
-    let upstreamCalled = false
-    globalThis.fetch = ((_input: RequestInfo | URL, _init?: RequestInit) => {
-      upstreamCalled = true
+  // produces /anthropic/v1/messages. Adapter must classify this as
+  // create (not pass-through) and rewrite the upstream URL to the
+  // gateway's /chat/completions, not forward it as /anthropic/v1/messages.
+  test('translates path-prefixed /anthropic/v1/messages base URLs to chat/completions', async () => {
+    let upstreamUrl = ''
+    let upstreamBody = ''
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      upstreamUrl = input instanceof Request ? input.url : String(input)
+      upstreamBody = typeof init?.body === 'string' ? init.body : ''
       return Promise.resolve(
         new Response(
           JSON.stringify({
@@ -413,8 +417,21 @@ describe('OpenAI chat completions fetch adapter', () => {
       },
     )
 
-    // Path-prefixed URL was treated as a Messages create and translated.
-    expect(upstreamCalled).toBe(true)
+    // URL rewritten to the gateway's chat/completions endpoint, NOT
+    // passed through unchanged. A passthrough bug would leave upstreamUrl
+    // as the input /anthropic/v1/messages URL.
+    expect(upstreamUrl).toContain('/chat/completions')
+    expect(upstreamUrl).not.toContain('/anthropic/v1/messages')
+    // Body is chat-completions-shaped, not Anthropic-shaped: chat
+    // schema lacks Anthropic `system` field but always emits `messages`
+    // with a `system` role entry when one was provided. Here we just
+    // verify the body was translated, not raw-passed.
+    expect(upstreamBody).not.toBe(
+      JSON.stringify({
+        model: 'qwen-test',
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    )
     expect(response.status).toBe(200)
   })
 

@@ -168,10 +168,11 @@ export async function getAnthropicClient({
 
   const resolvedFetch = buildFetch(fetchOverride, source)
 
-  // Common args shared by every client construction. The fetchOptions
-  // here intentionally does NOT request the Anthropic-only unix-socket
-  // routing — only the direct first-party Anthropic client should opt
-  // in to that path via `firstPartyAnthropicArgs` below.
+  // Common args shared by every client construction. fetchOptions is
+  // intentionally NOT included here so that each provider branch can
+  // pick a scope-appropriate variant (only the direct Anthropic path
+  // opts into the Anthropic-only unix-socket tunnel via ARGS below;
+  // every other provider uses NON_DIRECT_ARGS which omits it).
   const COMMON_ARGS = {
     defaultHeaders,
     maxRetries,
@@ -182,16 +183,30 @@ export async function getAnthropicClient({
     }),
   }
 
+  // ANTHROPIC_UNIX_SOCKET tunnels through the claude-ssh auth proxy,
+  // which hard-codes the upstream to api.anthropic.com (production).
+  // It can't route to staging or FedStart endpoints. Gate by the FINAL
+  // baseURL the direct client will actually use — not just
+  // ANTHROPIC_BASE_URL — because staging OAuth flow overrides baseURL
+  // later in the direct fallback branch via getOauthConfig().BASE_API_URL.
+  const directFinalBaseURL =
+    process.env.USER_TYPE === 'ant' &&
+    isEnvTruthy(process.env.USE_STAGING_OAUTH)
+      ? getOauthConfig().BASE_API_URL
+      : process.env.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com'
+  const directRoutesToProdAnthropic = (() => {
+    try {
+      return new URL(directFinalBaseURL).host === 'api.anthropic.com'
+    } catch {
+      return false
+    }
+  })()
+
   // ARGS for the direct first-party Anthropic API client.
-  // ANTHROPIC_UNIX_SOCKET tunneling is scoped to actual api.anthropic.com
-  // requests: the unix-socket auth proxy hard-codes upstream to the
-  // Anthropic API. If a user has overridden ANTHROPIC_BASE_URL to point
-  // at a custom gateway, opting into the unix socket would misroute the
-  // request to the auth proxy. Gate the flag by the actual base URL.
   const ARGS = {
     ...COMMON_ARGS,
     fetchOptions: getProxyFetchOptions({
-      forAnthropicAPI: isFirstPartyAnthropicBaseUrl(),
+      forAnthropicAPI: directRoutesToProdAnthropic,
     }) as ClientOptions['fetchOptions'],
   }
 
@@ -218,6 +233,10 @@ export async function getAnthropicClient({
       const bedrockConverseFetch = createBedrockConverseFetch()
       const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
         apiKey: 'bedrock-converse-placeholder',
+        // Suppress base SDK's env-default for ANTHROPIC_AUTH_TOKEN —
+        // a stray Anthropic bearer token must not be emitted on the
+        // Authorization header for a Bedrock request.
+        authToken: null,
         ...NON_DIRECT_ARGS,
         fetch: bedrockConverseFetch as unknown as typeof globalThis.fetch,
         ...(isDebugToStdErr() && { logger: createStderrLogger() }),
@@ -235,6 +254,14 @@ export async function getAnthropicClient({
 
     const bedrockArgs: ConstructorParameters<typeof AnthropicBedrock>[0] = {
       ...NON_DIRECT_ARGS,
+      // Suppress base SDK env defaults. BedrockSDK spreads `...opts`
+      // into BaseAnthropic which reads ANTHROPIC_API_KEY /
+      // ANTHROPIC_AUTH_TOKEN from env. Without explicit nulls, those
+      // would leak as X-Api-Key / Authorization onto the Bedrock
+      // request, either authenticating the wrong way to AWS or
+      // colliding with AWS SigV4. Bedrock uses awsAccessKey/etc.
+      apiKey: null,
+      authToken: null,
       awsRegion,
       ...(isEnvTruthy(process.env.CLAUDE_CODE_SKIP_BEDROCK_AUTH) && {
         skipAuth: true,
@@ -286,6 +313,11 @@ export async function getAnthropicClient({
 
     const foundryArgs: ConstructorParameters<typeof AnthropicFoundry>[0] = {
       ...NON_DIRECT_ARGS,
+      // Foundry's super() sets `apiKey: azureADTokenProvider ?? apiKey`
+      // BEFORE spreading opts, so leaving apiKey unset here lets
+      // Foundry's normal auth flow win. Only suppress authToken —
+      // ANTHROPIC_AUTH_TOKEN would otherwise leak onto Foundry requests.
+      authToken: null,
       ...(azureADTokenProvider && { azureADTokenProvider }),
       ...(isDebugToStdErr() && { logger: createStderrLogger() }),
     }
@@ -363,6 +395,11 @@ export async function getAnthropicClient({
 
     const vertexArgs: ConstructorParameters<typeof AnthropicVertex>[0] = {
       ...NON_DIRECT_ARGS,
+      // Suppress base SDK env defaults; Vertex authenticates via the
+      // googleAuth option. ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN
+      // must not leak into Vertex requests.
+      apiKey: null,
+      authToken: null,
       region: getVertexRegionForModel(model),
       googleAuth,
       ...(isDebugToStdErr() && { logger: createStderrLogger() }),
@@ -465,8 +502,10 @@ export async function getAnthropicClient({
         { mapModel: normalizeOpenCodeGoModel },
       )
       const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
-        apiKey: 'opencode-zen-placeholder',
         ...NON_DIRECT_ARGS,
+        apiKey: 'opencode-zen-placeholder',
+        // Suppress ANTHROPIC_AUTH_TOKEN env default; adapter handles auth.
+        authToken: null,
         fetch: openAIFetch as unknown as typeof globalThis.fetch,
         ...(isDebugToStdErr() && { logger: createStderrLogger() }),
       }
@@ -480,8 +519,9 @@ export async function getAnthropicClient({
       authScheme: 'bearer',
     })
     const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
-      apiKey: 'opencode-zen-placeholder',
       ...NON_DIRECT_ARGS,
+      apiKey: 'opencode-zen-placeholder',
+      authToken: null,
       fetch: openCodeGoFetch as unknown as typeof globalThis.fetch,
       ...(isDebugToStdErr() && { logger: createStderrLogger() }),
     }
@@ -492,8 +532,10 @@ export async function getAnthropicClient({
   if (getAPIProvider() === 'openai' && process.env.OPENAI_API_KEY) {
     const openAIFetch = createOpenAIResponsesFetch(process.env.OPENAI_API_KEY)
     const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
-      apiKey: 'openai-placeholder',
       ...NON_DIRECT_ARGS,
+      apiKey: 'openai-placeholder',
+      // Suppress ANTHROPIC_AUTH_TOKEN env default; adapter handles auth.
+      authToken: null,
       fetch: openAIFetch as unknown as typeof globalThis.fetch,
       ...(isDebugToStdErr() && { logger: createStderrLogger() }),
     }
@@ -506,8 +548,11 @@ export async function getAnthropicClient({
     if (codexTokens?.accessToken) {
       const codexFetch = createCodexFetch(codexTokens.accessToken)
       const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
-        apiKey: 'codex-placeholder', // SDK requires a key but the fetch adapter handles auth
         ...NON_DIRECT_ARGS,
+        apiKey: 'codex-placeholder', // SDK requires a key but the fetch adapter handles auth
+        // Suppress ANTHROPIC_AUTH_TOKEN env default; Codex OAuth token
+        // flows through the fetch adapter, not the SDK auth headers.
+        authToken: null,
         fetch: codexFetch as unknown as typeof globalThis.fetch,
         ...(isDebugToStdErr() && { logger: createStderrLogger() }),
       }
