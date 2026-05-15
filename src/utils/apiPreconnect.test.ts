@@ -50,6 +50,18 @@ afterEach(() => {
 })
 
 describe('preconnectAnthropicApi', () => {
+  test('pins the transport envs that disable preconnect warming', () => {
+    expect(PRECONNECT_SKIP_ENV_KEYS).toEqual([
+      'HTTPS_PROXY',
+      'https_proxy',
+      'HTTP_PROXY',
+      'http_proxy',
+      'ANTHROPIC_UNIX_SOCKET',
+      'CLAUDE_CODE_CLIENT_CERT',
+      'CLAUDE_CODE_CLIENT_KEY',
+    ])
+  })
+
   test('does not resolve OAuth config for non-first-party providers', () => {
     process.env.CLAUDE_CODE_USE_OPENAI = '1'
     process.env.CLAUDE_CODE_CUSTOM_OAUTH_URL = 'https://not-allowlisted.example'
