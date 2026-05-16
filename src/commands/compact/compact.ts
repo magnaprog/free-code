@@ -243,13 +243,13 @@ async function compactViaReactive(
       }
     }
 
-    // Mirrors the post-success cleanup in tryReactiveCompact, minus
-    // resetMicrocompactState — processSlashCommand calls that for all
-    // type:'compact' results.
-    setLastSummarizedMessageId(undefined)
-    runPostCompactCleanup()
-    suppressCompactWarning()
-    getUserContext.cache.clear?.()
+    // reactiveCompactOnPromptTooLong already ran the full post-success
+    // cleanup (setLastSummarizedMessageId, runPostCompactCleanup,
+    // suppressCompactWarning, clearUserContextCache). The stale comment
+    // here claimed "minus resetMicrocompactState" but
+    // runPostCompactCleanup does in fact reset microcompact state
+    // (postCompactCleanup.ts:41), so the duplicate calls were just
+    // redundant work.
 
     // reactiveCompactOnPromptTooLong runs PostCompact hooks but not PreCompact
     // — both callers (here and tryReactiveCompact) run PreCompact outside so

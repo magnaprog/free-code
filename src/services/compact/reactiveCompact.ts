@@ -114,7 +114,7 @@ export async function tryReactiveCompact(
   const outcome = await reactiveCompactOnPromptTooLong(
     params.messages,
     params.cacheSafeParams,
-    { trigger: 'auto' },
+    { trigger: 'auto', querySource: params.querySource },
     deps,
   )
   if (outcome.ok) return outcome.result
@@ -133,7 +133,14 @@ export async function tryReactiveCompact(
 export async function reactiveCompactOnPromptTooLong(
   messages: Message[],
   cacheSafeParams: ReactiveCompactCacheSafeParams,
-  options: { customInstructions?: string; trigger: 'manual' | 'auto' },
+  options: {
+    customInstructions?: string
+    trigger: 'manual' | 'auto'
+    // Forwarded into runPostCompactCleanup so subagent compacts don't
+    // clobber main-thread module-level state. Undefined treated as
+    // main-thread by the cleanup; manual /compact callers may omit.
+    querySource?: QuerySource
+  },
   deps: ReactiveCompactDeps = DEFAULT_REACTIVE_COMPACT_DEPS,
 ): Promise<ReactiveCompactOutcome> {
   const { toolUseContext } = cacheSafeParams
@@ -182,7 +189,7 @@ export async function reactiveCompactOnPromptTooLong(
     )
 
     deps.setLastSummarizedMessageId(undefined)
-    deps.runPostCompactCleanup()
+    deps.runPostCompactCleanup(options.querySource)
     deps.suppressCompactWarning()
     deps.clearUserContextCache()
 
