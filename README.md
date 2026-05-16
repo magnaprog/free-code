@@ -252,7 +252,7 @@ While the assistant is responding, press `Ctrl+X Ctrl+Q` or type `/queue <messag
 /queue if tests pass, summarize the changes
 ```
 
-Multiple queued prompt messages are batched into one assistant turn; the assistant sees all Queued Messages at once. Slash-command payloads such as `/queue /clear` are queued as deferred slash input instead of executing immediately.
+Queued messages process one per turn. As each turn ends the next queued message starts its own turn; the rest stay pinned in the compact preview above the prompt until their turn comes up. Slash-command payloads such as `/queue /clear` are queued as deferred slash input instead of executing immediately.
 
 ### Environment Variables Reference
 

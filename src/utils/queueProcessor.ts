@@ -16,33 +16,17 @@ type ProcessQueueResult = {
 }
 
 /**
- * Check if a queued command is a slash command (value starts with '/').
- */
-function isSlashCommand(cmd: QueuedCommand): boolean {
-  if (typeof cmd.value === 'string') {
-    return cmd.value.trim().startsWith('/')
-  }
-  // For ContentBlockParam[], check the first text block
-  for (const block of cmd.value) {
-    if (block.type === 'text') {
-      return block.text.trim().startsWith('/')
-    }
-  }
-  return false
-}
-
-/**
  * Processes commands from the queue.
  *
- * Slash commands (starting with '/') and bash-mode commands are processed
- * one at a time so each goes through the executeInput path individually.
- * Bash commands need individual processing to preserve per-command error
- * isolation, exit codes, and progress UI. Other non-slash commands are
- * batched: all items **with the same mode** as the highest-priority item
- * are drained at once and passed as a single array to executeInput — each
- * becomes its own user message with its own UUID. Different modes
- * (e.g. prompt vs task-notification) are never mixed because they are
- * treated differently downstream.
+ * User-facing commands (prompts, bash, slash) are drained ONE at a time so
+ * still-queued items remain anchored in the prompt-area preview between
+ * turns. Without this, batching collapsed every queued follow-up into a
+ * single turn the moment the task ended — all queued messages "expanded"
+ * into the message flow at once instead of staying compact at the bottom.
+ *
+ * Task notifications are still batched by scheduling bucket: multiple
+ * agent completions arriving in the same tick should land as one turn,
+ * not N consecutive LLM calls.
  *
  * The caller is responsible for ensuring no query is currently running
  * and for calling this function again after each command completes
@@ -66,26 +50,29 @@ export function processQueueIfReady({
     return { processed: false }
   }
 
-  // Slash commands and bash-mode commands are processed individually.
-  // Bash commands need per-command error isolation, exit codes, and progress UI.
-  if (isSlashCommand(next) || next.mode === 'bash') {
-    const cmd = dequeue(isMainThread)!
-    void executeInput([cmd])
+  // Task notifications batch by bucket: multiple agent completions that
+  // arrived during one turn should fold into a single user message turn
+  // so the model isn't paged once per agent.
+  if (next.mode === 'task-notification') {
+    const commands = dequeueAllMatching(
+      cmd =>
+        isMainThread(cmd) && isSameQueueSchedulingBucket(cmd, next),
+    )
+    if (commands.length === 0) {
+      return { processed: false }
+    }
+    void executeInput(commands)
     return { processed: true }
   }
 
-  // Drain all non-slash-command items with the same scheduling bucket at once.
-  const commands = dequeueAllMatching(
-    cmd =>
-      isMainThread(cmd) &&
-      !isSlashCommand(cmd) &&
-      isSameQueueSchedulingBucket(cmd, next),
-  )
-  if (commands.length === 0) {
-    return { processed: false }
-  }
-
-  void executeInput(commands)
+  // Everything else (prompt, bash, slash, orphaned-permission) drains a
+  // single command per call. The useQueueProcessor effect re-fires after
+  // each turn ends and pulls the next item, so the queue still drains
+  // fully — it just does so one turn at a time. This keeps the queue
+  // preview anchored at the bottom of the CLI for any items the user
+  // queued behind the one that just started processing.
+  const cmd = dequeue(isMainThread)!
+  void executeInput([cmd])
   return { processed: true }
 }
 

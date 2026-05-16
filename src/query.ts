@@ -1645,23 +1645,26 @@ async function* queryLoop(
     })
 
     // Get queued commands snapshot before processing attachments.
-    // These will be sent as attachments so Claude can respond to them in the current turn.
+    // ONLY task-notifications drain mid-turn — they need to surface to the
+    // model while a proactive/agentic loop is running, otherwise they'd pile
+    // up in the queue forever and (with Sleep) cause a 0ms wake spin.
     //
-    // Drain pending notifications. LocalShellTask completions are 'next'
-    // (when MONITOR_TOOL is on) and drain without Sleep. Other task types
-    // (agent/workflow/framework) still default to 'later' — the Sleep flush
-    // covers those. If all task types move to 'next', this branch could go.
+    // User prompts NEVER drain mid-turn. Folding queued prompts into the
+    // current task collapsed them into the running turn instead of waiting
+    // for the next turn — the user typed them expecting their own turn,
+    // and the prompt-area preview can only stay anchored at the bottom if
+    // the items remain in the queue until processQueueIfReady picks them up
+    // at the turn boundary.
     //
-    // Slash commands are excluded from mid-turn drain — they must go through
-    // processSlashCommand after the turn ends (via useQueueProcessor), not be
-    // sent to the model as text. Bash-mode commands are already excluded by
-    // INLINE_NOTIFICATION_MODES in getQueuedCommandAttachments.
+    // Slash commands and bash commands also stay out: slash must go through
+    // processSlashCommand after the turn ends; bash needs per-command error
+    // isolation. Deferred items (/queue) are flagged deferUntilTurnEnd.
     //
     // Agent scoping: the queue is a process-global singleton shared by the
     // coordinator and all in-process subagents. Each loop drains only what's
     // addressed to it — main thread drains agentId===undefined, subagents
-    // drain their own agentId. User prompts (mode:'prompt') still go to main
-    // only; subagents never see the prompt stream.
+    // drain their own agentId. Prompts never reach this branch because they
+    // are filtered out above; only task-notifications hit the scoping check.
     // eslint-disable-next-line custom-rules/require-tool-match-name -- ToolUseBlock.name has no aliases
     const sleepRan = toolUseBlocks.some(b => b.name === SLEEP_TOOL_NAME)
     const isMainThread =
@@ -1672,10 +1675,11 @@ async function* queryLoop(
     ).filter(cmd => {
       if (cmd.deferUntilTurnEnd) return false
       if (isSlashCommand(cmd)) return false
+      // Only task-notifications drain mid-turn. Prompts (and anything else)
+      // wait for the turn to finish and are processed by useQueueProcessor.
+      if (cmd.mode !== 'task-notification') return false
       if (isMainThread) return cmd.agentId === undefined
-      // Subagents only drain task-notifications addressed to them — never
-      // user prompts, even if someone stamps an agentId on one.
-      return cmd.mode === 'task-notification' && cmd.agentId === currentAgentId
+      return cmd.agentId === currentAgentId
     })
 
     for await (const attachment of getAttachmentMessages(
@@ -1729,9 +1733,10 @@ async function* queryLoop(
     }
 
     // Remove only commands that were actually consumed as attachments.
-    // Prompt and task-notification commands are converted to attachments above.
+    // Mid-turn drain is restricted to task-notifications above, so that is
+    // the only mode here.
     const consumedCommands = queuedCommandsSnapshot.filter(
-      cmd => cmd.mode === 'prompt' || cmd.mode === 'task-notification',
+      cmd => cmd.mode === 'task-notification',
     )
     if (consumedCommands.length > 0) {
       for (const cmd of consumedCommands) {
