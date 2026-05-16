@@ -61,13 +61,28 @@ describe('estimateMessageTokens', () => {
     expect(estimateMessageTokens([progressMsg])).toBe(0)
   })
 
-  test('skips messages with non-array content (string-shorthand)', () => {
+  test('counts string-shorthand content (used by session-memory summary)', () => {
+    // Session-memory compact calls createUserMessage with string content,
+    // then uses estimateMessageTokens for post-compact threshold checks.
+    // The previous skip-non-array behavior returned 0 here, masking the
+    // summary size — fixed so the string is counted directly.
+    const text = 'this is a string, not an array'
     const strMsg = {
       type: 'user',
       uuid: 'x',
-      message: { role: 'user', content: 'this is a string, not an array' },
+      message: { role: 'user', content: text },
     } as unknown as Message
-    expect(estimateMessageTokens([strMsg])).toBe(0)
+    expect(estimateMessageTokens([strMsg])).toBe(applyPadding(roughTokens(text)))
+  })
+
+  test('skips messages with null/undefined content (truly non-string non-array)', () => {
+    // Defensive: a malformed message with neither string nor array content.
+    const nullMsg = {
+      type: 'user',
+      uuid: 'x',
+      message: { role: 'user', content: null },
+    } as unknown as Message
+    expect(estimateMessageTokens([nullMsg])).toBe(0)
   })
 
   test('counts text blocks via roughTokenCountEstimation', () => {

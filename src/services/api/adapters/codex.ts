@@ -17,6 +17,7 @@
  * - https://chatgpt.com/backend-api/codex/responses
  */
 
+import { randomUUID } from 'crypto'
 import {
   getCodexOAuthTokens,
   getFreshCodexOAuthTokens,
@@ -540,7 +541,7 @@ async function translateCodexStreamToAnthropic(
   codexResponse: Response,
   codexModel: string,
 ): Promise<Response> {
-  const messageId = `msg_codex_${Date.now()}`
+  const messageId = `msg_codex_${randomUUID()}`
 
   const readable = new ReadableStream({
     async start(controller) {
@@ -977,7 +978,7 @@ async function translateCodexStreamToAnthropicResponse(
   )
   const streamText = await streamResponse.text()
   const requestId =
-    streamResponse.headers.get('x-request-id') ?? `msg_codex_${Date.now()}`
+    streamResponse.headers.get('x-request-id') ?? `msg_codex_${randomUUID()}`
   const content: Array<Record<string, unknown>> = []
   const toolInputBuffers = new Map<number, string>()
   let usage: Record<string, number> = { input_tokens: 0, output_tokens: 0 }
@@ -1152,7 +1153,7 @@ async function translateCodexResponseToAnthropic(
     id:
       typeof response.id === 'string'
         ? response.id
-        : `msg_codex_${Date.now()}`,
+        : `msg_codex_${randomUUID()}`,
     type: 'message',
     role: 'assistant',
     content,

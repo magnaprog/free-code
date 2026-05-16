@@ -313,8 +313,6 @@ async function runAutoCompact(
         runPostCompactCleanup(querySource)
         // Reset cache read baseline so the post-compact drop isn't flagged as a
         // break. compactConversation does this internally; SM-compact doesn't.
-        // BQ 2026-03-01: missing this made 20% of tengu_prompt_cache_break events
-        // false positives (systemPromptChanged=true, timeSinceLastAssistantMsg=-1).
         if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
           notifyCompaction(querySource ?? 'compact', toolUseContext.agentId)
         }
@@ -324,6 +322,10 @@ async function runAutoCompact(
         return {
           wasCompacted: true,
           compactionResult: sessionMemoryResult,
+          // Mirror legacy compact success: reset failure count so a prior
+          // run's failures don't trip the circuit breaker after an SM
+          // compact succeeds.
+          consecutiveFailures: 0,
         }
       }
     }

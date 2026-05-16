@@ -169,6 +169,15 @@ export function estimateMessageTokens(messages: Message[]): number {
       continue
     }
 
+    // String-content shorthand is valid Anthropic Messages API input
+    // (createUserMessage emits it for plain text). Session-memory compact
+    // builds a string summary; skipping string content here would let
+    // estimateMessageTokens return 0 and a downstream threshold check
+    // would pass incorrectly.
+    if (typeof message.message.content === 'string') {
+      totalTokens += roughTokenCountEstimation(message.message.content)
+      continue
+    }
     if (!Array.isArray(message.message.content)) {
       continue
     }

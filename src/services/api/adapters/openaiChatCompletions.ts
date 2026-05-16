@@ -604,12 +604,25 @@ async function translateChatStreamToAnthropic(
         if (!reader) throw new Error('OpenAI-compatible stream has no body')
         const decoder = new TextDecoder()
         let buffer = ''
-        while (true) {
+        let streamDone = false
+        while (!streamDone) {
           const { done, value } = await reader.read()
-          if (done) break
-          buffer += decoder.decode(value, { stream: true })
+          if (done) {
+            // Flush any trailing event held in buffer when the stream
+            // terminates without a final '\n'. Some upstreams (notably
+            // small chunk boundaries) yield the last SSE frame without
+            // a trailing newline; without this flush the final
+            // `data: {...}` line is silently dropped.
+            buffer += decoder.decode()
+            streamDone = true
+          } else {
+            buffer += decoder.decode(value, { stream: true })
+          }
           const lines = buffer.split('\n')
-          buffer = lines.pop() || ''
+          // On done, treat every remaining line (including any final
+          // partial line) as complete. On not-done, keep the partial
+          // tail in buffer for the next chunk.
+          buffer = streamDone ? '' : lines.pop() || ''
           for (const line of lines) {
             const trimmed = line.trim()
             if (!trimmed.startsWith('data: ')) continue

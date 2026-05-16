@@ -11,6 +11,7 @@ import type {
   ToolChoice,
   ToolResultContentBlock,
 } from '@aws-sdk/client-bedrock-runtime'
+import { randomUUID } from 'crypto'
 import { createBedrockRuntimeClient } from '../../../utils/model/bedrock.js'
 
 interface AnthropicContentBlock {
@@ -434,7 +435,7 @@ function translateConverseOutputToAnthropic(
   }
 
   const message = {
-    id: `msg_bedrock_${Date.now()}`,
+    id: `msg_bedrock_${randomUUID()}`,
     type: 'message',
     role: 'assistant',
     content,
@@ -460,7 +461,7 @@ function createAnthropicStreamFromBedrock(
   stream: AsyncIterable<ConverseStreamOutput> | undefined,
   model: string,
 ): Response {
-  const messageId = `msg_bedrock_${Date.now()}`
+  const messageId = `msg_bedrock_${randomUUID()}`
   const encoder = new TextEncoder()
 
   const readable = new ReadableStream({
