@@ -156,6 +156,17 @@ const TEAMMATE_ENV_VARS = [
  * typing API keys into tmux panes while still propagating provider config to
  * shells that do not inherit the parent process env.
  */
+export function buildTeammateSpawnShellCommand(options: {
+  envSetupCommand: string
+  workingDir: string
+  binaryPath: string
+  teammateArgs: string
+  flagsStr?: string
+}): string {
+  const flagsStr = options.flagsStr ?? ''
+  return `( ${options.envSetupCommand} cd ${quote([options.workingDir])} && exec ${quote([options.binaryPath])} ${options.teammateArgs}${flagsStr} )`
+}
+
 export async function buildInheritedEnvSetupCommand(): Promise<{
   command: string
   cleanup: () => Promise<void>

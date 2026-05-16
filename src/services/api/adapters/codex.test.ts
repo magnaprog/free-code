@@ -274,6 +274,23 @@ describe('codex fetch adapter translation', () => {
     })
   })
 
+  test('downstream body cancellation cancels upstream stream', async () => {
+    let cancelReason: unknown
+    const upstream = new ReadableStream<Uint8Array>({
+      cancel(reason) {
+        cancelReason = reason
+      },
+    })
+
+    const response = await codexFetchAdapterTestHooks.translateCodexStreamToAnthropic(
+      new Response(upstream, { headers: { 'Content-Type': 'text/event-stream' } }),
+      'gpt-5.5',
+    )
+
+    await response.body!.cancel('client-stop')
+    expect(cancelReason).toBe('client-stop')
+  })
+
   test('flushes final streaming usage without trailing newline', async () => {
     const finalEvent = {
       type: 'response.completed',

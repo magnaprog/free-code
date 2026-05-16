@@ -3,6 +3,7 @@ import type { QuerySource } from '../../constants/querySource.js'
 import { clearSystemPromptSections } from '../../constants/systemPromptSections.js'
 import { getUserContext } from '../../context.js'
 import { clearSpeculativeChecks } from '../../tools/BashTool/bashPermissions.js'
+import { isMainThreadQuerySource } from '../../utils/querySource.js'
 import { clearClassifierApprovals } from '../../utils/classifierApprovals.js'
 import { resetGetMemoryFilesCache } from '../../utils/claudemd.js'
 import { clearSessionMessagesCache } from '../../utils/sessionStorage.js'
@@ -10,60 +11,47 @@ import { clearBetaTracingState } from '../../utils/telemetry/betaSessionTracing.
 import { resetMicrocompactState } from './microCompact.js'
 
 /**
- * Run cleanup of caches and tracking state after compaction.
- * Call this after both auto-compact and manual /compact to free memory
- * held by tracking structures that are invalidated by compaction.
+ * Run main-thread cleanup of caches and tracking state after compaction.
+ * Call this after both auto-compact and manual /compact; subagent calls
+ * return without clearing shared process state.
  *
  * Note: We intentionally do NOT clear invoked skill content here.
  * Skill content must survive across multiple compactions so that
  * createSkillAttachmentIfNeeded() can include the full skill text
  * in subsequent compaction attachments.
  *
- * querySource: pass the compacting query's source so we can skip
- * resets that would clobber main-thread module-level state. Subagents
- * (agent:*) run in the same process and share module-level state
- * (context-collapse store, getMemoryFiles one-shot hook flag,
- * getUserContext cache); resetting those when a SUBAGENT compacts
- * would corrupt the MAIN thread's state. All compaction callers should
- * pass querySource — undefined is only safe for callers that are
- * genuinely main-thread-only (/compact, /clear).
+ * querySource: pass the compacting query's source so subagent compacts
+ * can skip shared module-level cleanup. Subagents (agent:*) run in the
+ * same process and share state with the main thread; clearing caches or
+ * tracking state for a subagent compact would corrupt the main thread's
+ * conversation. All compaction callers should pass querySource —
+ * undefined is only safe for genuinely main-thread-only callers.
  */
-// Subagents (agent:*) run in the same process and share module-level
-// state with the main thread. Use this predicate to gate cache clears
-// and module-state resets that would clobber main-thread state.
-export function isMainThreadQuerySource(querySource?: QuerySource): boolean {
-  return (
-    querySource === undefined ||
-    querySource.startsWith('repl_main_thread') ||
-    querySource === 'sdk'
-  )
-}
+export { isMainThreadQuerySource }
 
 export function runPostCompactCleanup(querySource?: QuerySource): void {
   const isMainThreadCompact = isMainThreadQuerySource(querySource)
 
-  if (isMainThreadCompact) {
-    resetMicrocompactState()
+  if (!isMainThreadCompact) {
+    return
   }
+
+  resetMicrocompactState()
   if (feature('CONTEXT_COLLAPSE')) {
-    if (isMainThreadCompact) {
-      /* eslint-disable @typescript-eslint/no-require-imports */
-      ;(
-        require('../contextCollapse/index.js') as typeof import('../contextCollapse/index.js')
-      ).resetContextCollapse()
-      /* eslint-enable @typescript-eslint/no-require-imports */
-    }
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    ;(
+      require('../contextCollapse/index.js') as typeof import('../contextCollapse/index.js')
+    ).resetContextCollapse()
+    /* eslint-enable @typescript-eslint/no-require-imports */
   }
-  if (isMainThreadCompact) {
-    // getUserContext is a memoized outer layer wrapping getClaudeMds() →
-    // getMemoryFiles(). If only the inner getMemoryFiles cache is cleared,
-    // the next turn hits the getUserContext cache and never reaches
-    // getMemoryFiles(), so the armed InstructionsLoaded hook never fires.
-    // Keep this centralized so manual, auto, and reactive compaction paths
-    // all apply the same querySource gate.
-    getUserContext.cache.clear?.()
-    resetGetMemoryFilesCache('compact')
-  }
+  // getUserContext is a memoized outer layer wrapping getClaudeMds() →
+  // getMemoryFiles(). If only the inner getMemoryFiles cache is cleared,
+  // the next turn hits the getUserContext cache and never reaches
+  // getMemoryFiles(), so the armed InstructionsLoaded hook never fires.
+  // Keep this centralized so manual, auto, and reactive compaction paths
+  // all apply the same querySource gate.
+  getUserContext.cache.clear?.()
+  resetGetMemoryFilesCache('compact')
   clearSystemPromptSections()
   clearClassifierApprovals()
   clearSpeculativeChecks()

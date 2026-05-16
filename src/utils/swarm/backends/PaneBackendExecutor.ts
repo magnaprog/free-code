@@ -9,6 +9,7 @@ import { writeToMailbox } from '../../../utils/teammateMailbox.js'
 import {
   buildInheritedCliFlags,
   buildInheritedEnvSetupCommand,
+  buildTeammateSpawnShellCommand,
   getTeammateCommand,
 } from '../spawnUtils.js'
 import { assignTeammateColor } from '../teammateLayoutManager.js'
@@ -149,7 +150,13 @@ export class PaneBackendExecutor implements TeammateExecutor {
       const workingDir = config.cwd
 
       const envSetup = await buildInheritedEnvSetupCommand()
-      const spawnCommand = `cd ${quote([workingDir])} && ( ${envSetup.command} exec ${quote([binaryPath])} ${teammateArgs}${flagsStr} )`
+      const spawnCommand = buildTeammateSpawnShellCommand({
+        envSetupCommand: envSetup.command,
+        workingDir,
+        binaryPath,
+        teammateArgs,
+        flagsStr,
+      })
 
       // Send the command to the new pane
       // Use swarm socket when running outside tmux (external swarm session)

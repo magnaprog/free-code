@@ -13,6 +13,7 @@ import type { Message } from '../../types/message.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { getMainLoopModel } from '../../utils/model/model.js'
 import { SHELL_TOOL_NAMES } from '../../utils/shell/shellToolUtils.js'
+import { isMainThreadQuerySource } from '../../utils/querySource.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -249,16 +250,6 @@ function collectCompactableToolIds(messages: Message[]): string[] {
   return ids
 }
 
-// Prefix-match because promptCategory.ts sets the querySource to
-// 'repl_main_thread:outputStyle:<style>' when a non-default output style
-// is active. The bare 'repl_main_thread' is only used for the default style.
-// query.ts:350/1451 use the same startsWith pattern; the pre-existing
-// cached-MC `=== 'repl_main_thread'` check was a latent bug — users with a
-// non-default output style were silently excluded from cached MC.
-function isMainThreadSource(querySource: QuerySource | undefined): boolean {
-  return !querySource || querySource.startsWith('repl_main_thread')
-}
-
 export async function microcompactMessages(
   messages: Message[],
   toolUseContext?: ToolUseContext,
@@ -288,7 +279,7 @@ export async function microcompactMessages(
     if (
       mod.isCachedMicrocompactEnabled() &&
       mod.isModelSupportedForCacheEditing(model) &&
-      isMainThreadSource(querySource)
+      isMainThreadQuerySource(querySource)
     ) {
       return await cachedMicrocompactPath(messages, querySource)
     }
@@ -369,7 +360,7 @@ async function cachedMicrocompactPath(
 
     // Notify cache break detection that cache reads will legitimately drop
     if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
-      // Pass the actual querySource — isMainThreadSource now prefix-matches
+      // Pass the actual querySource — main-thread detection prefix-matches
       // so output-style variants enter here, and getTrackingKey keys on the
       // full source string, not the 'repl_main_thread' prefix.
       notifyCacheDeletion(querySource ?? 'repl_main_thread')
@@ -433,11 +424,11 @@ export function evaluateTimeBasedTrigger(
   querySource: QuerySource | undefined,
 ): { gapMinutes: number; config: TimeBasedMCConfig } | null {
   const config = getTimeBasedMCConfig()
-  // Require an explicit main-thread querySource. isMainThreadSource treats
+  // Require an explicit main-thread querySource. isMainThreadQuerySource treats
   // undefined as main-thread (for cached-MC backward-compat), but several
   // callers (/context, /compact, analyzeContext) invoke microcompactMessages
   // without a source for analysis-only purposes — they should not trigger.
-  if (!config.enabled || !querySource || !isMainThreadSource(querySource)) {
+  if (!config.enabled || !querySource || !isMainThreadQuerySource(querySource)) {
     return null
   }
   const lastAssistant = messages.findLast(m => m.type === 'assistant')

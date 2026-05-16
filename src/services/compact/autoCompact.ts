@@ -26,7 +26,10 @@ import {
   type RecompactionInfo,
   throwIfPreCompactBlocked,
 } from './compact.js'
-import { runPostCompactCleanup } from './postCompactCleanup.js'
+import {
+  isMainThreadQuerySource,
+  runPostCompactCleanup,
+} from './postCompactCleanup.js'
 import { trySessionMemoryCompaction } from './sessionMemoryCompact.js'
 
 // Reserve this many tokens for output during compaction
@@ -299,7 +302,10 @@ async function runAutoCompact(
       )
     throwIfPreCompactBlocked(preCompactHookResult)
 
-    if (!preCompactHookResult.newCustomInstructions) {
+    if (
+      !preCompactHookResult.newCustomInstructions &&
+      isMainThreadQuerySource(querySource)
+    ) {
       const sessionMemoryResult = await trySessionMemoryCompaction(
         messages,
         toolUseContext.agentId,
@@ -309,7 +315,9 @@ async function runAutoCompact(
       if (sessionMemoryResult) {
         // Reset lastSummarizedMessageId since session memory compaction prunes messages
         // and the old message UUID will no longer exist after the REPL replaces messages
-        setLastSummarizedMessageId(undefined)
+        if (isMainThreadQuerySource(querySource)) {
+          setLastSummarizedMessageId(undefined)
+        }
         runPostCompactCleanup(querySource)
         // Reset cache read baseline so the post-compact drop isn't flagged as a
         // break. compactConversation does this internally; SM-compact doesn't.
@@ -344,7 +352,9 @@ async function runAutoCompact(
 
     // Reset lastSummarizedMessageId since legacy compaction replaces all messages
     // and the old message UUID will no longer exist in the new messages array
-    setLastSummarizedMessageId(undefined)
+    if (isMainThreadQuerySource(querySource)) {
+      setLastSummarizedMessageId(undefined)
+    }
     runPostCompactCleanup(querySource)
 
     return {

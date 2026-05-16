@@ -115,15 +115,11 @@ describe('reactiveCompact', () => {
     expect(deps.setLastSummarizedMessageId).toHaveBeenCalledWith(undefined)
     expect(deps.runPostCompactCleanup).toHaveBeenCalledTimes(1)
     expect(deps.suppressCompactWarning).toHaveBeenCalledTimes(1)
-    expect(deps.clearUserContextCache).toHaveBeenCalledTimes(1)
   })
 
-  test('threads querySource through to runPostCompactCleanup (round-40 fix / Codex #5)', async () => {
-    // Pre-fix: tryReactiveCompact received querySource but didn't pass
-    // it to reactiveCompactOnPromptTooLong, which then called
-    // deps.runPostCompactCleanup() with no args. The cleanup treats
-    // undefined as main-thread, which would clobber main-thread
-    // module-level state when invoked from a subagent.
+  test('threads querySource through to runPostCompactCleanup', async () => {
+    // Undefined is the main-thread default, so subagent compaction must
+    // pass its querySource through to cleanup.
     process.env.CLAUDE_CODE_REACTIVE_COMPACT = '1'
     const messages = conversationWithOldImage()
     const deps = createDeps()
@@ -168,11 +164,7 @@ describe('reactiveCompact', () => {
     )
   })
 
-  test('clearUserContextCache gated on main-thread querySource (round-47 fix)', async () => {
-    // Codex 14th-pass #1: subagent compacts must not clobber
-    // main-thread getUserContext cache. Pre-fix,
-    // deps.clearUserContextCache() ran unconditionally; post-fix
-    // it's gated on isMainThreadQuerySource.
+  test('setLastSummarizedMessageId is skipped for subagent querySource', async () => {
     process.env.CLAUDE_CODE_REACTIVE_COMPACT = '1'
     const messages = conversationWithOldImage()
     const deps = createDeps()
@@ -188,11 +180,10 @@ describe('reactiveCompact', () => {
       deps,
     )
 
-    // Subagent path: clearUserContextCache must NOT have been called.
-    expect(deps.clearUserContextCache).not.toHaveBeenCalled()
+    expect(deps.setLastSummarizedMessageId).not.toHaveBeenCalled()
   })
 
-  test('clearUserContextCache called for main-thread querySource (round-47 fix)', async () => {
+  test('setLastSummarizedMessageId is called for main-thread querySource', async () => {
     process.env.CLAUDE_CODE_REACTIVE_COMPACT = '1'
     const messages = conversationWithOldImage()
     const deps = createDeps()
@@ -208,8 +199,7 @@ describe('reactiveCompact', () => {
       deps,
     )
 
-    // Main-thread path: clearUserContextCache must have been called.
-    expect(deps.clearUserContextCache).toHaveBeenCalledTimes(1)
+    expect(deps.setLastSummarizedMessageId).toHaveBeenCalledWith(undefined)
   })
 
   test('reactiveCompactOnPromptTooLong defaults to undefined when querySource omitted', async () => {
@@ -237,7 +227,6 @@ function createDeps(): ReactiveCompactDeps & {
   setLastSummarizedMessageId: ReturnType<typeof mock>
   runPostCompactCleanup: ReturnType<typeof mock>
   suppressCompactWarning: ReturnType<typeof mock>
-  clearUserContextCache: ReturnType<typeof mock>
 } {
   return {
     compactConversation: mock(async () => compactResult) as never,
@@ -246,7 +235,6 @@ function createDeps(): ReactiveCompactDeps & {
     setLastSummarizedMessageId: mock((_id: string | undefined) => {}) as never,
     runPostCompactCleanup: mock(() => {}) as never,
     suppressCompactWarning: mock(() => {}) as never,
-    clearUserContextCache: mock(() => {}) as never,
   }
 }
 

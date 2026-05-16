@@ -460,9 +460,20 @@ function translateConverseOutputToAnthropic(
 function createAnthropicStreamFromBedrock(
   stream: AsyncIterable<ConverseStreamOutput> | undefined,
   model: string,
+  cancelUpstream?: (reason?: unknown) => void,
+  cleanupUpstream?: () => void,
 ): Response {
   const messageId = `msg_bedrock_${randomUUID()}`
   const encoder = new TextEncoder()
+  let downstreamCanceled = false
+  let upstreamIterator: AsyncIterator<ConverseStreamOutput> | undefined
+  let cleanedUpstream = false
+  const cleanup = () => {
+    if (!cleanedUpstream) {
+      cleanedUpstream = true
+      cleanupUpstream?.()
+    }
+  }
 
   const readable = new ReadableStream({
     async start(controller) {
@@ -474,7 +485,9 @@ function createAnthropicStreamFromBedrock(
       const createFallbackToolUseId = createFallbackToolUseIdFactory()
 
       const emit = (event: string, payload: Record<string, unknown>) => {
-        controller.enqueue(encoder.encode(formatSSE(event, JSON.stringify(payload))))
+        if (!downstreamCanceled) {
+          controller.enqueue(encoder.encode(formatSSE(event, JSON.stringify(payload))))
+        }
       }
 
       emit('message_start', {
@@ -496,7 +509,12 @@ function createAnthropicStreamFromBedrock(
           throw new Error('Bedrock ConverseStream returned no stream')
         }
 
-        for await (const event of stream) {
+        upstreamIterator = stream[Symbol.asyncIterator]()
+        while (!downstreamCanceled) {
+          const next = await upstreamIterator.next()
+          if (downstreamCanceled) return
+          if (next.done) break
+          const event = next.value
           const streamError = getBedrockStreamError(event)
           if (streamError) {
             throw streamError
@@ -578,6 +596,8 @@ function createAnthropicStreamFromBedrock(
           }
         }
 
+        if (downstreamCanceled) return
+
         for (const index of openBlocks) {
           emit('content_block_stop', {
             type: 'content_block_stop',
@@ -605,8 +625,14 @@ function createAnthropicStreamFromBedrock(
           },
           usage,
         })
-        controller.close()
+        if (!downstreamCanceled) {
+          controller.close()
+        }
+        cleanup()
       } catch (error) {
+        if (downstreamCanceled) return
+        cleanup()
+        await Promise.resolve(upstreamIterator?.return?.()).catch(() => {})
         emit('error', {
           type: 'error',
           error: {
@@ -616,6 +642,12 @@ function createAnthropicStreamFromBedrock(
         })
         controller.close()
       }
+    },
+    async cancel(reason) {
+      downstreamCanceled = true
+      cancelUpstream?.(reason)
+      cleanup()
+      await Promise.resolve(upstreamIterator?.return?.(reason)).catch(() => {})
     },
   })
 
@@ -692,6 +724,7 @@ export function createBedrockConverseFetch(
     const anthropicBody = await parseAnthropicBody(init)
     const converseRequest = translateToConverseRequest(anthropicBody)
     const model = converseRequest.modelId || String(anthropicBody.model || '')
+    let cleanupAbortListener = () => {}
 
     try {
       const client = await runtimeClientFactory()
@@ -700,28 +733,43 @@ export function createBedrockConverseFetch(
         ConverseStreamCommand,
       } = await import('@aws-sdk/client-bedrock-runtime')
 
-      // Forward CLI abort signal into the AWS SDK call so Ctrl-C tears
-      // down the upstream Bedrock streaming connection instead of
-      // leaking it. The smithy HTTP handler honors abortSignal on
-      // send(); ConverseStreamCommand stream emit completes on abort.
-      const sendOptions = init?.signal
-        ? { abortSignal: init.signal }
-        : undefined
+      const upstreamAbortController = new AbortController()
+      if (init?.signal) {
+        const abortUpstream = () =>
+          upstreamAbortController.abort(init.signal?.reason)
+        if (init.signal.aborted) {
+          abortUpstream()
+        } else {
+          init.signal.addEventListener('abort', abortUpstream, { once: true })
+          cleanupAbortListener = () =>
+            init.signal?.removeEventListener('abort', abortUpstream)
+        }
+      }
+      const sendOptions = { abortSignal: upstreamAbortController.signal }
 
       if (anthropicBody.stream === true) {
         const output = await client.send(
           new ConverseStreamCommand(converseRequest),
           sendOptions,
         )
-        return createAnthropicStreamFromBedrock(output.stream, model)
+        return createAnthropicStreamFromBedrock(
+          output.stream,
+          model,
+          reason => {
+            upstreamAbortController.abort(reason)
+          },
+          cleanupAbortListener,
+        )
       }
 
       const output = await client.send(
         new ConverseCommand(converseRequest),
         sendOptions,
       )
+      cleanupAbortListener()
       return translateConverseOutputToAnthropic(output, model)
     } catch (error) {
+      cleanupAbortListener()
       // Abort errors (from init.signal cancellation) must propagate so
       // the caller's AbortController sees the abort. Wrapping them in
       // a synthetic 500 response converts a clean cancel into what

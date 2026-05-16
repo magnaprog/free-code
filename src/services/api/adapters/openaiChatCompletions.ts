@@ -544,6 +544,8 @@ async function translateChatStreamToAnthropic(
   model: string,
 ): Promise<Response> {
   const messageId = generateMessageId()
+  let downstreamCanceled = false
+  let upstreamReader: ReadableStreamDefaultReader<Uint8Array> | undefined
   const readable = new ReadableStream({
     async start(controller) {
       const encoder = new TextEncoder()
@@ -571,7 +573,9 @@ async function translateChatStreamToAnthropic(
       const toolByProviderIndex = new Map<number, ToolEntry>()
 
       const enqueue = (event: string, data: Record<string, unknown>) => {
-        controller.enqueue(encoder.encode(formatSSE(event, JSON.stringify(data))))
+        if (!downstreamCanceled) {
+          controller.enqueue(encoder.encode(formatSSE(event, JSON.stringify(data))))
+        }
       }
 
       const closeTextIfOpen = (): void => {
@@ -600,13 +604,15 @@ async function translateChatStreamToAnthropic(
       enqueue('ping', { type: 'ping' })
 
       try {
-        const reader = chatResponse.body?.getReader()
+        upstreamReader = chatResponse.body?.getReader()
+        const reader = upstreamReader
         if (!reader) throw new Error('OpenAI-compatible stream has no body')
         const decoder = new TextDecoder()
         let buffer = ''
         let streamDone = false
-        while (!streamDone) {
+        while (!streamDone && !downstreamCanceled) {
           const { done, value } = await reader.read()
+          if (downstreamCanceled) return
           if (done) {
             // Flush any trailing event held in buffer when the stream
             // terminates without a final '\n'. Some upstreams (notably
@@ -763,6 +769,7 @@ async function translateChatStreamToAnthropic(
           }
         }
       } catch (error) {
+        if (downstreamCanceled) return
         enqueue('error', {
           type: 'error',
           error: {
@@ -774,6 +781,7 @@ async function translateChatStreamToAnthropic(
         return
       }
 
+      if (downstreamCanceled) return
       closeTextIfOpen()
       let startedToolCount = 0
       for (const entry of toolByProviderIndex.values()) {
@@ -803,7 +811,13 @@ async function translateChatStreamToAnthropic(
         type: 'message_stop',
         usage: { input_tokens: inputTokens, output_tokens: outputTokens },
       })
-      controller.close()
+      if (!downstreamCanceled) {
+        controller.close()
+      }
+    },
+    async cancel(reason) {
+      downstreamCanceled = true
+      await upstreamReader?.cancel(reason).catch(() => {})
     },
   })
   return new Response(readable, {

@@ -537,9 +537,7 @@ export async function getAnthropicClient({
   // branches above accepted (no OpenCode key, no OPENAI_API_KEY, no
   // Codex OAuth), do NOT silently fall through to direct Anthropic.
   // The user explicitly opted out of first-party; honoring that intent
-  // matters even when no usable credential exists. Pre-fix, this path
-  // routed to ANTHROPIC_API_KEY-authenticated direct Anthropic, which
-  // hits the wrong endpoint relative to user intent.
+  // matters even when no usable credential exists.
   if (apiProvider === 'openai') {
     throw new Error(
       'CLAUDE_CODE_USE_OPENAI / CLAUDE_CODE_USE_OPENCODE_GO is set but no ' +

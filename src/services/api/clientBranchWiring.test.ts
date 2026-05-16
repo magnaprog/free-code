@@ -252,23 +252,9 @@ describe('provider branch-wiring — auth suppression', () => {
 })
 
 describe('non-direct providers — no Anthropic auth preflight', () => {
-  // Regression for round-42 fix to Codex finding #1. Pre-fix,
-  // getAnthropicClient ran `checkAndRefreshOAuthTokenIfNeeded` and
-  // `configureApiKeyHeaders` BEFORE provider dispatch. For non-direct
-  // providers (Bedrock / Vertex / Foundry / OpenAI / OpenCode Zen /
-  // Codex), that preflight read real OAuth files and could execute a
-  // user-configured apiKeyHelper shell command — even though the
-  // downstream non-direct branch never used the result.
-  //
-  // After the fix, preflight is gated on
-  // `getAPIProvider() === 'firstParty'`. The strongest regression
-  // signal we can capture in a unit test is: with NO Anthropic auth
-  // source set in env, a non-direct provider must still construct.
-  // Pre-fix, `configureApiKeyHeaders` → `getApiKeyFromApiKeyHelper`
-  // path is benign (returns undefined when no helper configured), but
-  // `getApiKey` further upstream and `isAnthropicAuthEnabled()` reach
-  // could throw. We assert construction success as a behavioral
-  // smoke check; deeper isolation would require mocking utils/auth.
+  // Non-direct providers must not require Anthropic auth or run the
+  // Anthropic apiKeyHelper/OAuth preflight. Construction without
+  // ANTHROPIC_API_KEY is the behavior this suite pins.
 
   beforeEach(() => {
     captured.length = 0
@@ -312,11 +298,7 @@ describe('non-direct providers — no Anthropic auth preflight', () => {
     expect(captured.pop()?.name).toBe('Anthropic')
   })
 
-  test('OpenAI provider with no usable credential throws instead of Anthropic fallback (round-47 fix)', async () => {
-    // Codex 14th-pass #4: CLAUDE_CODE_USE_OPENAI=1 with no
-    // OPENAI_API_KEY, no OpenCode key, no Codex token, but with
-    // ANTHROPIC_API_KEY available previously fell through to direct
-    // Anthropic. Post-fix: throws explicit error.
+  test('OpenAI provider with no usable credential throws instead of Anthropic fallback', async () => {
     process.env.CLAUDE_CODE_USE_OPENAI = '1'
     process.env.ANTHROPIC_API_KEY = 'sk-anthropic-direct'
     // No OPENAI_API_KEY, no OPENCODE_*, no Codex tokens.

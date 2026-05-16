@@ -1,27 +1,13 @@
 /**
- * Regression coverage for `validateModel`'s OpenCode Zen detection
- * (Codex finding #2, round-41 fix). Pre-fix, validateModel marked
- * 'openai-responses' as wired only when `OPENAI_API_KEY` was set:
+ * OpenCode Zen is wired via OpenCode-specific API keys and supports
+ * model-family-specific transports:
+ *   - claude-*  → anthropic_messages
+ *   - gpt-*     → openai_responses
+ *   - others    → openai_chat_completions
+ *   - gemini-*  → gemini_native (not wired here)
  *
- *   const wiredAdapters = new Set([
- *     ...(process.env.OPENAI_API_KEY ? ['openai-responses'] : []),
- *     'bedrock-converse',
- *   ])
- *
- * But OpenCode Zen is wired via `OPENCODE_API_KEY` (not OPENAI_API_KEY)
- * and supports three runtime transports per model family:
- *   - claude-*  → anthropic_messages   (wired)
- *   - gpt-*     → openai_responses     (wired)
- *   - others    → openai_chat_completions (wired)
- *   - gemini-*  → gemini_native        (intentionally fail-closed)
- *
- * Pre-fix: every OpenCode model was rejected by validateModel when
- * OPENAI_API_KEY was unset, even though the runtime client at
- * `getAnthropicClient()` would have routed them correctly.
- *
- * The post-fix path short-circuits only when OpenCode is the selected
- * provider and has a key, returning valid for the three wired transports
- * and invalid for Gemini or missing OpenCode auth.
+ * Validation must follow the same provider precedence and transport rules
+ * as getAnthropicClient().
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { validateModel } from './validateModel.js'
@@ -53,7 +39,7 @@ afterEach(() => {
   }
 })
 
-describe('validateModel — OpenCode Zen routing (round-41 / Codex #2 regression)', () => {
+describe('validateModel — OpenCode Zen routing', () => {
   test('accepts OpenCode chat-completions model without OPENAI_API_KEY', async () => {
     // qwen* is a chat-completions transport per
     // `getOpenCodeTransportForModel`. With OpenCode enabled +
@@ -101,17 +87,31 @@ describe('validateModel — OpenCode Zen routing (round-41 / Codex #2 regression
     expect(result.error).toContain('not wired')
   })
 
-  test('OpenCode short-circuit does not fire when OPENCODE_API_KEY is absent', async () => {
-    // Without OPENCODE_API_KEY, the short-circuit returns to the
-    // generic adapter check; without OPENAI_API_KEY that check now
-    // rejects (pre-fix behavior — which is the desired behavior here
-    // because OpenCode isn't actually usable).
+  test('rejects OpenCode models when OPENCODE_API_KEY is absent', async () => {
     process.env.CLAUDE_CODE_USE_OPENAI = '1'
     process.env.CLAUDE_CODE_USE_OPENCODE_GO = '1'
-    // No OPENCODE_API_KEY.
 
     const result = await validateModel('qwen2.5-coder-32b-instruct')
     expect(result.valid).toBe(false)
+    expect(result.error).toContain('OpenCode Zen requires OPENCODE_API_KEY')
+  })
+
+  test('rejects aliases when OpenCode is enabled without a key', async () => {
+    process.env.CLAUDE_CODE_USE_OPENAI = '1'
+    process.env.CLAUDE_CODE_USE_OPENCODE_GO = '1'
+
+    const result = await validateModel('sonnet')
+    expect(result.valid).toBe(false)
+    expect(result.error).toContain('OpenCode Zen requires OPENCODE_API_KEY')
+  })
+
+  test('rejects Codex-only models when OpenAI API key takes precedence', async () => {
+    process.env.CLAUDE_CODE_USE_OPENAI = '1'
+    process.env.OPENAI_API_KEY = 'sk-openai-test'
+
+    const result = await validateModel('gpt-5.3-codex-spark')
+    expect(result.valid).toBe(false)
+    expect(result.error).toContain('not OpenAI Responses')
   })
 
   test('OpenCode validation is not reused when a higher-precedence provider wins', async () => {

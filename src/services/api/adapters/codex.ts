@@ -542,6 +542,8 @@ async function translateCodexStreamToAnthropic(
   codexModel: string,
 ): Promise<Response> {
   const messageId = `msg_codex_${randomUUID()}`
+  let downstreamCanceled = false
+  let upstreamReader: ReadableStreamDefaultReader<Uint8Array> | undefined
 
   const readable = new ReadableStream({
     async start(controller) {
@@ -591,7 +593,8 @@ async function translateCodexStreamToAnthropic(
       const createFallbackToolUseId = createFallbackToolUseIdFactory()
 
       try {
-        const reader = codexResponse.body?.getReader()
+        upstreamReader = codexResponse.body?.getReader()
+        const reader = upstreamReader
         if (!reader) {
           emitTextBlock(controller, encoder, contentBlockIndex, 'Error: No response body')
           finishStream(
@@ -613,8 +616,9 @@ async function translateCodexStreamToAnthropic(
         // processed even when the upstream ends without a trailing
         // `\n`. Codex/OpenAI Responses can emit response.completed
         // (final usage + finish reason) in the last frame.
-        while (!streamDone) {
+        while (!streamDone && !downstreamCanceled) {
           const { done, value } = await reader.read()
+          if (downstreamCanceled) return
           if (done) {
             buffer += decoder.decode()
             streamDone = true
@@ -625,6 +629,7 @@ async function translateCodexStreamToAnthropic(
           buffer = streamDone ? '' : lines.pop() || ''
 
           for (const line of lines) {
+            if (downstreamCanceled) return
             const trimmed = line.trim()
             if (!trimmed) continue
 
@@ -828,6 +833,7 @@ async function translateCodexStreamToAnthropic(
           }
         }
       } catch (err) {
+        if (downstreamCanceled) return
         controller.enqueue(
           encoder.encode(
             formatSSE('error', JSON.stringify({
@@ -842,6 +848,8 @@ async function translateCodexStreamToAnthropic(
         controller.close()
         return
       }
+
+      if (downstreamCanceled) return
 
       // Close any remaining open blocks
       if (currentTextBlockStarted) {
@@ -866,6 +874,10 @@ async function translateCodexStreamToAnthropic(
         hadToolCalls,
         streamStopReason,
       )
+    },
+    async cancel(reason) {
+      downstreamCanceled = true
+      await upstreamReader?.cancel(reason).catch(() => {})
     },
   })
 

@@ -1,9 +1,12 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
-import { MODEL_ALIASES } from './aliases.js'
+import { isModelAlias } from './aliases.js'
 import { isModelAllowed } from './modelAllowlist.js'
 import { type APIProvider, getAPIProvider } from './providers.js'
 import { sideQuery } from '../sideQuery.js'
-import { getRequiredNonClaudeAdapterForModel } from './providerCapabilities.js'
+import {
+  getKnownNonClaudeModelCapability,
+  getRequiredNonClaudeAdapterForModel,
+} from './providerCapabilities.js'
 import {
   NotFoundError,
   APIError,
@@ -40,19 +43,15 @@ export async function validateModel(
     }
   }
 
-  // Check if it's a known alias (these are always valid)
+  const apiProvider = getAPIProvider()
+  const cacheKey = getValidModelCacheKey(apiProvider, normalizedModel)
   const lowerModel = normalizedModel.toLowerCase()
-  if ((MODEL_ALIASES as readonly string[]).includes(lowerModel)) {
-    return { valid: true }
-  }
+  const isAlias = isModelAlias(lowerModel)
 
   // Check if it matches ANTHROPIC_CUSTOM_MODEL_OPTION (pre-validated by the user)
   if (normalizedModel === process.env.ANTHROPIC_CUSTOM_MODEL_OPTION) {
     return { valid: true }
   }
-
-  const apiProvider = getAPIProvider()
-  const cacheKey = getValidModelCacheKey(apiProvider, normalizedModel)
 
   // OpenCode Zen has runtime precedence over OpenAI direct and Codex whenever
   // CLAUDE_CODE_USE_OPENCODE_GO is set, but only if the selected provider is
@@ -72,6 +71,9 @@ export async function validateModel(
             'OpenCode Zen requires OPENCODE_API_KEY, OPENCODE_GO_API_KEY, or FREE_CODE_OPENCODE_GO_API_KEY',
         }
       }
+      if (isAlias) {
+        return { valid: true }
+      }
       const transport = getOpenCodeTransportForModel(normalizedModel)
       if (transport === 'gemini_native') {
         return {
@@ -84,6 +86,22 @@ export async function validateModel(
     }
   }
 
+  if (isAlias) {
+    return { valid: true }
+  }
+
+  if (
+    apiProvider === 'openai' &&
+    process.env.OPENAI_API_KEY &&
+    getKnownNonClaudeModelCapability(normalizedModel, 'chatgpt-codex') &&
+    !getKnownNonClaudeModelCapability(normalizedModel, 'openai-responses')
+  ) {
+    return {
+      valid: false,
+      error: `Model '${normalizedModel}' is available through ChatGPT Codex OAuth, not OpenAI Responses. Unset OPENAI_API_KEY to use Codex OAuth.`,
+    }
+  }
+
   // Check if it's a known Codex/OpenAI model (skip Anthropic API validation).
   // This must run after the OpenCode branch because runtime OpenCode dispatch
   // wins over Codex when CLAUDE_CODE_USE_OPENCODE_GO is set.
@@ -91,6 +109,7 @@ export async function validateModel(
   const { isCodexModel } = await import('../../services/api/adapters/codex.js')
   if (
     apiProvider === 'openai' &&
+    !process.env.OPENAI_API_KEY &&
     isCodexSubscriber() &&
     isCodexModel(normalizedModel)
   ) {

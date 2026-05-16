@@ -49,7 +49,10 @@ import {
   type InProcessSpawnConfig,
   spawnInProcessTeammate,
 } from '../../utils/swarm/spawnInProcess.js'
-import { buildInheritedEnvSetupCommand } from '../../utils/swarm/spawnUtils.js'
+import {
+  buildInheritedEnvSetupCommand,
+  buildTeammateSpawnShellCommand,
+} from '../../utils/swarm/spawnUtils.js'
 import {
   readTeamFileAsync,
   sanitizeAgentName,
@@ -435,7 +438,13 @@ async function handleSpawnSplitPane(
 
   const flagsStr = inheritedFlags ? ` ${inheritedFlags}` : ''
   const envSetup = await buildInheritedEnvSetupCommand()
-  const spawnCommand = `cd ${quote([workingDir])} && ( ${envSetup.command} exec ${quote([binaryPath])} ${teammateArgs}${flagsStr} )`
+  const spawnCommand = buildTeammateSpawnShellCommand({
+    envSetupCommand: envSetup.command,
+    workingDir,
+    binaryPath,
+    teammateArgs,
+    flagsStr,
+  })
 
   // Send the command to the new pane
   // Use swarm socket when running outside tmux (external swarm session)
@@ -645,7 +654,13 @@ async function handleSpawnSeparateWindow(
 
   const flagsStr = inheritedFlags ? ` ${inheritedFlags}` : ''
   const envSetup = await buildInheritedEnvSetupCommand()
-  const spawnCommand = `cd ${quote([workingDir])} && ( ${envSetup.command} exec ${quote([binaryPath])} ${teammateArgs}${flagsStr} )`
+  const spawnCommand = buildTeammateSpawnShellCommand({
+    envSetupCommand: envSetup.command,
+    workingDir,
+    binaryPath,
+    teammateArgs,
+    flagsStr,
+  })
 
   // Send the command to the new window
   const sendKeysResult = await execFileNoThrow(TMUX_COMMAND, [

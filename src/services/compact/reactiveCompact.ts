@@ -1,5 +1,4 @@
 import type { QuerySource } from '../../constants/querySource.js'
-import { getUserContext } from '../../context.js'
 import type { ToolUseContext } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
 import type { SystemPrompt } from '../../utils/systemPrompt.js'
@@ -63,7 +62,6 @@ export type ReactiveCompactDeps = {
   setLastSummarizedMessageId: typeof setLastSummarizedMessageId
   runPostCompactCleanup: typeof runPostCompactCleanup
   suppressCompactWarning: typeof suppressCompactWarning
-  clearUserContextCache: () => void
 }
 
 const DEFAULT_REACTIVE_COMPACT_DEPS: ReactiveCompactDeps = {
@@ -72,7 +70,6 @@ const DEFAULT_REACTIVE_COMPACT_DEPS: ReactiveCompactDeps = {
   setLastSummarizedMessageId,
   runPostCompactCleanup,
   suppressCompactWarning,
-  clearUserContextCache: () => getUserContext.cache.clear?.(),
 }
 
 export function isReactiveCompactEnabled(): boolean {
@@ -191,15 +188,11 @@ export async function reactiveCompactOnPromptTooLong(
       options.trigger === 'auto',
     )
 
-    deps.setLastSummarizedMessageId(undefined)
+    if (isMainThreadQuerySource(options.querySource)) {
+      deps.setLastSummarizedMessageId(undefined)
+    }
     deps.runPostCompactCleanup(options.querySource)
     deps.suppressCompactWarning()
-    // Subagent-invoked reactive compact must not clobber main-thread
-    // getUserContext cache; gate on the same predicate as
-    // runPostCompactCleanup's internal isMainThreadCompact branch.
-    if (isMainThreadQuerySource(options.querySource)) {
-      deps.clearUserContextCache()
-    }
 
     logEvent('tengu_reactive_compact_succeeded', {
       triggerAuto: options.trigger === 'auto',

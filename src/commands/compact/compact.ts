@@ -19,7 +19,10 @@ import {
 } from '../../services/compact/compact.js'
 import { suppressCompactWarning } from '../../services/compact/compactWarningState.js'
 import { microcompactMessages } from '../../services/compact/microCompact.js'
-import { runPostCompactCleanup } from '../../services/compact/postCompactCleanup.js'
+import {
+  isMainThreadQuerySource,
+  runPostCompactCleanup,
+} from '../../services/compact/postCompactCleanup.js'
 import { trySessionMemoryCompaction } from '../../services/compact/sessionMemoryCompact.js'
 import { setLastSummarizedMessageId } from '../../services/SessionMemory/sessionMemoryUtils.js'
 import type { ToolUseContext } from '../../Tool.js'
@@ -72,7 +75,10 @@ export const call: LocalCommandCall = async (args, context) => {
       )
       throwIfPreCompactBlocked(preCompactHookResult)
 
-      if (!preCompactHookResult.newCustomInstructions) {
+      if (
+        !preCompactHookResult.newCustomInstructions &&
+        isMainThreadQuerySource(context.options.querySource)
+      ) {
         const sessionMemoryResult = await trySessionMemoryCompaction(
           messages,
           context.agentId,
@@ -80,6 +86,9 @@ export const call: LocalCommandCall = async (args, context) => {
           preCompactHookResult,
         )
         if (sessionMemoryResult) {
+          if (isMainThreadQuerySource(context.options.querySource)) {
+            setLastSummarizedMessageId(undefined)
+          }
           runPostCompactCleanup(context.options.querySource)
           // Reset cache read baseline so the post-compact drop isn't flagged
           // as a break. compactConversation does this internally; SM-compact doesn't.
@@ -122,7 +131,11 @@ export const call: LocalCommandCall = async (args, context) => {
 
     // Fall back to traditional compaction
     // Run microcompact first to reduce tokens before summarization
-    const microcompactResult = await microcompactMessages(messages, context)
+    const microcompactResult = await microcompactMessages(
+      messages,
+      context,
+      context.options.querySource,
+    )
     const messagesForCompact = microcompactResult.messages
     const cacheSafeParams = await getCacheSharingParams(
       context,
@@ -143,7 +156,9 @@ export const call: LocalCommandCall = async (args, context) => {
 
     // Reset lastSummarizedMessageId since legacy compaction replaces all messages
     // and the old message UUID will no longer exist in the new messages array
-    setLastSummarizedMessageId(undefined)
+    if (isMainThreadQuerySource(context.options.querySource)) {
+      setLastSummarizedMessageId(undefined)
+    }
 
     // Suppress the "Context left until auto-compact" warning after successful compaction
     suppressCompactWarning()

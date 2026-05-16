@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { createOpenAIChatCompletionsFetch } from './openaiChatCompletions.js'
+import {
+  createOpenAIChatCompletionsFetch,
+  openAIChatCompletionsFetchAdapterTestHooks,
+} from './openaiChatCompletions.js'
 
 const originalFetch = globalThis.fetch
 
@@ -564,11 +567,7 @@ describe('OpenAI chat completions fetch adapter', () => {
     expect(response.status).toBe(200)
   })
 
-  test('propagates abort signal to upstream fetch (round-42 / Codex #8)', async () => {
-    // Pre-fix: the adapter's upstream fetch did not pass init?.signal,
-    // so Ctrl-C / CLI streaming cancellation didn't tear down the
-    // upstream HTTP connection. Post-fix, signal: init?.signal is
-    // forwarded into globalThis.fetch.
+  test('propagates abort signal to upstream fetch', async () => {
     let observedSignal: AbortSignal | undefined
     globalThis.fetch = ((_input: unknown, init?: RequestInit) => {
       observedSignal = init?.signal ?? undefined
@@ -603,23 +602,31 @@ describe('OpenAI chat completions fetch adapter', () => {
       signal: controller.signal,
     })
 
-    // The same AbortSignal instance must propagate through to the
-    // upstream fetch. Object identity check; if pre-fix code is
-    // restored, observedSignal would be undefined.
+    // Preserve object identity so cancellation targets the same signal.
     expect(observedSignal).toBe(controller.signal)
   })
 
+  test('downstream body cancellation cancels upstream stream', async () => {
+    let cancelReason: unknown
+    const upstream = new ReadableStream<Uint8Array>({
+      cancel(reason) {
+        cancelReason = reason
+      },
+    })
+
+    const response = await openAIChatCompletionsFetchAdapterTestHooks.translateChatStreamToAnthropic(
+      new Response(upstream, { headers: { 'Content-Type': 'text/event-stream' } }),
+      'qwen-test',
+    )
+
+    await response.body!.cancel('client-stop')
+    expect(cancelReason).toBe('client-stop')
+  })
+
   test('SSE parser flushes final event when stream ends without trailing newline', async () => {
-    // Regression for Codex finding #9 (round 39 fix). Pre-fix, the
-    // parser broke on `done` and discarded any partial line still
-    // sitting in `buffer`. Some upstreams (notably small-chunk gateways)
-    // yield the final `data: {...}` frame without a trailing `\n`; the
-    // consumer-facing message_stop event was silently lost.
-    //
-    // Fixture: 3 SSE frames. The first two end with `\n` (normal).
-    // The third (containing the finish_reason=stop) has NO trailing
-    // newline. With the fix, all three are processed; without the
-    // fix, the third (which carries the stop_reason) would be dropped.
+    // Some upstreams close after the last `data: {...}` frame without a
+    // trailing newline. The final frame must still be processed because it
+    // can carry finish_reason and usage.
     const frames = [
       `data: ${JSON.stringify({
         id: 'cmpl-1',
@@ -687,10 +694,7 @@ describe('OpenAI chat completions fetch adapter', () => {
       out += decoder.decode(value, { stream: true })
     }
 
-    // The pre-fix bug would drop the third frame (the one carrying
-    // finish_reason='stop'). Post-fix, message_stop is emitted with
-    // stop_reason='end_turn' (the adapter's mapping of finish_reason=
-    // 'stop' per getStopReason()).
+    // The final frame carries finish_reason and usage.
     const events = out
       .split('\n\n')
       .filter(block => block.startsWith('event: '))
