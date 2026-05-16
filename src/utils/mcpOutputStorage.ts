@@ -158,7 +158,7 @@ export async function persistBinaryContent(
   await ensureToolResultsDir()
   const ext = extensionForMimeType(mimeType)
 
-  // Round 8: route through safeFilenameFromToolUseId so a malicious
+  //  route through safeFilenameFromToolUseId so a malicious
   // persistId cannot escape the tool-results dir, AND distinct raw IDs
   // produce distinct filenames. Combined with `wx` write below, this
   // closes the silent-overwrite-on-collision gap the default write flag

@@ -1,12 +1,9 @@
 import { isEnvTruthy } from '../../utils/envUtils.js'
 
-export const OPENCODE_GO_PROVIDER_ID = 'opencode-go'
 // Verified against OpenCode Zen docs 2026-05-14. The historical `/zen/go/v1`
 // path is treated as legacy; if a user has set it via env override we
 // honor that, otherwise the canonical base URL applies.
 export const OPENCODE_ZEN_DEFAULT_BASE_URL = 'https://opencode.ai/zen/v1'
-// Back-compat alias for code/tests that reference the legacy export name.
-export const OPENCODE_GO_DEFAULT_BASE_URL = OPENCODE_ZEN_DEFAULT_BASE_URL
 
 export type OpenCodeGoEnv = Record<string, string | undefined>
 

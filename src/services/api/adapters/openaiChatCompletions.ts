@@ -353,7 +353,7 @@ function translateTools(tools: AnthropicTool[]): Array<Record<string, unknown>> 
 }
 
 /**
- * B18: normalize tool input schemas for strict OpenAI-compatible
+ * normalize tool input schemas for strict OpenAI-compatible
  * gateways. Strict providers require `additionalProperties: false` and
  * an explicit `required` array. We don't force strict mode on the
  * request itself (that would break lenient gateways), but we DO
