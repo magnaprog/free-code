@@ -130,7 +130,7 @@ export async function recordToolResultArtifact(input: {
   content: string
   preview: string
 }): Promise<void> {
-  // B10: gate on opt-in flag. Plan: feature-off should have zero side effect.
+  // gate on opt-in flag. Plan: feature-off should have zero side effect.
   if (!isArtifactIndexingEnabled()) return
   if (indexedToolResultArtifacts.has(input.toolUseId)) return
   indexedToolResultArtifacts.add(input.toolUseId)
@@ -826,7 +826,7 @@ async function buildReplacement(
   const result = await persistToolResult(candidate.content, candidate.toolUseId)
   if (isPersistError(result)) return null
 
-  // B12: index the persisted artifact from the aggregate-budget path too,
+  // index the persisted artifact from the aggregate-budget path too,
   // not just the single-large-result path. Without this, ContextRecall is
   // blind to half the persisted tool results in a session.
   if (toolName !== undefined) {
@@ -894,7 +894,7 @@ export async function enforceToolResultBudget(
   // messages (prior decisions are frozen via seenIds/replacements), so
   // prompt cache for already-seen content is preserved regardless.
   //
-  // PR H: reactive compact may force a lower limit for emergency
+  // reactive compact may force a lower limit for emergency
   // recovery from prompt_too_long errors. The state is mutated as usual,
   // so the more-aggressive replacements persist into subsequent calls
   // — that is intentional: once persisted to disk, the preview is what

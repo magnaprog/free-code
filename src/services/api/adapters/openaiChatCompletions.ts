@@ -3,18 +3,18 @@ import { normalizeOpenCodeGoModel } from '../openCodeGo.js'
 import { redactSecrets } from '../../../utils/redaction.js'
 import { logEvent } from '../../analytics/index.js'
 
-// B6: Date.now() has millisecond resolution; concurrent requests collide.
-// Use crypto.randomUUID() for stable per-request IDs.
+// Date.now() has millisecond resolution; concurrent requests would
+// collide on per-millisecond IDs. randomUUID is collision-resistant.
 function generateMessageId(): string {
   return `msg_chat_${randomUUID()}`
 }
 
-// M3: cap raw image bytes routed through the data-URI inflation path.
-// 1MB warn / 5MB hard reject. Base64 inflates by ~1.37x, plus JSON framing.
+// Cap raw image bytes through the data-URI inflation path. Base64
+// inflates by ~1.37x, plus JSON framing. 1MB warn / 5MB hard reject.
 const IMAGE_WARN_BYTES = 1_000_000
 const IMAGE_REJECT_BYTES = 5_000_000
 
-// M13: cap raw provider error bodies so they cannot smuggle arbitrarily
+// Cap raw provider error bodies so they cannot smuggle arbitrarily
 // large prompt echoes back through the error channel.
 const MAX_ERROR_BODY_CHARS = 1_000
 
@@ -106,7 +106,7 @@ function contentBlocksToText(blocks: AnthropicContentBlock[]): string {
         if (Array.isArray(block.content)) return contentBlocksToText(block.content)
       }
       if (block.type === 'image') {
-        // M2: emit telemetry so callers can detect when image context is
+        // emit telemetry so callers can detect when image context is
         // discarded (Chat Completions does not support images in tool role).
         logEvent('chat_completions_image_dropped_from_tool_result', {})
         return '[Image attached]'
@@ -130,7 +130,7 @@ function contentBlocksToUserContent(
       block.source.media_type &&
       block.source.data
     ) {
-      // M3: guard against image base64 inflation. Reject anything past
+      // guard against image base64 inflation. Reject anything past
       // hard cap; warn near the soft cap. Base64-decoded byte length is
       // ~3/4 of the string length.
       const decodedBytes = Math.floor((block.source.data.length * 3) / 4)
@@ -165,7 +165,7 @@ function contentBlocksToUserContent(
 }
 
 function translateMessages(messages: AnthropicMessage[]): ChatMessage[] {
-  // B15: pre-scan to collect every tool_use ID emitted by an assistant
+  // pre-scan to collect every tool_use ID emitted by an assistant
   // message. Any user tool_result whose tool_use_id is NOT in this set
   // is an orphan (the matching tool_use was compacted/pruned/dropped).
   // OpenAI Chat Completions returns 400 on orphan `tool` messages, so
@@ -181,7 +181,7 @@ function translateMessages(messages: AnthropicMessage[]): ChatMessage[] {
     }
   }
 
-  // B17: track thinking-block drops for telemetry. Chat Completions
+  // track thinking-block drops for telemetry. Chat Completions
   // does not support reasoning continuity; we drop thinking blocks and
   // emit a single event per request so callers can see reasoning loss.
   let thinkingBlocksDropped = 0
@@ -259,7 +259,7 @@ function translateMessages(messages: AnthropicMessage[]): ChatMessage[] {
         .filter(block => block.type === 'text' && typeof block.text === 'string')
         .map(block => block.text)
         .join('\n')
-      // B17: count thinking blocks (silently dropped; Chat Completions
+      // count thinking blocks (silently dropped; Chat Completions
       // has no equivalent surface for reasoning continuity).
       for (const block of msg.content) {
         if (block.type === 'thinking') thinkingBlocksDropped++
@@ -288,7 +288,7 @@ function translateMessages(messages: AnthropicMessage[]): ChatMessage[] {
     })
   }
 
-  // B16: coalesce consecutive same-role messages. Strict gateways
+  // coalesce consecutive same-role messages. Strict gateways
   // (Ollama, LM Studio, some local templates) require alternating
   // user/assistant roles. Merge sequential user→user or assistant→
   // assistant by joining their text content. Tool calls are preserved
@@ -527,7 +527,7 @@ function getStopReason(
 ): 'end_turn' | 'max_tokens' | 'stop_sequence' {
   if (finishReason === 'length') return 'max_tokens'
   if (finishReason === 'stop') return 'end_turn'
-  // B8: 'content_filter' was previously silently collapsed to 'end_turn',
+  // 'content_filter' was previously silently collapsed to 'end_turn',
   // hiding gateway-side moderation from the caller. We cannot add a new
   // stop_reason value without breaking the Anthropic SDK consumer type,
   // so log + telemetry, then surface as end_turn. Downstream callers that
@@ -547,7 +547,7 @@ async function translateChatStreamToAnthropic(
   const readable = new ReadableStream({
     async start(controller) {
       const encoder = new TextEncoder()
-      // B7: track block indices locally. Each unique block (text, or each
+      // track block indices locally. Each unique block (text, or each
       // distinct provider toolCall.index) gets a monotonically increasing
       // local index assigned on first appearance. Previously the code did
       // `contentBlockIndex + provider's toolCall.index` which collided
@@ -628,7 +628,7 @@ async function translateChatStreamToAnthropic(
             if (!trimmed.startsWith('data: ')) continue
             const data = trimmed.slice(6)
             if (data === '[DONE]') continue
-            // M11: per-event try/catch so one malformed SSE event doesn't
+            // per-event try/catch so one malformed SSE event doesn't
             // kill the entire stream.
             let event: Record<string, unknown>
             try {
@@ -745,11 +745,11 @@ async function translateChatStreamToAnthropic(
             }
 
             if (choice?.finish_reason === 'length') stopReason = 'max_tokens'
-            // B8: surface content_filter to telemetry even in streaming path.
+            // surface content_filter to telemetry even in streaming path.
             if (choice?.finish_reason === 'content_filter') {
               logEvent('chat_completions_content_filter', {})
             }
-            // M12: most Chat-Completions gateways emit cumulative usage in
+            // most Chat-Completions gateways emit cumulative usage in
             // the final chunk. Some emit per-delta or never emit. Latest
             // value wins; explicitly typed so per-delta gateways are
             // detectable via the diff (telemetry could be added later).
@@ -842,7 +842,7 @@ export function createOpenAIChatCompletionsFetch(
 
     const anthropicBody = await parseAnthropicBody(init)
     const { chatBody, model } = translateToChatBody(anthropicBody)
-    // M1: drop the model.startsWith('claude-') blacklist. Some legitimate
+    // drop the model.startsWith('claude-') blacklist. Some legitimate
     // gateways (LiteLLM, OpenRouter, OpenCode Zen) proxy Claude models via
     // the chat/completions endpoint with alias names that may start with
     // 'claude-'. Let the upstream gateway reject unknown models with its
@@ -868,7 +868,7 @@ export function createOpenAIChatCompletionsFetch(
     })
 
     if (!chatResponse.ok) {
-      // M13: cap raw provider error body. Some gateways echo prompt
+      // cap raw provider error body. Some gateways echo prompt
       // content in error messages; redactSecrets catches headline secrets
       // but won't redact arbitrary prompt content. Truncate aggressively
       // so an error blob can't smuggle large prompt echoes back through

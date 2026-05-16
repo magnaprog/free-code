@@ -422,7 +422,7 @@ function getPostCompactAttachmentPriority(message: AttachmentMessage): number {
   }
 }
 
-// B4: priority-≤1 attachments may exceed the regular budget but cannot
+// Priority-≤1 attachments may exceed the regular budget but cannot
 // exceed this absolute multiple of the budget. A 200K plan_file_reference
 // would otherwise blow compaction; this caps the worst case.
 const PRIORITY_BYPASS_CEILING_MULTIPLIER = 2

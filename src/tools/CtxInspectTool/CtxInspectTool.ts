@@ -14,7 +14,7 @@ const outputSchema = lazySchema(() =>
 type OutputSchema = ReturnType<typeof outputSchema>
 type Output = z.infer<OutputSchema>
 
-// M7: model receives this as a normal tool result (is_error: false).
+// model receives this as a normal tool result (is_error: false).
 // is_error: true caused the previous implementation to look like a tool
 // failure each call, prompting retries. With is_error: false the model
 // reads the informational status and learns not to call it again.
@@ -61,7 +61,7 @@ export const CtxInspectTool = buildTool({
       tool_use_id: toolUseID,
       type: 'tool_result',
       content: output.message,
-      // M7: not is_error. The status field carries the unimplemented
+      // not is_error. The status field carries the unimplemented
       // signal; the model should reason about the response rather than
       // treat it as a transient failure to retry.
       is_error: false,
