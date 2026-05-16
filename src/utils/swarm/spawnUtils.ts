@@ -2,6 +2,10 @@
  * Shared utilities for spawning teammates across different backends.
  */
 
+import { randomUUID } from 'crypto'
+import { unlink, writeFile } from 'fs/promises'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import {
   getChromeFlagOverride,
   getFlagSettingsPath,
@@ -147,33 +151,45 @@ const TEAMMATE_ENV_VARS = [
 ] as const
 
 /**
- * Builds the `env KEY=VALUE ...` string for teammate spawn commands.
- * Always includes CLAUDECODE=1 and CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1,
- * plus any provider/config env vars that are set in the current process.
- *
- * SECURITY NOTE: API-key-bearing env vars (OPENAI_API_KEY,
- * OPENCODE_API_KEY, AWS_BEARER_TOKEN_BEDROCK, ANTHROPIC_FOUNDRY_API_KEY,
- * ANTHROPIC_API_KEY) are forwarded via the spawn command string, which
- * tmux types into the new pane. Shell quoting (via `quote()`) prevents
- * command injection but the values can still appear in pane scrollback,
- * tmux capture-pane output, and terminal logs. Operators concerned
- * about secret disclosure on shared/observed hosts should either
- * (a) avoid spawning teammates on those hosts, or
- * (b) configure auth via inherited shell startup files / non-tmux paths
- *     rather than relying on parent-process env propagation.
- * Tracked as known limitation; a non-visible propagation channel
- * (temp file with 0600 + read-and-delete on teammate side) is a
- * follow-up.
+ * Writes inherited teammate env vars to a 0600 shell fragment and returns a
+ * command prefix that sources and deletes it inside a subshell. This avoids
+ * typing API keys into tmux panes while still propagating provider config to
+ * shells that do not inherit the parent process env.
  */
-export function buildInheritedEnvVars(): string {
-  const envVars = ['CLAUDECODE=1', 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1']
+export async function buildInheritedEnvSetupCommand(): Promise<{
+  command: string
+  cleanup: () => Promise<void>
+}> {
+  const envVars: Array<[string, string]> = [
+    ['CLAUDECODE', '1'],
+    ['CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS', '1'],
+  ]
 
   for (const key of TEAMMATE_ENV_VARS) {
     const value = process.env[key]
     if (value !== undefined && value !== '') {
-      envVars.push(`${key}=${quote([value])}`)
+      envVars.push([key, value])
     }
   }
 
-  return envVars.join(' ')
+  const envFilePath = join(
+    tmpdir(),
+    `free-code-teammate-env-${process.pid}-${randomUUID()}.sh`,
+  )
+  const content = envVars
+    .map(([key, value]) => `export ${key}=${quote([value])}`)
+    .join('\n')
+  await writeFile(envFilePath, `${content}\n`, {
+    flag: 'wx',
+    mode: 0o600,
+    encoding: 'utf8',
+  })
+
+  const quotedPath = quote([envFilePath])
+  return {
+    command: `. ${quotedPath}; __free_code_env_status=$?; command rm -f ${quotedPath}; [ $__free_code_env_status -eq 0 ] || exit $__free_code_env_status; unset __free_code_env_status;`,
+    cleanup: async () => {
+      await unlink(envFilePath).catch(() => {})
+    },
+  }
 }

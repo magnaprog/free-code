@@ -212,10 +212,9 @@ describe('reactiveCompact', () => {
     expect(deps.clearUserContextCache).toHaveBeenCalledTimes(1)
   })
 
-  test('reactiveCompactOnPromptTooLong defaults to undefined when querySource omitted (manual /compact omission OK)', async () => {
-    // Manual /compact callers omit querySource by design — they're
-    // main-thread-only, and undefined is the documented safe default
-    // for runPostCompactCleanup's isMainThreadCompact check.
+  test('reactiveCompactOnPromptTooLong defaults to undefined when querySource omitted', async () => {
+    // Direct helper callers may omit querySource; undefined remains the
+    // documented main-thread default for runPostCompactCleanup.
     process.env.CLAUDE_CODE_REACTIVE_COMPACT = '1'
     const messages = conversationWithOldImage()
     const deps = createDeps()

@@ -19,10 +19,7 @@ import {
 } from '../../services/compact/compact.js'
 import { suppressCompactWarning } from '../../services/compact/compactWarningState.js'
 import { microcompactMessages } from '../../services/compact/microCompact.js'
-import {
-  isMainThreadQuerySource,
-  runPostCompactCleanup,
-} from '../../services/compact/postCompactCleanup.js'
+import { runPostCompactCleanup } from '../../services/compact/postCompactCleanup.js'
 import { trySessionMemoryCompaction } from '../../services/compact/sessionMemoryCompact.js'
 import { setLastSummarizedMessageId } from '../../services/SessionMemory/sessionMemoryUtils.js'
 import type { ToolUseContext } from '../../Tool.js'
@@ -83,14 +80,6 @@ export const call: LocalCommandCall = async (args, context) => {
           preCompactHookResult,
         )
         if (sessionMemoryResult) {
-          // Subagent-invoked /compact must not clobber main-thread
-          // module-level state. runPostCompactCleanup itself is
-          // querySource-aware; mirror that gating for the
-          // getUserContext cache so subagent compacts leave the main
-          // thread's user-context cache intact.
-          if (isMainThreadQuerySource(context.options.querySource)) {
-            getUserContext.cache.clear?.()
-          }
           runPostCompactCleanup(context.options.querySource)
           // Reset cache read baseline so the post-compact drop isn't flagged
           // as a break. compactConversation does this internally; SM-compact doesn't.
@@ -159,9 +148,6 @@ export const call: LocalCommandCall = async (args, context) => {
     // Suppress the "Context left until auto-compact" warning after successful compaction
     suppressCompactWarning()
 
-    if (isMainThreadQuerySource(context.options.querySource)) {
-      getUserContext.cache.clear?.()
-    }
     runPostCompactCleanup(context.options.querySource)
 
     return {
@@ -259,13 +245,7 @@ async function compactViaReactive(
       }
     }
 
-    // reactiveCompactOnPromptTooLong already ran the full post-success
-    // cleanup (setLastSummarizedMessageId, runPostCompactCleanup,
-    // suppressCompactWarning, clearUserContextCache). The stale comment
-    // here claimed "minus resetMicrocompactState" but
-    // runPostCompactCleanup does in fact reset microcompact state
-    // (postCompactCleanup.ts:41), so the duplicate calls were just
-    // redundant work.
+    // reactiveCompactOnPromptTooLong already ran post-success cleanup.
 
     // reactiveCompactOnPromptTooLong runs PostCompact hooks but not PreCompact
     // — both callers (here and tryReactiveCompact) run PreCompact outside so

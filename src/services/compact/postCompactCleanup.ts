@@ -29,10 +29,8 @@ import { resetMicrocompactState } from './microCompact.js'
  * genuinely main-thread-only (/compact, /clear).
  */
 // Subagents (agent:*) run in the same process and share module-level
-// state with the main thread. Use this predicate to gate any cache
-// clear or module-state reset that would clobber main-thread state
-// when invoked from a subagent.
-// Same startsWith pattern as isMainThread (index.ts:188).
+// state with the main thread. Use this predicate to gate cache clears
+// and module-state resets that would clobber main-thread state.
 export function isMainThreadQuerySource(querySource?: QuerySource): boolean {
   return (
     querySource === undefined ||
@@ -44,7 +42,9 @@ export function isMainThreadQuerySource(querySource?: QuerySource): boolean {
 export function runPostCompactCleanup(querySource?: QuerySource): void {
   const isMainThreadCompact = isMainThreadQuerySource(querySource)
 
-  resetMicrocompactState()
+  if (isMainThreadCompact) {
+    resetMicrocompactState()
+  }
   if (feature('CONTEXT_COLLAPSE')) {
     if (isMainThreadCompact) {
       /* eslint-disable @typescript-eslint/no-require-imports */
@@ -59,9 +59,8 @@ export function runPostCompactCleanup(querySource?: QuerySource): void {
     // getMemoryFiles(). If only the inner getMemoryFiles cache is cleared,
     // the next turn hits the getUserContext cache and never reaches
     // getMemoryFiles(), so the armed InstructionsLoaded hook never fires.
-    // Manual /compact already clears this explicitly at its call sites;
-    // auto-compact and reactive-compact did not — this centralizes the
-    // clear so all compaction paths behave consistently.
+    // Keep this centralized so manual, auto, and reactive compaction paths
+    // all apply the same querySource gate.
     getUserContext.cache.clear?.()
     resetGetMemoryFilesCache('compact')
   }

@@ -6,10 +6,13 @@ import {
 } from './codex.js'
 
 function sseResponse(events: Record<string, unknown>[]): Response {
-  return new Response(
+  return sseResponseRaw(
     events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(''),
-    { headers: { 'Content-Type': 'text/event-stream' } },
   )
+}
+
+function sseResponseRaw(body: string): Response {
+  return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } })
 }
 
 function parseSseData(text: string): Record<string, unknown>[] {
@@ -268,6 +271,32 @@ describe('codex fetch adapter translation', () => {
     expect(messageDelta?.usage).toEqual({
       input_tokens: 123,
       output_tokens: 4,
+    })
+  })
+
+  test('flushes final streaming usage without trailing newline', async () => {
+    const finalEvent = {
+      type: 'response.completed',
+      response: { usage: { input_tokens: 321, output_tokens: 9 } },
+    }
+    const response = await codexFetchAdapterTestHooks.translateCodexStreamToAnthropic(
+      sseResponseRaw(
+        [
+          { type: 'response.output_item.added', item: { type: 'message' } },
+          { type: 'response.output_text.delta', delta: 'done' },
+        ]
+          .map(event => `data: ${JSON.stringify(event)}\n\n`)
+          .join('') + `data: ${JSON.stringify(finalEvent)}`,
+      ),
+      'gpt-5.5',
+    )
+
+    const messageDelta = parseSseData(await response.text()).find(
+      event => event.type === 'message_delta',
+    )
+    expect(messageDelta?.usage).toEqual({
+      input_tokens: 321,
+      output_tokens: 9,
     })
   })
 

@@ -49,7 +49,7 @@ import {
   type InProcessSpawnConfig,
   spawnInProcessTeammate,
 } from '../../utils/swarm/spawnInProcess.js'
-import { buildInheritedEnvVars } from '../../utils/swarm/spawnUtils.js'
+import { buildInheritedEnvSetupCommand } from '../../utils/swarm/spawnUtils.js'
 import {
   readTeamFileAsync,
   sanitizeAgentName,
@@ -434,14 +434,17 @@ async function handleSpawnSplitPane(
   }
 
   const flagsStr = inheritedFlags ? ` ${inheritedFlags}` : ''
-  // Propagate env vars that teammates need but may not inherit from tmux split-window shells.
-  // Includes CLAUDECODE, CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS, and API provider vars.
-  const envStr = buildInheritedEnvVars()
-  const spawnCommand = `cd ${quote([workingDir])} && env ${envStr} ${quote([binaryPath])} ${teammateArgs}${flagsStr}`
+  const envSetup = await buildInheritedEnvSetupCommand()
+  const spawnCommand = `cd ${quote([workingDir])} && ( ${envSetup.command} exec ${quote([binaryPath])} ${teammateArgs}${flagsStr} )`
 
   // Send the command to the new pane
   // Use swarm socket when running outside tmux (external swarm session)
-  await sendCommandToPane(paneId, spawnCommand, !insideTmux)
+  try {
+    await sendCommandToPane(paneId, spawnCommand, !insideTmux)
+  } catch (error) {
+    await envSetup.cleanup()
+    throw error
+  }
 
   // Determine session/window names for output
   const sessionName = insideTmux ? 'current' : SWARM_SESSION_NAME
@@ -641,10 +644,8 @@ async function handleSpawnSeparateWindow(
   }
 
   const flagsStr = inheritedFlags ? ` ${inheritedFlags}` : ''
-  // Propagate env vars that teammates need but may not inherit from tmux split-window shells.
-  // Includes CLAUDECODE, CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS, and API provider vars.
-  const envStr = buildInheritedEnvVars()
-  const spawnCommand = `cd ${quote([workingDir])} && env ${envStr} ${quote([binaryPath])} ${teammateArgs}${flagsStr}`
+  const envSetup = await buildInheritedEnvSetupCommand()
+  const spawnCommand = `cd ${quote([workingDir])} && ( ${envSetup.command} exec ${quote([binaryPath])} ${teammateArgs}${flagsStr} )`
 
   // Send the command to the new window
   const sendKeysResult = await execFileNoThrow(TMUX_COMMAND, [
@@ -656,6 +657,7 @@ async function handleSpawnSeparateWindow(
   ])
 
   if (sendKeysResult.code !== 0) {
+    await envSetup.cleanup()
     throw new Error(
       `Failed to send command to tmux window: ${sendKeysResult.stderr}`,
     )

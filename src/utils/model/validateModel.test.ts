@@ -19,9 +19,9 @@
  * OPENAI_API_KEY was unset, even though the runtime client at
  * `getAnthropicClient()` would have routed them correctly.
  *
- * The post-fix path short-circuits via `isOpenCodeGoEnabled() +
- * getOpenCodeGoApiKey()` before the generic adapter check, returning
- * valid for the three wired transports and invalid only for Gemini.
+ * The post-fix path short-circuits only when OpenCode is the selected
+ * provider and has a key, returning valid for the three wired transports
+ * and invalid for Gemini or missing OpenCode auth.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { validateModel } from './validateModel.js'
@@ -114,27 +114,20 @@ describe('validateModel — OpenCode Zen routing (round-41 / Codex #2 regression
     expect(result.valid).toBe(false)
   })
 
-  test('OpenCode short-circuit does not fire when Bedrock provider takes precedence (round-47 fix)', async () => {
-    // Codex 14th-pass #3: getAPIProvider precedence is
-    // Bedrock > Vertex > Foundry > openai > firstParty. If user sets
-    // both CLAUDE_CODE_USE_BEDROCK=1 AND CLAUDE_CODE_USE_OPENCODE_GO=1,
-    // runtime routes to Bedrock — validation must not short-circuit
-    // via OpenCode.
-    process.env.CLAUDE_CODE_USE_BEDROCK = '1'
+  test('OpenCode validation is not reused when a higher-precedence provider wins', async () => {
+    const model = 'qwen2.5-coder-32b-instruct'
+
+    process.env.CLAUDE_CODE_USE_OPENAI = '1'
     process.env.CLAUDE_CODE_USE_OPENCODE_GO = '1'
     process.env.OPENCODE_API_KEY = 'opencode-test-key'
+    expect((await validateModel(model)).valid).toBe(true)
 
-    // Unique model name (avoids module-level validModelCache leakage
-    // from sibling tests). Without precedence gating, OpenCode
-    // chat-completions transport would mark this valid; with the fix,
-    // apiProvider==='bedrock' skips OpenCode and the generic adapter
-    // check + uncacheable sideQuery against Bedrock proceeds.
-    const result = await validateModel('qwen-precedence-test-' + Date.now())
-    // Validation falls through to sideQuery, which in test env
-    // throws because no real Bedrock client is available;
-    // handleValidationError converts to {valid:false}. Critical
-    // assertion: did NOT short-circuit valid via OpenCode.
+    delete process.env.CLAUDE_CODE_USE_OPENAI
+    process.env.CLAUDE_CODE_USE_FOUNDRY = '1'
+
+    const result = await validateModel(model)
     expect(result.valid).toBe(false)
+    expect(result.error).toContain('azure-foundry-inference')
   })
 
   test('OpenCode short-circuit does not fire when CLAUDE_CODE_USE_OPENCODE_GO is unset', async () => {

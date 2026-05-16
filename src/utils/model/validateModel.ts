@@ -1,7 +1,7 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { MODEL_ALIASES } from './aliases.js'
 import { isModelAllowed } from './modelAllowlist.js'
-import { getAPIProvider } from './providers.js'
+import { type APIProvider, getAPIProvider } from './providers.js'
 import { sideQuery } from '../sideQuery.js'
 import { getRequiredNonClaudeAdapterForModel } from './providerCapabilities.js'
 import {
@@ -12,8 +12,12 @@ import {
 } from '@anthropic-ai/sdk'
 import { getModelStrings } from './modelStrings.js'
 
-// Cache valid models to avoid repeated API calls
+// Cache provider-validated models to avoid repeated API calls.
 const validModelCache = new Map<string, boolean>()
+
+function getValidModelCacheKey(provider: APIProvider, model: string): string {
+  return `${provider}:${model}`
+}
 
 /**
  * Validates a model by attempting an actual API call.
@@ -42,36 +46,32 @@ export async function validateModel(
     return { valid: true }
   }
 
-  // Check if it's a known Codex/OpenAI model (skip Anthropic API validation)
-  const { isCodexSubscriber } = await import('../auth.js')
-  const { isCodexModel } = await import('../../services/api/adapters/codex.js')
-  if (isCodexSubscriber() && isCodexModel(normalizedModel)) {
-    validModelCache.set(normalizedModel, true)
-    return { valid: true }
-  }
-
   // Check if it matches ANTHROPIC_CUSTOM_MODEL_OPTION (pre-validated by the user)
   if (normalizedModel === process.env.ANTHROPIC_CUSTOM_MODEL_OPTION) {
     return { valid: true }
   }
 
-  // OpenCode Zen routing happens before the generic openai-responses check,
-  // but ONLY when getAPIProvider() actually selects OpenCode/OpenAI.
-  // getAPIProvider precedence is Bedrock > Vertex > Foundry > openai >
-  // firstParty (providers.ts:6-17). If a higher-precedence provider env
-  // is set, the runtime client dispatches there even when
-  // CLAUDE_CODE_USE_OPENCODE_GO=1 is also set, so OpenCode-based
-  // validation would accept a model that the runtime actually rejects.
-  // Gating on getAPIProvider() === 'openai' keeps validation aligned
-  // with runtime dispatch.
   const apiProvider = getAPIProvider()
+  const cacheKey = getValidModelCacheKey(apiProvider, normalizedModel)
+
+  // OpenCode Zen has runtime precedence over OpenAI direct and Codex whenever
+  // CLAUDE_CODE_USE_OPENCODE_GO is set, but only if the selected provider is
+  // actually the OpenAI-family provider. Higher-precedence Bedrock/Vertex/
+  // Foundry flags must not validate through OpenCode.
   if (apiProvider === 'openai') {
     const {
       isOpenCodeGoEnabled,
       getOpenCodeGoApiKey,
       getOpenCodeTransportForModel,
     } = await import('../../services/api/openCodeGo.js')
-    if (isOpenCodeGoEnabled() && getOpenCodeGoApiKey()) {
+    if (isOpenCodeGoEnabled()) {
+      if (!getOpenCodeGoApiKey()) {
+        return {
+          valid: false,
+          error:
+            'OpenCode Zen requires OPENCODE_API_KEY, OPENCODE_GO_API_KEY, or FREE_CODE_OPENCODE_GO_API_KEY',
+        }
+      }
       const transport = getOpenCodeTransportForModel(normalizedModel)
       if (transport === 'gemini_native') {
         return {
@@ -80,13 +80,25 @@ export async function validateModel(
         }
       }
       // anthropic_messages, openai_responses, openai_chat_completions all wired.
-      validModelCache.set(normalizedModel, true)
       return { valid: true }
     }
   }
 
+  // Check if it's a known Codex/OpenAI model (skip Anthropic API validation).
+  // This must run after the OpenCode branch because runtime OpenCode dispatch
+  // wins over Codex when CLAUDE_CODE_USE_OPENCODE_GO is set.
+  const { isCodexSubscriber } = await import('../auth.js')
+  const { isCodexModel } = await import('../../services/api/adapters/codex.js')
+  if (
+    apiProvider === 'openai' &&
+    isCodexSubscriber() &&
+    isCodexModel(normalizedModel)
+  ) {
+    return { valid: true }
+  }
+
   const requiredAdapter = getRequiredNonClaudeAdapterForModel(
-    getAPIProvider(),
+    apiProvider,
     normalizedModel,
   )
   const wiredAdapters = new Set([
@@ -101,7 +113,7 @@ export async function validateModel(
   }
 
   // Check cache first
-  if (validModelCache.has(normalizedModel)) {
+  if (validModelCache.has(cacheKey)) {
     return { valid: true }
   }
 
@@ -127,7 +139,7 @@ export async function validateModel(
     })
 
     // If we got here, the model is valid
-    validModelCache.set(normalizedModel, true)
+    validModelCache.set(cacheKey, true)
     return { valid: true }
   } catch (error) {
     return handleValidationError(error, normalizedModel)
