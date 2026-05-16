@@ -11,6 +11,7 @@ import { WEB_FETCH_TOOL_NAME } from '../../tools/WebFetchTool/prompt.js'
 import { WEB_SEARCH_TOOL_NAME } from '../../tools/WebSearchTool/prompt.js'
 import type { Message } from '../../types/message.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { getAgentContext } from '../../utils/agentContext.js'
 import { getMainLoopModel } from '../../utils/model/model.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
 import { SHELL_TOOL_NAMES } from '../../utils/shell/shellToolUtils.js'
@@ -67,6 +68,7 @@ export function canUseCachedMicrocompactForQuery(
   return (
     querySource !== undefined &&
     querySource.startsWith('repl_main_thread') &&
+    !getAgentContext() &&
     getAPIProvider() === 'firstParty'
   )
 }
@@ -124,8 +126,16 @@ export function pinCacheEdits(
   userMessageIndex: number,
   block: import('./cachedMicrocompact.js').CacheEditsBlock,
 ): void {
-  if (cachedMCState) {
-    cachedMCState.pinnedEdits.push({ userMessageIndex, block })
+  if (cachedMCState && cachedMCModule) {
+    cachedMCModule.stagePinnedCacheEdits(cachedMCState, userMessageIndex, block)
+  }
+}
+
+export function markCacheEditsAppliedState(
+  block: import('./cachedMicrocompact.js').CacheEditsBlock,
+): void {
+  if (cachedMCState && cachedMCModule) {
+    cachedMCModule.markCacheEditsApplied(cachedMCState, block)
   }
 }
 

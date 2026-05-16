@@ -364,4 +364,3 @@ export function assembleToolPool(
     'name',
   )
 }
-

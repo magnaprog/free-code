@@ -49,6 +49,18 @@ describe('codex fetch adapter translation', () => {
     expect(codexBody).not.toHaveProperty('tool_choice')
   })
 
+  test('preserves arbitrary OpenAI Responses model IDs', () => {
+    const { codexBody, codexModel } =
+      codexFetchAdapterTestHooks.translateToCodexBody({
+        model: 'ft:gpt-4.1:org:sonnet:abc123',
+        stream: false,
+        messages: [{ role: 'user', content: 'hello' }],
+      })
+
+    expect(codexModel).toBe('ft:gpt-4.1:org:sonnet:abc123')
+    expect(codexBody.model).toBe('ft:gpt-4.1:org:sonnet:abc123')
+  })
+
   test('preserves OpenAI direct custom model option', () => {
     const originalCustomModel = process.env.ANTHROPIC_CUSTOM_MODEL_OPTION
     process.env.ANTHROPIC_CUSTOM_MODEL_OPTION = 'gpt-custom'

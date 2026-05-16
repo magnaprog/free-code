@@ -226,6 +226,7 @@ import {
   canUseCachedMicrocompactForQuery,
   consumePendingCacheEdits,
   getPinnedCacheEdits,
+  markCacheEditsAppliedState,
   markToolsSentToAPIState,
   pinCacheEdits,
 } from '../compact/microCompact.js'
@@ -2863,6 +2864,7 @@ async function* queryModel(
   }
 
   if (consumedCacheEdits?.edits.length) {
+    markCacheEditsAppliedState(consumedCacheEdits)
     suppressCompactWarning()
     if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
       notifyCacheDeletion(options.querySource, options.agentId)

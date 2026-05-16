@@ -15,15 +15,19 @@
  */
 import { afterEach, describe, expect, test } from 'bun:test'
 import type { Message } from '../../types/message.js'
+import { runWithAgentContext } from '../../utils/agentContext.js'
 import {
   canUseCachedMicrocompactForQuery,
   estimateMessageTokens,
 } from './microCompact.js'
 import {
   createCachedMCState,
+  createCacheEditsBlock,
   getToolResultsToDelete,
+  markCacheEditsApplied,
   markToolsSentToAPI,
   registerToolResult,
+  stagePinnedCacheEdits,
 } from './cachedMicrocompact.js'
 
 const providerEnvKeys = [
@@ -96,7 +100,30 @@ describe('cached microcompact state', () => {
     expect(state.pendingToolOrder).toEqual([])
   })
 
-  test('cached microcompact excludes SDK and non-first-party providers', () => {
+  test('commits cache edits only after API success', () => {
+    const state = createCachedMCState()
+    registerToolResult(state, 'tool-1')
+    markToolsSentToAPI(state)
+
+    const block = createCacheEditsBlock(state, ['tool-1'])
+
+    expect(block).toEqual({
+      type: 'cache_edits',
+      edits: [{ type: 'delete', cache_reference: 'tool-1' }],
+    })
+    expect(state.deletedRefs.has('tool-1')).toBe(false)
+    stagePinnedCacheEdits(state, 1, block!)
+    expect(state.pinnedEdits).toEqual([])
+    expect(state.pendingPinnedEdits).toHaveLength(1)
+
+    markCacheEditsApplied(state, block!)
+
+    expect(state.deletedRefs.has('tool-1')).toBe(true)
+    expect(state.pinnedEdits).toHaveLength(1)
+    expect(state.pendingPinnedEdits).toEqual([])
+  })
+
+  test('cached microcompact excludes SDK, background agent context, and non-first-party providers', () => {
     clearProviderEnv()
     expect(canUseCachedMicrocompactForQuery('repl_main_thread')).toBe(true)
     expect(
@@ -105,6 +132,12 @@ describe('cached microcompact state', () => {
       ),
     ).toBe(true)
     expect(canUseCachedMicrocompactForQuery('sdk')).toBe(false)
+    expect(
+      runWithAgentContext(
+        { agentId: 'bg-1', agentType: 'subagent', subagentName: 'main-session' },
+        () => canUseCachedMicrocompactForQuery('repl_main_thread'),
+      ),
+    ).toBe(false)
 
     process.env.CLAUDE_CODE_USE_BEDROCK = '1'
     expect(canUseCachedMicrocompactForQuery('repl_main_thread')).toBe(false)

@@ -87,9 +87,19 @@ export function mapClaudeModelToCodex(
   }
   if (isCodexModel(claudeModel)) return claudeModel
   const lower = claudeModel.toLowerCase()
-  if (lower.includes('opus')) return DEFAULT_CODEX_MODEL
-  if (lower.includes('haiku')) return 'gpt-5.4-mini'
-  if (lower.includes('sonnet')) return DEFAULT_CODEX_MODEL
+  const isClaudeFamilyModel =
+    lower === 'opus' ||
+    lower === 'haiku' ||
+    lower === 'sonnet' ||
+    lower.startsWith('claude-') ||
+    lower.startsWith('anthropic.claude')
+  if (isClaudeFamilyModel) {
+    if (lower.includes('haiku')) return 'gpt-5.4-mini'
+    return DEFAULT_CODEX_MODEL
+  }
+  if (options.targetBackend === 'openai-responses') {
+    return claudeModel
+  }
   if (options.targetBackend === 'chatgpt-codex' && lower.startsWith('gpt-')) {
     return claudeModel
   }

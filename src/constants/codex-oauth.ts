@@ -36,4 +36,3 @@ export const CODEX_SCOPES = 'openid profile email offline_access'
  *   payload["https://api.openai.com/auth"].chatgpt_account_id
  */
 export const CODEX_JWT_AUTH_CLAIM = 'https://api.openai.com/auth'
-
