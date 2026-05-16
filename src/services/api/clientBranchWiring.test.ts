@@ -311,4 +311,18 @@ describe('non-direct providers — no Anthropic auth preflight', () => {
     ).resolves.toBeDefined()
     expect(captured.pop()?.name).toBe('Anthropic')
   })
+
+  test('OpenAI provider with no usable credential throws instead of Anthropic fallback (round-47 fix)', async () => {
+    // Codex 14th-pass #4: CLAUDE_CODE_USE_OPENAI=1 with no
+    // OPENAI_API_KEY, no OpenCode key, no Codex token, but with
+    // ANTHROPIC_API_KEY available previously fell through to direct
+    // Anthropic. Post-fix: throws explicit error.
+    process.env.CLAUDE_CODE_USE_OPENAI = '1'
+    process.env.ANTHROPIC_API_KEY = 'sk-anthropic-direct'
+    // No OPENAI_API_KEY, no OPENCODE_*, no Codex tokens.
+
+    await expect(
+      getAnthropicClient({ maxRetries: 0, model: 'gpt-4o-mini' }),
+    ).rejects.toThrow(/CLAUDE_CODE_USE_OPENAI/)
+  })
 })

@@ -114,6 +114,29 @@ describe('validateModel — OpenCode Zen routing (round-41 / Codex #2 regression
     expect(result.valid).toBe(false)
   })
 
+  test('OpenCode short-circuit does not fire when Bedrock provider takes precedence (round-47 fix)', async () => {
+    // Codex 14th-pass #3: getAPIProvider precedence is
+    // Bedrock > Vertex > Foundry > openai > firstParty. If user sets
+    // both CLAUDE_CODE_USE_BEDROCK=1 AND CLAUDE_CODE_USE_OPENCODE_GO=1,
+    // runtime routes to Bedrock — validation must not short-circuit
+    // via OpenCode.
+    process.env.CLAUDE_CODE_USE_BEDROCK = '1'
+    process.env.CLAUDE_CODE_USE_OPENCODE_GO = '1'
+    process.env.OPENCODE_API_KEY = 'opencode-test-key'
+
+    // Unique model name (avoids module-level validModelCache leakage
+    // from sibling tests). Without precedence gating, OpenCode
+    // chat-completions transport would mark this valid; with the fix,
+    // apiProvider==='bedrock' skips OpenCode and the generic adapter
+    // check + uncacheable sideQuery against Bedrock proceeds.
+    const result = await validateModel('qwen-precedence-test-' + Date.now())
+    // Validation falls through to sideQuery, which in test env
+    // throws because no real Bedrock client is available;
+    // handleValidationError converts to {valid:false}. Critical
+    // assertion: did NOT short-circuit valid via OpenCode.
+    expect(result.valid).toBe(false)
+  })
+
   test('OpenCode short-circuit does not fire when CLAUDE_CODE_USE_OPENCODE_GO is unset', async () => {
     // OPENCODE_API_KEY alone (without USE_OPENCODE_GO) does not trigger
     // the OpenCode short-circuit. Falls through to generic adapter

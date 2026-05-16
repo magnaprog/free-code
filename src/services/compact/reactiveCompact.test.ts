@@ -168,6 +168,50 @@ describe('reactiveCompact', () => {
     )
   })
 
+  test('clearUserContextCache gated on main-thread querySource (round-47 fix)', async () => {
+    // Codex 14th-pass #1: subagent compacts must not clobber
+    // main-thread getUserContext cache. Pre-fix,
+    // deps.clearUserContextCache() ran unconditionally; post-fix
+    // it's gated on isMainThreadQuerySource.
+    process.env.CLAUDE_CODE_REACTIVE_COMPACT = '1'
+    const messages = conversationWithOldImage()
+    const deps = createDeps()
+
+    await reactive.tryReactiveCompact(
+      {
+        hasAttempted: false,
+        querySource: 'agent:test-agent' as never,
+        aborted: false,
+        messages,
+        cacheSafeParams: createCacheSafeParams(messages),
+      },
+      deps,
+    )
+
+    // Subagent path: clearUserContextCache must NOT have been called.
+    expect(deps.clearUserContextCache).not.toHaveBeenCalled()
+  })
+
+  test('clearUserContextCache called for main-thread querySource (round-47 fix)', async () => {
+    process.env.CLAUDE_CODE_REACTIVE_COMPACT = '1'
+    const messages = conversationWithOldImage()
+    const deps = createDeps()
+
+    await reactive.tryReactiveCompact(
+      {
+        hasAttempted: false,
+        querySource: 'repl_main_thread' as never,
+        aborted: false,
+        messages,
+        cacheSafeParams: createCacheSafeParams(messages),
+      },
+      deps,
+    )
+
+    // Main-thread path: clearUserContextCache must have been called.
+    expect(deps.clearUserContextCache).toHaveBeenCalledTimes(1)
+  })
+
   test('reactiveCompactOnPromptTooLong defaults to undefined when querySource omitted (manual /compact omission OK)', async () => {
     // Manual /compact callers omit querySource by design — they're
     // main-thread-only, and undefined is the documented safe default
