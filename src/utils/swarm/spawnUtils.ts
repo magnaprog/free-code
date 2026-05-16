@@ -111,6 +111,13 @@ const TEAMMATE_ENV_VARS = [
   'OPENCODE_MODEL',
   'OPENCODE_GO_MODEL',
   'FREE_CODE_OPENCODE_GO_MODEL',
+  // OpenAI direct routing — without these, teammates with OpenAI flag
+  // but custom endpoint/org/project lose those settings and route to
+  // default OpenAI.
+  'OPENAI_MODEL',
+  'OPENAI_BASE_URL',
+  'OPENAI_ORG_ID',
+  'OPENAI_PROJECT_ID',
   // Custom API endpoint
   'ANTHROPIC_BASE_URL',
   // Config directory override

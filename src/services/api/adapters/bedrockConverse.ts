@@ -722,6 +722,17 @@ export function createBedrockConverseFetch(
       )
       return translateConverseOutputToAnthropic(output, model)
     } catch (error) {
+      // Abort errors (from init.signal cancellation) must propagate so
+      // the caller's AbortController sees the abort. Wrapping them in
+      // a synthetic 500 response converts a clean cancel into what
+      // looks like a Bedrock failure to the Anthropic SDK consumer.
+      if (
+        error instanceof Error &&
+        (error.name === 'AbortError' ||
+          (init?.signal?.aborted ?? false))
+      ) {
+        throw error
+      }
       const status =
         typeof error === 'object' &&
         error !== null &&

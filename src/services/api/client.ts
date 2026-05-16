@@ -466,10 +466,16 @@ export async function getAnthropicClient({
 
     if (transport === 'openai_responses') {
       // GPT through OpenCode → /responses.
+      // Suppress OpenAI-specific metadata headers so the user's
+      // OPENAI_ORG_ID / OPENAI_PROJECT_ID isn't leaked to the
+      // OpenCode Zen gateway.
       const openAIFetch = createOpenAIResponsesFetch(
         openCodeGoApiKey,
         getOpenCodeGoBaseUrl(),
-        { mapModel: normalizeOpenCodeGoModel },
+        {
+          mapModel: normalizeOpenCodeGoModel,
+          suppressOpenAIMetadata: true,
+        },
       )
       const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
         ...NON_DIRECT_ARGS,

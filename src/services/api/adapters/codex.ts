@@ -1317,7 +1317,13 @@ export function createCodexFetch(
 export function createOpenAIResponsesFetch(
   apiKey: string,
   baseUrl = process.env.OPENAI_BASE_URL || OPENAI_RESPONSES_BASE_URL,
-  options: TranslationOptions = {},
+  options: TranslationOptions & {
+    // When the caller is OpenCode Zen (not OpenAI direct), suppress
+    // OpenAI-specific metadata headers (org/project). Sending them to
+    // OpenCode leaks the user's OpenAI account identity to a third-
+    // party gateway.
+    suppressOpenAIMetadata?: boolean
+  } = {},
 ): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
   const responsesUrl = baseUrl.endsWith('/responses')
     ? baseUrl
@@ -1357,12 +1363,14 @@ export function createOpenAIResponsesFetch(
         'Content-Type': 'application/json',
         Accept: codexBody.stream ? 'text/event-stream' : 'application/json',
         Authorization: `Bearer ${apiKey}`,
-        ...(process.env.OPENAI_ORG_ID && {
-          'OpenAI-Organization': process.env.OPENAI_ORG_ID,
-        }),
-        ...(process.env.OPENAI_PROJECT_ID && {
-          'OpenAI-Project': process.env.OPENAI_PROJECT_ID,
-        }),
+        ...(!options.suppressOpenAIMetadata &&
+          process.env.OPENAI_ORG_ID && {
+            'OpenAI-Organization': process.env.OPENAI_ORG_ID,
+          }),
+        ...(!options.suppressOpenAIMetadata &&
+          process.env.OPENAI_PROJECT_ID && {
+            'OpenAI-Project': process.env.OPENAI_PROJECT_ID,
+          }),
       },
       body: JSON.stringify(codexBody),
       // Forward CLI abort signal so Ctrl-C tears down the upstream
