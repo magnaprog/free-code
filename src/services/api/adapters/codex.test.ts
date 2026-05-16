@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   codexFetchAdapterTestHooks,
   createCodexFetch,
+  createOpenAIResponsesFetch,
   isCodexModel,
 } from './codex.js'
 
@@ -46,6 +47,30 @@ describe('codex fetch adapter translation', () => {
     expect(codexModel).toBe('gpt-5.5')
     expect(codexBody.model).toBe('gpt-5.5')
     expect(codexBody).not.toHaveProperty('tool_choice')
+  })
+
+  test('preserves OpenAI direct custom model option', () => {
+    const originalCustomModel = process.env.ANTHROPIC_CUSTOM_MODEL_OPTION
+    process.env.ANTHROPIC_CUSTOM_MODEL_OPTION = 'gpt-custom'
+    try {
+      const { codexBody, codexModel } =
+        codexFetchAdapterTestHooks.translateToCodexBody(
+          {
+            model: 'gpt-custom',
+            stream: false,
+            messages: [{ role: 'user', content: 'hello' }],
+          },
+        )
+
+      expect(codexModel).toBe('gpt-custom')
+      expect(codexBody.model).toBe('gpt-custom')
+    } finally {
+      if (originalCustomModel === undefined) {
+        delete process.env.ANTHROPIC_CUSTOM_MODEL_OPTION
+      } else {
+        process.env.ANTHROPIC_CUSTOM_MODEL_OPTION = originalCustomModel
+      }
+    }
   })
 
   test('applies explicit model mapper before OpenAI Responses translation', () => {
@@ -289,6 +314,49 @@ describe('codex fetch adapter translation', () => {
 
     await response.body!.cancel('client-stop')
     expect(cancelReason).toBe('client-stop')
+  })
+
+  test('Codex fetch preserves abort signal and custom init fields upstream', async () => {
+    const previousFetch = globalThis.fetch
+    const payload = btoa(
+      JSON.stringify({
+        'https://api.openai.com/auth': { chatgpt_account_id: 'acct_test' },
+      }),
+    )
+    const token = `header.${payload}.signature`
+    const controller = new AbortController()
+    const dispatcher = { name: 'proxy-dispatcher' }
+    let observedInit: (RequestInit & { dispatcher?: unknown }) | undefined
+
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      observedInit = init as RequestInit & { dispatcher?: unknown }
+      return sseResponse([
+        { type: 'response.output_item.added', item: { type: 'message' } },
+        { type: 'response.output_text.delta', delta: 'ok' },
+        { type: 'response.completed', response: { usage: { input_tokens: 1, output_tokens: 1 } } },
+      ])
+    }) as typeof fetch
+
+    try {
+      await createCodexFetch(token)(
+        'https://api.anthropic.com/v1/messages',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            model: 'gpt-5.5',
+            stream: false,
+            messages: [{ role: 'user', content: 'hello' }],
+          }),
+          signal: controller.signal,
+          dispatcher,
+        } as RequestInit & { dispatcher: unknown },
+      )
+
+      expect(observedInit?.signal).toBe(controller.signal)
+      expect(observedInit?.dispatcher).toBe(dispatcher)
+    } finally {
+      globalThis.fetch = previousFetch
+    }
   })
 
   test('flushes final streaming usage without trailing newline', async () => {
@@ -641,6 +709,17 @@ describe('codex fetch adapter translation', () => {
     const text = await translated.text()
     expect(text).toContain('"id":"toolu_fallback_1"')
     expect(text).toContain('"id":"toolu_fallback_2"')
+    const argumentDeltas = parseSseData(text)
+      .filter(event => event.type === 'content_block_delta')
+      .map(
+        event =>
+          (event.delta as { partial_json?: string } | undefined)?.partial_json,
+      )
+      .filter(Boolean)
+    expect(argumentDeltas).toEqual([
+      '{"file_path":"a.ts"}',
+      '{"file_path":"b.ts"}',
+    ])
   })
 
   test('translates streaming failures to Anthropic error events', async () => {
@@ -692,5 +771,45 @@ describe('codex fetch adapter translation', () => {
     expect(text).toContain('event: error')
     expect(text).toContain('"message":"stream transport failed"')
     expect(text).not.toContain('event: message_stop')
+  })
+
+  test('bounds OpenAI Responses non-OK error bodies before returning them', async () => {
+    const encoder = new TextEncoder()
+    const dispatcher = { name: 'responses-dispatcher' }
+    let observedInit: (RequestInit & { dispatcher?: unknown }) | undefined
+    let canceled = false
+    const upstreamFetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      observedInit = init as RequestInit & { dispatcher?: unknown }
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.enqueue(encoder.encode('x'.repeat(1024)))
+          },
+          cancel() {
+            canceled = true
+          },
+        }),
+        { status: 500 },
+      )
+    }) as typeof fetch
+
+    const fetch = createOpenAIResponsesFetch('sk-test', 'https://api.openai.com/v1', {
+      upstreamFetch,
+    })
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        stream: false,
+        messages: [{ role: 'user', content: 'hello' }],
+      }),
+      dispatcher,
+    } as RequestInit & { dispatcher: unknown })
+    const body = (await response.json()) as { error: { message: string } }
+
+    expect(observedInit?.dispatcher).toBe(dispatcher)
+    expect(canceled).toBe(true)
+    expect(body.error.message).toContain('truncated after')
+    expect(body.error.message.length).toBeLessThan(5000)
   })
 })

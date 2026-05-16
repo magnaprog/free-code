@@ -12,6 +12,7 @@ import { WEB_SEARCH_TOOL_NAME } from '../../tools/WebSearchTool/prompt.js'
 import type { Message } from '../../types/message.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { getMainLoopModel } from '../../utils/model/model.js'
+import { getAPIProvider } from '../../utils/model/providers.js'
 import { SHELL_TOOL_NAMES } from '../../utils/shell/shellToolUtils.js'
 import { isMainThreadQuerySource } from '../../utils/querySource.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
@@ -276,7 +277,11 @@ export async function microcompactMessages(
   // (session_memory, prompt_suggestion, etc.) from registering their
   // tool_results in the global cachedMCState, which would cause the main
   // thread to try deleting tools that don't exist in its own conversation.
-  if (feature('CACHED_MICROCOMPACT')) {
+  if (
+    isMainThread &&
+    getAPIProvider() === 'firstParty' &&
+    feature('CACHED_MICROCOMPACT')
+  ) {
     const mod = await getCachedMCModule()
     const model = toolUseContext?.options.mainLoopModel ?? getMainLoopModel()
     if (

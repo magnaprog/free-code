@@ -3,6 +3,12 @@ import { isEnvTruthy } from '../envUtils.js'
 
 export type APIProvider = 'firstParty' | 'bedrock' | 'vertex' | 'foundry' | 'openai'
 
+export const OPENAI_FAMILY_MISSING_CREDENTIAL_ERROR =
+  'CLAUDE_CODE_USE_OPENAI / CLAUDE_CODE_USE_OPENCODE_GO is set but no ' +
+  'OpenAI-family credential is available. Set OPENAI_API_KEY, ' +
+  'OPENCODE_API_KEY (with CLAUDE_CODE_USE_OPENCODE_GO=1), or sign ' +
+  'into ChatGPT/Codex; or unset the provider flag to use Anthropic direct.'
+
 export function getAPIProvider(): APIProvider {
   return isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK)
     ? 'bedrock'

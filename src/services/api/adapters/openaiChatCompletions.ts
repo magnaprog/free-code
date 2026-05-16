@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto'
 import { normalizeOpenCodeGoModel } from '../openCodeGo.js'
 import { redactSecrets } from '../../../utils/redaction.js'
 import { logEvent } from '../../analytics/index.js'
+import { readProviderErrorBody } from './adapterUtils.js'
 
 // Date.now() has millisecond resolution; concurrent requests would
 // collide on per-millisecond IDs. randomUUID is collision-resistant.
@@ -14,9 +15,7 @@ function generateMessageId(): string {
 const IMAGE_WARN_BYTES = 1_000_000
 const IMAGE_REJECT_BYTES = 5_000_000
 
-// Cap raw provider error bodies so they cannot smuggle arbitrarily
-// large prompt echoes back through the error channel.
-const MAX_ERROR_BODY_CHARS = 1_000
+const MAX_BUFFERED_TOOL_ARGUMENT_CHARS = 64_000
 
 // Route classification shared with other adapters. See
 // `anthropicMessagesPath.ts` for rationale (count_tokens must not be
@@ -63,6 +62,7 @@ type ChatCompletionFetchOptions = {
   baseUrl: string
   authHeader?: 'Authorization' | 'x-api-key'
   authScheme?: 'bearer' | 'raw'
+  upstreamFetch?: typeof globalThis.fetch
 }
 
 function parseAnthropicBody(init?: RequestInit): Promise<Record<string, unknown>> {
@@ -477,6 +477,18 @@ function parseToolInput(argumentsValue: unknown): Record<string, unknown> {
   }
 }
 
+function appendBufferedToolArguments(
+  entry: { arguments: string },
+  chunk: string,
+): void {
+  if (entry.arguments.length + chunk.length > MAX_BUFFERED_TOOL_ARGUMENT_CHARS) {
+    throw new Error(
+      `OpenAI-compatible stream buffered more than ${MAX_BUFFERED_TOOL_ARGUMENT_CHARS} tool argument characters before the tool name arrived`,
+    )
+  }
+  entry.arguments += chunk
+}
+
 async function translateChatResponseToAnthropic(
   chatResponse: Response,
   model: string,
@@ -745,7 +757,7 @@ async function translateChatStreamToAnthropic(
                   })
                 } else {
                   // Buffer until block can start (name still missing).
-                  entry.arguments += fn.arguments
+                  appendBufferedToolArguments(entry, fn.arguments)
                 }
               }
             }
@@ -845,6 +857,7 @@ export function createOpenAIChatCompletionsFetch(
   const authHeader = options.authHeader ?? 'Authorization'
   const authValue =
     options.authScheme === 'raw' ? apiKey : `Bearer ${apiKey}`
+  const upstreamFetch = options.upstreamFetch ?? globalThis.fetch
 
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = input instanceof Request ? input.url : String(input)
@@ -856,7 +869,7 @@ export function createOpenAIChatCompletionsFetch(
     // miss the cost-control fix. Unrelated URLs are passed through.
     const route = classifyAnthropicMessagesUrl(url)
     if (route === 'count_tokens') return countTokensUnsupportedResponse()
-    if (route === 'other') return globalThis.fetch(input, init)
+    if (route === 'other') return upstreamFetch(input, init)
 
     const anthropicBody = await parseAnthropicBody(init)
     const { chatBody, model } = translateToChatBody(anthropicBody)
@@ -872,7 +885,8 @@ export function createOpenAIChatCompletionsFetch(
       )
     }
 
-    const chatResponse = await globalThis.fetch(chatUrl, {
+    const chatResponse = await upstreamFetch(chatUrl, {
+      ...init,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -886,18 +900,10 @@ export function createOpenAIChatCompletionsFetch(
     })
 
     if (!chatResponse.ok) {
-      // cap raw provider error body. Some gateways echo prompt
-      // content in error messages; redactSecrets catches headline secrets
-      // but won't redact arbitrary prompt content. Truncate aggressively
-      // so an error blob can't smuggle large prompt echoes back through
-      // the error channel.
-      const rawBody = await chatResponse.text()
-      const truncated = rawBody.length > MAX_ERROR_BODY_CHARS
-        ? `${rawBody.slice(0, MAX_ERROR_BODY_CHARS)}…[truncated ${rawBody.length - MAX_ERROR_BODY_CHARS} chars]`
-        : rawBody
+      const errorBody = await readProviderErrorBody(chatResponse)
       return createErrorResponse(
         chatResponse.status,
-        `OpenAI-compatible chat API error (${chatResponse.status}): ${truncated}`,
+        `OpenAI-compatible chat API error (${chatResponse.status}): ${redactSecrets(errorBody)}`,
       )
     }
 

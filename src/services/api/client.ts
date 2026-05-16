@@ -24,6 +24,7 @@ import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
   isHttpsAnthropicApiBaseUrl,
+  OPENAI_FAMILY_MISSING_CREDENTIAL_ERROR,
 } from 'src/utils/model/providers.js'
 import { getProxyFetchOptions } from 'src/utils/proxy.js'
 import {
@@ -475,6 +476,7 @@ export async function getAnthropicClient({
         {
           mapModel: normalizeOpenCodeGoModel,
           suppressOpenAIMetadata: true,
+          upstreamFetch: resolvedFetch,
         },
       )
       const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
@@ -492,6 +494,7 @@ export async function getAnthropicClient({
       baseUrl: getOpenCodeGoBaseUrl(),
       authHeader: 'Authorization',
       authScheme: 'bearer',
+      upstreamFetch: resolvedFetch,
     })
     const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
       ...NON_DIRECT_ARGS,
@@ -505,7 +508,11 @@ export async function getAnthropicClient({
 
   // Prefer explicit OpenAI API keys over ChatGPT Codex OAuth when both exist.
   if (getAPIProvider() === 'openai' && process.env.OPENAI_API_KEY) {
-    const openAIFetch = createOpenAIResponsesFetch(process.env.OPENAI_API_KEY)
+    const openAIFetch = createOpenAIResponsesFetch(
+      process.env.OPENAI_API_KEY,
+      undefined,
+      { upstreamFetch: resolvedFetch },
+    )
     const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
       ...NON_DIRECT_ARGS,
       ...NON_DIRECT_ENV_BEARER_SUPPRESSION,
@@ -520,7 +527,10 @@ export async function getAnthropicClient({
   if (isCodexSubscriber()) {
     const codexTokens = await getFreshCodexOAuthTokens()
     if (codexTokens?.accessToken) {
-      const codexFetch = createCodexFetch(codexTokens.accessToken)
+      const codexFetch = createCodexFetch(
+        codexTokens.accessToken,
+        resolvedFetch,
+      )
       const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
         ...NON_DIRECT_ARGS,
         ...NON_DIRECT_ENV_BEARER_SUPPRESSION,
@@ -539,13 +549,7 @@ export async function getAnthropicClient({
   // The user explicitly opted out of first-party; honoring that intent
   // matters even when no usable credential exists.
   if (apiProvider === 'openai') {
-    throw new Error(
-      'CLAUDE_CODE_USE_OPENAI / CLAUDE_CODE_USE_OPENCODE_GO is set but no ' +
-        'OpenAI-family credential is available. Set OPENAI_API_KEY, ' +
-        'OPENCODE_API_KEY (with CLAUDE_CODE_USE_OPENCODE_GO=1), or sign ' +
-        'into ChatGPT/Codex; or unset the provider flag to use ' +
-        'Anthropic direct.',
-    )
+    throw new Error(OPENAI_FAMILY_MISSING_CREDENTIAL_ERROR)
   }
 
   // Determine authentication method based on available tokens

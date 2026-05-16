@@ -167,6 +167,7 @@ import { CHROME_TOOL_SEARCH_INSTRUCTIONS } from 'src/utils/claudeInChrome/prompt
 import { getMaxThinkingTokensForModel } from 'src/utils/context.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from 'src/utils/diagLogs.js'
+import { isMainThreadQuerySource } from 'src/utils/querySource.js'
 import { type EffortValue, modelSupportsEffort } from 'src/utils/effort.js'
 import {
   isFastModeAvailable,
@@ -1250,6 +1251,12 @@ async function* queryModel(
       `Cached MC gate: enabled=${featureEnabled} modelSupported=${modelSupported} model=${options.model} supportedModels=${jsonStringify(config.supportedModels)}`,
     )
   }
+  const cacheEditingSourceEligible =
+    getAPIProvider() === 'firstParty' &&
+    options.querySource !== undefined &&
+    isMainThreadQuerySource(options.querySource)
+  const canUseCachedMCForQuery =
+    cachedMCEnabled && cacheEditingSourceEligible
 
   const useGlobalCacheFeature = shouldUseGlobalCacheScope()
   const willDefer = (t: Tool) =>
@@ -1480,9 +1487,7 @@ async function* queryModel(
   if (feature('CACHED_MICROCOMPACT')) {
     if (
       !cacheEditingHeaderLatched &&
-      cachedMCEnabled &&
-      getAPIProvider() === 'firstParty' &&
-      options.querySource === 'repl_main_thread'
+      canUseCachedMCForQuery
     ) {
       cacheEditingHeaderLatched = true
       setCacheEditingHeaderLatched(true)
@@ -1576,8 +1581,10 @@ async function* queryModel(
   // Consume pending cache edits ONCE before paramsFromContext is defined.
   // paramsFromContext is called multiple times (logging, retries), so consuming
   // inside it would cause the first call to steal edits from subsequent calls.
-  const consumedCacheEdits = cachedMCEnabled ? consumePendingCacheEdits() : null
-  const consumedPinnedEdits = cachedMCEnabled ? getPinnedCacheEdits() : []
+  const consumedCacheEdits = canUseCachedMCForQuery
+    ? consumePendingCacheEdits()
+    : null
+  const consumedPinnedEdits = canUseCachedMCForQuery ? getPinnedCacheEdits() : []
 
   // Capture the betas sent in the last API request, including the ones that
   // were dynamically added, so we can log and send it to telemetry.
@@ -1720,14 +1727,10 @@ async function* queryModel(
     // Cache editing beta: header is latched session-stable; useCachedMC
     // (controls cache_edits body behavior) stays live so edits stop when
     // the feature disables but the header doesn't flip.
-    const useCachedMC =
-      cachedMCEnabled &&
-      getAPIProvider() === 'firstParty' &&
-      options.querySource === 'repl_main_thread'
+    const useCachedMC = canUseCachedMCForQuery
     if (
       cacheEditingHeaderLatched &&
-      getAPIProvider() === 'firstParty' &&
-      options.querySource === 'repl_main_thread' &&
+      cacheEditingSourceEligible &&
       !betasParams.includes(cacheEditingBetaHeader)
     ) {
       betasParams.push(cacheEditingBetaHeader)
@@ -2872,7 +2875,7 @@ async function* queryModel(
   }
 
   // Mark all registered tools as sent to API so they become eligible for deletion
-  if (feature('CACHED_MICROCOMPACT') && cachedMCEnabled) {
+  if (feature('CACHED_MICROCOMPACT') && canUseCachedMCForQuery) {
     markToolsSentToAPIState()
   }
 

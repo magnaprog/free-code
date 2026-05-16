@@ -1,7 +1,11 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { isModelAlias } from './aliases.js'
 import { isModelAllowed } from './modelAllowlist.js'
-import { type APIProvider, getAPIProvider } from './providers.js'
+import {
+  type APIProvider,
+  getAPIProvider,
+  OPENAI_FAMILY_MISSING_CREDENTIAL_ERROR,
+} from './providers.js'
 import { sideQuery } from '../sideQuery.js'
 import {
   getKnownNonClaudeModelCapability,
@@ -48,11 +52,6 @@ export async function validateModel(
   const lowerModel = normalizedModel.toLowerCase()
   const isAlias = isModelAlias(lowerModel)
 
-  // Check if it matches ANTHROPIC_CUSTOM_MODEL_OPTION (pre-validated by the user)
-  if (normalizedModel === process.env.ANTHROPIC_CUSTOM_MODEL_OPTION) {
-    return { valid: true }
-  }
-
   // OpenCode Zen has runtime precedence over OpenAI direct and Codex whenever
   // CLAUDE_CODE_USE_OPENCODE_GO is set, but only if the selected provider is
   // actually the OpenAI-family provider. Higher-precedence Bedrock/Vertex/
@@ -86,18 +85,21 @@ export async function validateModel(
     }
   }
 
-  const { isCodexSubscriber } = await import('../auth.js')
-  const usingCodexOAuth = isCodexSubscriber()
-  if (
-    apiProvider === 'openai' &&
-    !process.env.OPENAI_API_KEY &&
-    !usingCodexOAuth
-  ) {
-    return {
-      valid: false,
-      error:
-        'CLAUDE_CODE_USE_OPENAI / CLAUDE_CODE_USE_OPENCODE_GO is set but no OpenAI-family credential is available. Set OPENAI_API_KEY, OPENCODE_API_KEY (with CLAUDE_CODE_USE_OPENCODE_GO=1), or sign into ChatGPT/Codex; or unset the provider flag to use Anthropic direct.',
+  let usingCodexOAuth = false
+  if (apiProvider === 'openai' && !process.env.OPENAI_API_KEY) {
+    const { isCodexSubscriber } = await import('../auth.js')
+    usingCodexOAuth = isCodexSubscriber()
+    if (!usingCodexOAuth) {
+      return {
+        valid: false,
+        error: OPENAI_FAMILY_MISSING_CREDENTIAL_ERROR,
+      }
     }
+  }
+
+  // Check if it matches ANTHROPIC_CUSTOM_MODEL_OPTION (pre-validated by the user)
+  if (normalizedModel === process.env.ANTHROPIC_CUSTOM_MODEL_OPTION) {
+    return { valid: true }
   }
 
   if (isAlias) {
@@ -119,14 +121,17 @@ export async function validateModel(
   // Check if it's a known Codex/OpenAI model (skip Anthropic API validation).
   // This must run after the OpenCode branch because runtime OpenCode dispatch
   // wins over Codex when CLAUDE_CODE_USE_OPENCODE_GO is set.
-  const { isCodexModel } = await import('../../services/api/adapters/codex.js')
   if (
     apiProvider === 'openai' &&
     !process.env.OPENAI_API_KEY &&
-    usingCodexOAuth &&
-    isCodexModel(normalizedModel)
+    usingCodexOAuth
   ) {
-    return { valid: true }
+    const { isCodexModel } = await import(
+      '../../services/api/adapters/codex.js'
+    )
+    if (isCodexModel(normalizedModel)) {
+      return { valid: true }
+    }
   }
 
   const requiredAdapter = getRequiredNonClaudeAdapterForModel(

@@ -28,6 +28,9 @@ import {
   isKnownOpenAIResponsesModel,
 } from '../../../utils/model/providerCapabilities.js'
 import { redactSecrets } from '../../../utils/redaction.js'
+import { readProviderErrorBody } from './adapterUtils.js'
+
+const MAX_BUFFERED_TOOL_ARGUMENT_CHARS = 64_000
 
 // ── Available Codex models ──────────────────────────────────────────
 export const CODEX_MODELS = CHATGPT_CODEX_MODELS.map(m => ({
@@ -56,6 +59,12 @@ export function mapClaudeModelToCodex(
   options: TranslationOptions = {},
 ): string {
   if (!claudeModel) return DEFAULT_CODEX_MODEL
+  if (
+    options.targetBackend === 'openai-responses' &&
+    claudeModel === process.env.ANTHROPIC_CUSTOM_MODEL_OPTION
+  ) {
+    return claudeModel
+  }
   const preserveOpenAIResponsesModelIds =
     options.preserveOpenAIResponsesModelIds ?? true
   if (
@@ -409,9 +418,10 @@ function translateToCodexBody(
   const shouldStream =
     targetBackend === 'chatgpt-codex' ? true : anthropicBody.stream === true
 
+  const mappingOptions = { ...options, targetBackend }
   const codexModel = options.mapModel && claudeModel
     ? options.mapModel(claudeModel)
-    : mapClaudeModelToCodex(claudeModel, options)
+    : mapClaudeModelToCodex(claudeModel, mappingOptions)
   const reasoningEffort = mapFreeCodeEffortToOpenAIReasoningEffort(
     outputConfig?.effort,
   )
@@ -530,6 +540,30 @@ function getOpenAIResponseErrorMessage(event: Record<string, unknown>): string {
   return redactSecrets(code ? `${code}: ${message}` : message)
 }
 
+type StreamingToolCall = {
+  key: string
+  index?: number
+  id: string
+  name: string
+  bufferedArguments: string
+  argumentCharsSeen: number
+  started: boolean
+  stopped: boolean
+}
+
+function bufferToolArguments(entry: StreamingToolCall, chunk: string): void {
+  if (
+    entry.bufferedArguments.length + chunk.length >
+    MAX_BUFFERED_TOOL_ARGUMENT_CHARS
+  ) {
+    throw new Error(
+      `OpenAI Responses stream buffered more than ${MAX_BUFFERED_TOOL_ARGUMENT_CHARS} tool argument characters before the tool name arrived`,
+    )
+  }
+  entry.bufferedArguments += chunk
+  entry.argumentCharsSeen += chunk.length
+}
+
 /**
  * Translates Codex streaming response to Anthropic format.
  * Converts Codex SSE events into Anthropic-compatible streaming events.
@@ -581,22 +615,182 @@ async function translateCodexStreamToAnthropic(
         ),
       )
 
-      // Track state for tool calls
+      // Track state for text and tool calls.
       let currentTextBlockStarted = false
-      let currentToolCallId = ''
-      let currentToolCallName = ''
-      let currentToolCallArgs = ''
-      let inToolCall = false
       let hadToolCalls = false
       let streamStopReason: 'end_turn' | 'max_tokens' = 'end_turn'
       const pendingReasoningItems: Record<string, unknown>[] = []
       const createFallbackToolUseId = createFallbackToolUseIdFactory()
+      const toolCalls = new Map<string, StreamingToolCall>()
+      const toolOrder: string[] = []
+      let currentToolCallKey: string | undefined
+
+      const closeTextBlock = () => {
+        if (!currentTextBlockStarted) return
+        controller.enqueue(
+          encoder.encode(
+            formatSSE('content_block_stop', JSON.stringify({
+              type: 'content_block_stop',
+              index: contentBlockIndex,
+            })),
+          ),
+        )
+        contentBlockIndex++
+        currentTextBlockStarted = false
+      }
+
+      const getToolKey = (
+        event: Record<string, unknown>,
+        item?: Record<string, unknown>,
+      ): string => {
+        const key =
+          item?.id ??
+          event.item_id ??
+          event.output_index ??
+          item?.call_id ??
+          (event as { item?: Record<string, unknown> }).item?.id
+        if (key !== undefined && key !== null) return String(key)
+        if (currentToolCallKey) return currentToolCallKey
+        return `fallback-${toolOrder.length}`
+      }
+
+      const getOrCreateToolCall = (
+        event: Record<string, unknown>,
+        item?: Record<string, unknown>,
+      ): StreamingToolCall => {
+        const key = getToolKey(event, item)
+        let entry = toolCalls.get(key)
+        if (!entry) {
+          closeTextBlock()
+          entry = {
+            key,
+            id: typeof item?.call_id === 'string'
+              ? item.call_id
+              : createFallbackToolUseId(),
+            name: typeof item?.name === 'string' ? item.name : '',
+            bufferedArguments: '',
+            argumentCharsSeen: 0,
+            started: false,
+            stopped: false,
+          }
+          toolCalls.set(key, entry)
+          toolOrder.push(key)
+        } else {
+          if (typeof item?.call_id === 'string') entry.id = item.call_id
+          if (typeof item?.name === 'string') entry.name = item.name
+        }
+        currentToolCallKey = key
+        return entry
+      }
+
+      const startToolCallBlock = (entry: StreamingToolCall): boolean => {
+        if (entry.started) return true
+        if (entry.name.length === 0) return false
+        closeTextBlock()
+        const index = entry.index ?? contentBlockIndex++
+        entry.index = index
+        controller.enqueue(
+          encoder.encode(
+            formatSSE('content_block_start', JSON.stringify({
+              type: 'content_block_start',
+              index,
+              content_block: {
+                type: 'tool_use',
+                id: entry.id,
+                name: entry.name,
+                input: {},
+              },
+            })),
+          ),
+        )
+        entry.started = true
+        hadToolCalls = true
+        if (entry.bufferedArguments.length > 0) {
+          controller.enqueue(
+            encoder.encode(
+              formatSSE('content_block_delta', JSON.stringify({
+                type: 'content_block_delta',
+                index,
+                delta: {
+                  type: 'input_json_delta',
+                  partial_json: entry.bufferedArguments,
+                },
+              })),
+            ),
+          )
+          entry.bufferedArguments = ''
+        }
+        return true
+      }
+
+      const emitToolArguments = (
+        entry: StreamingToolCall,
+        chunk: string,
+      ): void => {
+        if (!chunk) return
+        if (!entry.started && !startToolCallBlock(entry)) {
+          bufferToolArguments(entry, chunk)
+          return
+        }
+        controller.enqueue(
+          encoder.encode(
+            formatSSE('content_block_delta', JSON.stringify({
+              type: 'content_block_delta',
+              index: entry.index,
+              delta: {
+                type: 'input_json_delta',
+                partial_json: chunk,
+              },
+            })),
+          ),
+        )
+        entry.argumentCharsSeen += chunk.length
+      }
+
+      const mergeToolArguments = (
+        entry: StreamingToolCall,
+        fullArguments: string,
+      ): void => {
+        if (fullArguments.length <= entry.argumentCharsSeen) return
+        const suffix = fullArguments.startsWith(
+          entry.started ? '' : entry.bufferedArguments,
+        )
+          ? fullArguments.slice(entry.argumentCharsSeen)
+          : entry.argumentCharsSeen === 0
+            ? fullArguments
+            : ''
+        emitToolArguments(entry, suffix)
+      }
+
+      const finishToolCallBlock = (entry: StreamingToolCall): void => {
+        if (
+          !startToolCallBlock(entry) ||
+          entry.stopped ||
+          entry.index === undefined
+        ) {
+          return
+        }
+        controller.enqueue(
+          encoder.encode(
+            formatSSE('content_block_stop', JSON.stringify({
+              type: 'content_block_stop',
+              index: entry.index,
+            })),
+          ),
+        )
+        entry.stopped = true
+      }
 
       try {
         upstreamReader = codexResponse.body?.getReader()
         const reader = upstreamReader
         if (!reader) {
-          emitTextBlock(controller, encoder, contentBlockIndex, 'Error: No response body')
+          emitTextBlock(
+            controller,
+            encoder,
+            contentBlockIndex,
+            'Error: No response body',
+          )
           finishStream(
             controller,
             encoder,
@@ -660,50 +854,12 @@ async function translateCodexStreamToAnthropic(
                 // OpenAI exposes reasoning summaries, not Anthropic signed
                 // thinking blocks. Do not synthesize Anthropic thinking.
               } else if (item?.type === 'message') {
-                // New text message block starting
-                if (inToolCall) {
-                  // Close the previous tool call block
-                  closeToolCallBlock(controller, encoder, contentBlockIndex, currentToolCallId, currentToolCallName, currentToolCallArgs)
-                  contentBlockIndex++
-                  inToolCall = false
-                }
+                closeTextBlock()
               } else if (item?.type === 'function_call') {
-                // Close text block if open
-                if (currentTextBlockStarted) {
-                  controller.enqueue(
-                    encoder.encode(
-                      formatSSE('content_block_stop', JSON.stringify({
-                        type: 'content_block_stop',
-                        index: contentBlockIndex,
-                      })),
-                    ),
-                  )
-                  contentBlockIndex++
-                  currentTextBlockStarted = false
+                const entry = getOrCreateToolCall(event, item)
+                if (typeof item.arguments === 'string') {
+                  mergeToolArguments(entry, item.arguments)
                 }
-
-                // Start tool_use block (Anthropic format)
-                currentToolCallId =
-                  (item.call_id as string) || createFallbackToolUseId()
-                currentToolCallName = (item.name as string) || ''
-                currentToolCallArgs = (item.arguments as string) || ''
-                inToolCall = true
-                hadToolCalls = true
-
-                controller.enqueue(
-                  encoder.encode(
-                    formatSSE('content_block_start', JSON.stringify({
-                      type: 'content_block_start',
-                      index: contentBlockIndex,
-                      content_block: {
-                        type: 'tool_use',
-                        id: currentToolCallId,
-                        name: currentToolCallName,
-                        input: {},
-                      },
-                    })),
-                  ),
-                )
               }
             }
 
@@ -739,7 +895,7 @@ async function translateCodexStreamToAnthropic(
                 outputTokens += 1
               }
             }
-            
+
             // Reasoning deltas
             else if (
               eventType === 'response.reasoning.delta' ||
@@ -752,27 +908,15 @@ async function translateCodexStreamToAnthropic(
             // ── Tool call argument deltas ───────────────────────
             else if (eventType === 'response.function_call_arguments.delta') {
               const argDelta = event.delta as string
-              if (typeof argDelta === 'string' && inToolCall) {
-                currentToolCallArgs += argDelta
-                controller.enqueue(
-                  encoder.encode(
-                    formatSSE('content_block_delta', JSON.stringify({
-                      type: 'content_block_delta',
-                      index: contentBlockIndex,
-                      delta: {
-                        type: 'input_json_delta',
-                        partial_json: argDelta,
-                      },
-                    })),
-                  ),
-                )
+              if (typeof argDelta === 'string') {
+                emitToolArguments(getOrCreateToolCall(event), argDelta)
               }
             }
 
             // Tool call arguments complete
             else if (eventType === 'response.function_call_arguments.done') {
-              if (inToolCall) {
-                currentToolCallArgs = (event.arguments as string) || currentToolCallArgs
+              if (typeof event.arguments === 'string') {
+                mergeToolArguments(getOrCreateToolCall(event), event.arguments)
               }
             }
 
@@ -780,24 +924,15 @@ async function translateCodexStreamToAnthropic(
             else if (eventType === 'response.output_item.done') {
               const item = event.item as Record<string, unknown>
               if (item?.type === 'function_call') {
-                rememberReasoningItemsForToolCall(item.call_id, pendingReasoningItems)
-                closeToolCallBlock(controller, encoder, contentBlockIndex, currentToolCallId, currentToolCallName, currentToolCallArgs)
-                contentBlockIndex++
-                inToolCall = false
-                currentToolCallArgs = ''
-              } else if (item?.type === 'message') {
-                if (currentTextBlockStarted) {
-                  controller.enqueue(
-                    encoder.encode(
-                      formatSSE('content_block_stop', JSON.stringify({
-                        type: 'content_block_stop',
-                        index: contentBlockIndex,
-                      })),
-                    ),
-                  )
-                  contentBlockIndex++
-                  currentTextBlockStarted = false
+                const entry = getOrCreateToolCall(event, item)
+                if (typeof item.arguments === 'string') {
+                  mergeToolArguments(entry, item.arguments)
                 }
+                rememberReasoningItemsForToolCall(item.call_id, pendingReasoningItems)
+                finishToolCallBlock(entry)
+                if (currentToolCallKey === entry.key) currentToolCallKey = undefined
+              } else if (item?.type === 'message') {
+                closeTextBlock()
               } else if (item?.type === 'reasoning') {
                 pendingReasoningItems.push(cloneRecord(item))
               }
@@ -855,19 +990,10 @@ async function translateCodexStreamToAnthropic(
 
       if (downstreamCanceled) return
 
-      // Close any remaining open blocks
-      if (currentTextBlockStarted) {
-        controller.enqueue(
-          encoder.encode(
-            formatSSE('content_block_stop', JSON.stringify({
-              type: 'content_block_stop',
-              index: contentBlockIndex,
-            })),
-          ),
-        )
-      }
-      if (inToolCall) {
-        closeToolCallBlock(controller, encoder, contentBlockIndex, currentToolCallId, currentToolCallName, currentToolCallArgs)
+      closeTextBlock()
+      for (const key of toolOrder) {
+        const entry = toolCalls.get(key)
+        if (entry) finishToolCallBlock(entry)
       }
 
       finishStream(
@@ -884,24 +1010,6 @@ async function translateCodexStreamToAnthropic(
       await upstreamReader?.cancel(reason).catch(() => {})
     },
   })
-
-  function closeToolCallBlock(
-    controller: ReadableStreamDefaultController,
-    encoder: TextEncoder,
-    index: number,
-    _toolCallId: string,
-    _toolCallName: string,
-    _toolCallArgs: string,
-  ) {
-    controller.enqueue(
-      encoder.encode(
-        formatSSE('content_block_stop', JSON.stringify({
-          type: 'content_block_stop',
-          index,
-        })),
-      ),
-    )
-  }
 
   function emitTextBlock(
     controller: ReadableStreamDefaultController,
@@ -1241,6 +1349,7 @@ const OPENAI_RESPONSES_BASE_URL = 'https://api.openai.com/v1/responses'
  */
 export function createCodexFetch(
   accessToken: string,
+  upstreamFetch: typeof globalThis.fetch = globalThis.fetch,
 ): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = input instanceof Request ? input.url : String(input)
@@ -1253,7 +1362,7 @@ export function createCodexFetch(
       return countTokensUnsupportedResponse()
     }
     if (route === 'other') {
-      return globalThis.fetch(input, init)
+      return upstreamFetch(input, init)
     }
 
     // Parse the Anthropic request body
@@ -1283,7 +1392,8 @@ export function createCodexFetch(
       const tokens = freshTokens || getCodexOAuthTokens()
       const currentToken = tokens?.accessToken || accessToken
       const accountId = tokens?.accountId || extractAccountId(currentToken)
-      return globalThis.fetch(CODEX_BASE_URL, {
+      return upstreamFetch(CODEX_BASE_URL, {
+        ...init,
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1307,7 +1417,7 @@ export function createCodexFetch(
     }
 
     if (!codexResponse.ok) {
-      const errorText = await codexResponse.text()
+      const errorText = await readProviderErrorBody(codexResponse)
       const errorBody = {
         type: 'error',
         error: {
@@ -1338,8 +1448,15 @@ export function createOpenAIResponsesFetch(
     // OpenCode leaks the user's OpenAI account identity to a third-
     // party gateway.
     suppressOpenAIMetadata?: boolean
+    upstreamFetch?: typeof globalThis.fetch
   } = {},
 ): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
+  const {
+    upstreamFetch: upstreamFetchOverride,
+    suppressOpenAIMetadata,
+    ...translationOptions
+  } = options
+  const upstreamFetch = upstreamFetchOverride ?? globalThis.fetch
   const responsesUrl = baseUrl.endsWith('/responses')
     ? baseUrl
     : `${baseUrl.replace(/\/$/, '')}/responses`
@@ -1351,7 +1468,7 @@ export function createOpenAIResponsesFetch(
       return countTokensUnsupportedResponse()
     }
     if (route === 'other') {
-      return globalThis.fetch(input, init)
+      return upstreamFetch(input, init)
     }
 
     let anthropicBody: Record<string, unknown>
@@ -1368,21 +1485,22 @@ export function createOpenAIResponsesFetch(
     }
 
     const { codexBody, codexModel } = translateToCodexBody(anthropicBody, {
-      ...options,
+      ...translationOptions,
       preserveOpenAIResponsesModelIds: true,
       targetBackend: 'openai-responses',
     })
-    const openAIResponse = await globalThis.fetch(responsesUrl, {
+    const openAIResponse = await upstreamFetch(responsesUrl, {
+      ...init,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Accept: codexBody.stream ? 'text/event-stream' : 'application/json',
         Authorization: `Bearer ${apiKey}`,
-        ...(!options.suppressOpenAIMetadata &&
+        ...(!suppressOpenAIMetadata &&
           process.env.OPENAI_ORG_ID && {
             'OpenAI-Organization': process.env.OPENAI_ORG_ID,
           }),
-        ...(!options.suppressOpenAIMetadata &&
+        ...(!suppressOpenAIMetadata &&
           process.env.OPENAI_PROJECT_ID && {
             'OpenAI-Project': process.env.OPENAI_PROJECT_ID,
           }),
@@ -1394,7 +1512,7 @@ export function createOpenAIResponsesFetch(
     })
 
     if (!openAIResponse.ok) {
-      const errorText = await openAIResponse.text()
+      const errorText = await readProviderErrorBody(openAIResponse)
       return new Response(
         JSON.stringify({
           type: 'error',

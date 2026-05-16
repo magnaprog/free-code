@@ -74,6 +74,7 @@ import {
   errorMessage,
   TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
 } from '../../utils/errors.js'
+import { formatFileSize } from '../../utils/format.js'
 import { getMCPUserAgent } from '../../utils/http.js'
 import { maybeNotifyIDEConnected } from '../../utils/ide.js'
 import { maybeResizeAndDownsampleImageBuffer } from '../../utils/imageResizer.js'
@@ -222,6 +223,36 @@ const DEFAULT_MCP_TOOL_TIMEOUT_MS = 100_000_000
  * docs into tool.description; this caps the p95 tail without losing the intent.
  */
 const MAX_MCP_DESCRIPTION_LENGTH = 2048
+const MAX_MCP_BINARY_CONTENT_BYTES = 25 * 1024 * 1024
+
+type McpBinaryBudget = {
+  usedBytes: number
+}
+
+function estimateBase64DecodedBytes(data: string): number {
+  const trimmed = data.trim()
+  const padding = trimmed.endsWith('==') ? 2 : trimmed.endsWith('=') ? 1 : 0
+  return Math.max(0, Math.floor((trimmed.length * 3) / 4) - padding)
+}
+
+function reserveMcpBinaryBytes(
+  base64Data: string,
+  budget: McpBinaryBudget,
+  sourceDescription: string,
+): { ok: true } | { ok: false; message: string } {
+  const byteCount = estimateBase64DecodedBytes(base64Data)
+  if (budget.usedBytes + byteCount > MAX_MCP_BINARY_CONTENT_BYTES) {
+    return {
+      ok: false,
+      message:
+        `${sourceDescription}Binary content omitted: MCP binary output would exceed ` +
+        `${formatFileSize(MAX_MCP_BINARY_CONTENT_BYTES)} for this tool result ` +
+        `(${formatFileSize(budget.usedBytes + byteCount)} requested).`,
+    }
+  }
+  budget.usedBytes += byteCount
+  return { ok: true }
+}
 
 /**
  * Gets the timeout for MCP tool calls in milliseconds.
@@ -2095,12 +2126,18 @@ export const fetchCommandsForClient = memoizeWithLRU(
                 name: prompt.name,
                 arguments: zipObject(argNames, argsArray),
               })
-              const transformed = await Promise.all(
-                result.messages.map(message =>
-                  transformResultContent(message.content, connectedClient.name),
-                ),
-              )
-              return transformed.flat()
+              const binaryBudget: McpBinaryBudget = { usedBytes: 0 }
+              const transformed: ContentBlockParam[] = []
+              for (const message of result.messages) {
+                transformed.push(
+                  ...(await transformResultContent(
+                    message.content,
+                    connectedClient.name,
+                    binaryBudget,
+                  )),
+                )
+              }
+              return transformed
             } catch (error) {
               logMCPError(
                 client.name,
@@ -2495,6 +2532,7 @@ export function prefetchAllMcpResources(
 export async function transformResultContent(
   resultContent: PromptMessage['content'],
   serverName: string,
+  binaryBudget: McpBinaryBudget = { usedBytes: 0 },
 ): Promise<Array<ContentBlockParam>> {
   switch (resultContent.type) {
     case 'text':
@@ -2510,16 +2548,30 @@ export async function transformResultContent(
         data: string
         mimeType?: string
       }
+      const prefix = `[Audio from ${serverName}] `
+      const reserve = reserveMcpBinaryBytes(
+        audioData.data,
+        binaryBudget,
+        prefix,
+      )
+      if (!reserve.ok) return [{ type: 'text', text: reserve.message }]
       return await persistBlobToTextBlock(
         Buffer.from(audioData.data, 'base64'),
         audioData.mimeType,
         serverName,
-        `[Audio from ${serverName}] `,
+        prefix,
       )
     }
     case 'image': {
+      const imageData = String(resultContent.data)
+      const reserve = reserveMcpBinaryBytes(
+        imageData,
+        binaryBudget,
+        `[Image from ${serverName}] `,
+      )
+      if (!reserve.ok) return [{ type: 'text', text: reserve.message }]
       // Resize and compress image data, enforcing API dimension limits
-      const imageBuffer = Buffer.from(String(resultContent.data), 'base64')
+      const imageBuffer = Buffer.from(imageData, 'base64')
       const ext = resultContent.mimeType?.split('/')[1] || 'png'
       const resized = await maybeResizeAndDownsampleImageBuffer(
         imageBuffer,
@@ -2553,6 +2605,12 @@ export async function transformResultContent(
         const isImage = IMAGE_MIME_TYPES.has(resource.mimeType ?? '')
 
         if (isImage) {
+          const reserve = reserveMcpBinaryBytes(
+            resource.blob,
+            binaryBudget,
+            prefix,
+          )
+          if (!reserve.ok) return [{ type: 'text', text: reserve.message }]
           // Resize and compress image blob, enforcing API dimension limits
           const imageBuffer = Buffer.from(resource.blob, 'base64')
           const ext = resource.mimeType?.split('/')[1] || 'png'
@@ -2579,6 +2637,12 @@ export async function transformResultContent(
           })
           return content
         } else {
+          const reserve = reserveMcpBinaryBytes(
+            resource.blob,
+            binaryBudget,
+            prefix,
+          )
+          if (!reserve.ok) return [{ type: 'text', text: reserve.message }]
           return await persistBlobToTextBlock(
             Buffer.from(resource.blob, 'base64'),
             resource.mimeType,
@@ -2701,11 +2765,13 @@ export async function transformMCPResult(
     }
 
     if ('content' in result && Array.isArray(result.content)) {
-      const transformedContent = (
-        await Promise.all(
-          result.content.map(item => transformResultContent(item, name)),
+      const binaryBudget: McpBinaryBudget = { usedBytes: 0 }
+      const transformedContent: ContentBlockParam[] = []
+      for (const item of result.content) {
+        transformedContent.push(
+          ...(await transformResultContent(item, name, binaryBudget)),
         )
-      ).flat()
+      }
       return {
         content: transformedContent,
         type: 'contentArray',

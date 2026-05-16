@@ -935,8 +935,9 @@ export async function compactConversation(
     // Extract compaction API usage metrics
     const compactionUsage = getTokenUsage(summaryResponse)
 
-    const querySourceForEvent =
-      recompactionInfo?.querySource ?? context.options.querySource ?? 'unknown'
+    const querySourceForSideEffects =
+      recompactionInfo?.querySource ?? context.options.querySource
+    const querySourceForEvent = querySourceForSideEffects ?? 'unknown'
 
     logEvent('tengu_compact', {
       preCompactTokenCount,
@@ -987,16 +988,13 @@ export async function compactConversation(
 
     // Reset cache read baseline so the post-compact drop isn't flagged as a break
     if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
-      notifyCompaction(
-        context.options.querySource ?? 'compact',
-        context.agentId,
-      )
+      notifyCompaction(querySourceForSideEffects ?? 'compact', context.agentId)
     }
     // markPostCompaction sets a process-global flag consumed by the next
     // tengu_api_success analytics event. Subagent compaction must not flip
     // main-thread analytics tags — gate on the same predicate other
     // post-compact state uses.
-    if (isMainThreadQuerySource(context.options.querySource)) {
+    if (isMainThreadQuerySource(querySourceForSideEffects)) {
       markPostCompaction()
     }
 

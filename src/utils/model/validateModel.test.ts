@@ -22,6 +22,7 @@ const TRACKED = [
   'OPENCODE_API_KEY',
   'OPENCODE_GO_API_KEY',
   'FREE_CODE_OPENCODE_GO_API_KEY',
+  'ANTHROPIC_CUSTOM_MODEL_OPTION',
 ] as const
 
 const originalEnv = Object.fromEntries(
@@ -109,6 +110,15 @@ describe('validateModel — OpenCode Zen routing', () => {
     process.env.CLAUDE_CODE_USE_OPENAI = '1'
 
     const result = await validateModel('sonnet')
+    expect(result.valid).toBe(false)
+    expect(result.error).toContain('no OpenAI-family credential')
+  })
+
+  test('rejects custom models when OpenAI provider has no usable credential', async () => {
+    process.env.CLAUDE_CODE_USE_OPENAI = '1'
+    process.env.ANTHROPIC_CUSTOM_MODEL_OPTION = 'gpt-custom'
+
+    const result = await validateModel('gpt-custom')
     expect(result.valid).toBe(false)
     expect(result.error).toContain('no OpenAI-family credential')
   })

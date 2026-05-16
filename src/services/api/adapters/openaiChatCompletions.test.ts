@@ -567,10 +567,12 @@ describe('OpenAI chat completions fetch adapter', () => {
     expect(response.status).toBe(200)
   })
 
-  test('propagates abort signal to upstream fetch', async () => {
+  test('propagates abort signal and custom init fields to upstream fetch', async () => {
     let observedSignal: AbortSignal | undefined
+    let observedDispatcher: unknown
     globalThis.fetch = ((_input: unknown, init?: RequestInit) => {
       observedSignal = init?.signal ?? undefined
+      observedDispatcher = (init as RequestInit & { dispatcher?: unknown })?.dispatcher
       return Promise.resolve(
         new Response(
           JSON.stringify({
@@ -590,6 +592,7 @@ describe('OpenAI chat completions fetch adapter', () => {
     }) as typeof globalThis.fetch
 
     const controller = new AbortController()
+    const dispatcher = { name: 'chat-dispatcher' }
     const fetch = createOpenAIChatCompletionsFetch('k', {
       baseUrl: 'https://opencode.example/zen/v1',
     })
@@ -600,10 +603,12 @@ describe('OpenAI chat completions fetch adapter', () => {
         messages: [{ role: 'user', content: 'hi' }],
       }),
       signal: controller.signal,
-    })
+      dispatcher,
+    } as RequestInit & { dispatcher: unknown })
 
     // Preserve object identity so cancellation targets the same signal.
     expect(observedSignal).toBe(controller.signal)
+    expect(observedDispatcher).toBe(dispatcher)
   })
 
   test('downstream body cancellation cancels upstream stream', async () => {
@@ -621,6 +626,85 @@ describe('OpenAI chat completions fetch adapter', () => {
 
     await response.body!.cancel('client-stop')
     expect(cancelReason).toBe('client-stop')
+  })
+
+  test('bounds non-OK error bodies before returning them', async () => {
+    const encoder = new TextEncoder()
+    let canceled = false
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              controller.enqueue(encoder.encode('x'.repeat(1024)))
+            },
+            cancel() {
+              canceled = true
+            },
+          }),
+          { status: 500 },
+        ),
+      )) as typeof globalThis.fetch
+
+    const fetch = createOpenAIChatCompletionsFetch('k', {
+      baseUrl: 'https://opencode.example/zen/v1',
+    })
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      body: JSON.stringify({
+        model: 'qwen-test',
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+    const body = (await response.json()) as { error: { message: string } }
+
+    expect(canceled).toBe(true)
+    expect(body.error.message).toContain('truncated after')
+    expect(body.error.message.length).toBeLessThan(5000)
+  })
+
+  test('errors instead of buffering unbounded tool arguments before name', async () => {
+    const sseBody = `data: ${JSON.stringify({
+      choices: [
+        {
+          delta: {
+            tool_calls: [
+              {
+                index: 0,
+                id: 'call_no_name',
+                function: { arguments: 'x'.repeat(65_000) },
+              },
+            ],
+          },
+          finish_reason: null,
+        },
+      ],
+    })}\n\n`
+
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(sseBody, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      )) as typeof globalThis.fetch
+
+    const fetch = createOpenAIChatCompletionsFetch('k', {
+      baseUrl: 'https://opencode.example/zen/v1',
+    })
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      body: JSON.stringify({
+        model: 'qwen-test',
+        messages: [{ role: 'user', content: 'hi' }],
+        stream: true,
+      }),
+    })
+
+    const text = await response.text()
+    expect(text).toContain('event: error')
+    expect(text).toContain('buffered more than 64000 tool argument characters')
+    expect(text).not.toContain('event: message_stop')
   })
 
   test('SSE parser flushes final event when stream ends without trailing newline', async () => {

@@ -176,11 +176,19 @@ export async function reactiveCompactOnPromptTooLong(
   }
 
   try {
+    const compactContext: ToolUseContext = {
+      ...toolUseContext,
+      options: {
+        ...toolUseContext.options,
+        querySource: options.querySource,
+      },
+    }
     const result = await deps.compactConversation(
       preparedAfterOffload.messages,
-      toolUseContext,
+      compactContext,
       {
         ...cacheSafeParams,
+        toolUseContext: compactContext,
         forkContextMessages: preparedAfterOffload.messages,
       },
       true,
