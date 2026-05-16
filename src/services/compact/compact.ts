@@ -11,6 +11,7 @@ import { APIUserAbortError } from '@anthropic-ai/sdk'
 import { markPostCompaction } from 'src/bootstrap/state.js'
 import { getInvokedSkillsForAgent } from '../../bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
+import { isMainThreadQuerySource } from '../../utils/querySource.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
 import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
@@ -991,7 +992,13 @@ export async function compactConversation(
         context.agentId,
       )
     }
-    markPostCompaction()
+    // markPostCompaction sets a process-global flag consumed by the next
+    // tengu_api_success analytics event. Subagent compaction must not flip
+    // main-thread analytics tags — gate on the same predicate other
+    // post-compact state uses.
+    if (isMainThreadQuerySource(context.options.querySource)) {
+      markPostCompaction()
+    }
 
     // Re-append session metadata (custom title, tag) so it stays within
     // the 16KB tail window that readLiteMetadata reads for --resume display.
@@ -1419,7 +1426,12 @@ export async function partialCompactConversation(
         context.agentId,
       )
     }
-    markPostCompaction()
+    // Defensive: partialCompactConversation's only caller is the main-thread
+    // REPL "/compact from this message" UI, but gate consistently so a future
+    // subagent caller can't flip main-thread analytics tags.
+    if (isMainThreadQuerySource(context.options.querySource)) {
+      markPostCompaction()
+    }
 
     // Re-append session metadata (custom title, tag) so it stays within
     // the 16KB tail window that readLiteMetadata reads for --resume display.

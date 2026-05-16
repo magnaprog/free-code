@@ -10,6 +10,10 @@ import { clearSessionMessagesCache } from '../../utils/sessionStorage.js'
 import { clearBetaTracingState } from '../../utils/telemetry/betaSessionTracing.js'
 import { resetMicrocompactState } from './microCompact.js'
 
+// Re-export so callers that already import from this module pick up the
+// predicate without a separate import. Canonical location is utils/querySource.
+export { isMainThreadQuerySource }
+
 /**
  * Run main-thread cleanup of caches and tracking state after compaction.
  * Call this after both auto-compact and manual /compact; subagent calls
@@ -27,8 +31,6 @@ import { resetMicrocompactState } from './microCompact.js'
  * conversation. All compaction callers should pass querySource —
  * undefined is only safe for genuinely main-thread-only callers.
  */
-export { isMainThreadQuerySource }
-
 export function runPostCompactCleanup(querySource?: QuerySource): void {
   const isMainThreadCompact = isMainThreadQuerySource(querySource)
 
