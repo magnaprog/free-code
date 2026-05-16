@@ -81,7 +81,10 @@ export const call: LocalCommandCall = async (args, context) => {
         )
         if (sessionMemoryResult) {
           getUserContext.cache.clear?.()
-          runPostCompactCleanup()
+          // Pass the caller's querySource so subagent-invoked /compact
+          // doesn't clobber main-thread module-level state. Mirrors
+          // the round-40 fix to reactiveCompactOnPromptTooLong.
+          runPostCompactCleanup(context.options.querySource)
           // Reset cache read baseline so the post-compact drop isn't flagged
           // as a break. compactConversation does this internally; SM-compact doesn't.
           if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
@@ -150,7 +153,9 @@ export const call: LocalCommandCall = async (args, context) => {
     suppressCompactWarning()
 
     getUserContext.cache.clear?.()
-    runPostCompactCleanup()
+    // Pass the caller's querySource so subagent-invoked /compact
+    // doesn't clobber main-thread module-level state.
+    runPostCompactCleanup(context.options.querySource)
 
     return {
       type: 'compact',
