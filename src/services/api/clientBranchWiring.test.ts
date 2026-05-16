@@ -182,6 +182,22 @@ describe('provider branch-wiring — auth suppression', () => {
     expect(last?.args.authToken).toBeNull()
   })
 
+  test('Vertex branch wins when Vertex and Foundry flags are both set', async () => {
+    process.env.CLAUDE_CODE_USE_VERTEX = '1'
+    process.env.CLAUDE_CODE_USE_FOUNDRY = '1'
+    process.env.CLAUDE_CODE_SKIP_VERTEX_AUTH = '1'
+    process.env.CLOUD_ML_REGION = 'us-east5'
+    process.env.ANTHROPIC_VERTEX_PROJECT_ID = 'test-project'
+    process.env.CLAUDE_CODE_SKIP_FOUNDRY_AUTH = '1'
+    process.env.ANTHROPIC_FOUNDRY_RESOURCE = 'test-resource'
+
+    await getAnthropicClient({
+      maxRetries: 0,
+      model: 'claude-3-5-sonnet-v2@20241022',
+    })
+    expect(captured.pop()?.name).toBe('AnthropicVertex')
+  })
+
   test('Foundry skip-auth branch passes authToken:null + placeholder apiKey + fetch wrapper', async () => {
     process.env.CLAUDE_CODE_USE_FOUNDRY = '1'
     process.env.CLAUDE_CODE_SKIP_FOUNDRY_AUTH = '1'

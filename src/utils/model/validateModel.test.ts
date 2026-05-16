@@ -105,6 +105,14 @@ describe('validateModel — OpenCode Zen routing', () => {
     expect(result.error).toContain('OpenCode Zen requires OPENCODE_API_KEY')
   })
 
+  test('rejects aliases when OpenAI provider has no usable credential', async () => {
+    process.env.CLAUDE_CODE_USE_OPENAI = '1'
+
+    const result = await validateModel('sonnet')
+    expect(result.valid).toBe(false)
+    expect(result.error).toContain('no OpenAI-family credential')
+  })
+
   test('rejects Codex-only models when OpenAI API key takes precedence', async () => {
     process.env.CLAUDE_CODE_USE_OPENAI = '1'
     process.env.OPENAI_API_KEY = 'sk-openai-test'
@@ -112,6 +120,15 @@ describe('validateModel — OpenCode Zen routing', () => {
     const result = await validateModel('gpt-5.3-codex-spark')
     expect(result.valid).toBe(false)
     expect(result.error).toContain('not OpenAI Responses')
+  })
+
+  test('Vertex and Foundry validation uses the selected runtime provider', async () => {
+    process.env.CLAUDE_CODE_USE_VERTEX = '1'
+    process.env.CLAUDE_CODE_USE_FOUNDRY = '1'
+
+    const result = await validateModel('gemini-2-flash')
+    expect(result.valid).toBe(false)
+    expect(result.error).toContain('vertex-gemini')
   })
 
   test('OpenCode validation is not reused when a higher-precedence provider wins', async () => {

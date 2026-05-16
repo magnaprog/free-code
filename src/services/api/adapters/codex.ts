@@ -834,6 +834,8 @@ async function translateCodexStreamToAnthropic(
         }
       } catch (err) {
         if (downstreamCanceled) return
+        await upstreamReader?.cancel().catch(() => {})
+        if (downstreamCanceled) return
         controller.enqueue(
           encoder.encode(
             formatSSE('error', JSON.stringify({
@@ -845,7 +847,9 @@ async function translateCodexStreamToAnthropic(
             })),
           ),
         )
-        controller.close()
+        if (!downstreamCanceled) {
+          controller.close()
+        }
         return
       }
 

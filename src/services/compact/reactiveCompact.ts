@@ -190,9 +190,9 @@ export async function reactiveCompactOnPromptTooLong(
 
     if (isMainThreadQuerySource(options.querySource)) {
       deps.setLastSummarizedMessageId(undefined)
+      deps.suppressCompactWarning()
     }
     deps.runPostCompactCleanup(options.querySource)
-    deps.suppressCompactWarning()
 
     logEvent('tengu_reactive_compact_succeeded', {
       triggerAuto: options.trigger === 'auto',

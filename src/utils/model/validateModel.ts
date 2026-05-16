@@ -86,6 +86,20 @@ export async function validateModel(
     }
   }
 
+  const { isCodexSubscriber } = await import('../auth.js')
+  const usingCodexOAuth = isCodexSubscriber()
+  if (
+    apiProvider === 'openai' &&
+    !process.env.OPENAI_API_KEY &&
+    !usingCodexOAuth
+  ) {
+    return {
+      valid: false,
+      error:
+        'CLAUDE_CODE_USE_OPENAI / CLAUDE_CODE_USE_OPENCODE_GO is set but no OpenAI-family credential is available. Set OPENAI_API_KEY, OPENCODE_API_KEY (with CLAUDE_CODE_USE_OPENCODE_GO=1), or sign into ChatGPT/Codex; or unset the provider flag to use Anthropic direct.',
+    }
+  }
+
   if (isAlias) {
     return { valid: true }
   }
@@ -105,12 +119,11 @@ export async function validateModel(
   // Check if it's a known Codex/OpenAI model (skip Anthropic API validation).
   // This must run after the OpenCode branch because runtime OpenCode dispatch
   // wins over Codex when CLAUDE_CODE_USE_OPENCODE_GO is set.
-  const { isCodexSubscriber } = await import('../auth.js')
   const { isCodexModel } = await import('../../services/api/adapters/codex.js')
   if (
     apiProvider === 'openai' &&
     !process.env.OPENAI_API_KEY &&
-    isCodexSubscriber() &&
+    usingCodexOAuth &&
     isCodexModel(normalizedModel)
   ) {
     return { valid: true }

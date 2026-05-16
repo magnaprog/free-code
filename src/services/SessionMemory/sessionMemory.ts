@@ -275,7 +275,7 @@ const extractSessionMemory = sequential(async function (
   const { messages, toolUseContext, querySource } = context
 
   // Only run session memory on main REPL thread
-  if (querySource !== 'repl_main_thread') {
+  if (!querySource?.startsWith('repl_main_thread')) {
     // Don't log this - it's expected for subagents, teammates, etc.
     return
   }

@@ -770,6 +770,8 @@ async function translateChatStreamToAnthropic(
         }
       } catch (error) {
         if (downstreamCanceled) return
+        await upstreamReader?.cancel().catch(() => {})
+        if (downstreamCanceled) return
         enqueue('error', {
           type: 'error',
           error: {
@@ -777,7 +779,9 @@ async function translateChatStreamToAnthropic(
             message: getErrorMessage(error, 'OpenAI-compatible stream error'),
           },
         })
-        controller.close()
+        if (!downstreamCanceled) {
+          controller.close()
+        }
         return
       }
 

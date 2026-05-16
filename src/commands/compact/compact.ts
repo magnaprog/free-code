@@ -161,7 +161,9 @@ export const call: LocalCommandCall = async (args, context) => {
     }
 
     // Suppress the "Context left until auto-compact" warning after successful compaction
-    suppressCompactWarning()
+    if (isMainThreadQuerySource(context.options.querySource)) {
+      suppressCompactWarning()
+    }
 
     runPostCompactCleanup(context.options.querySource)
 

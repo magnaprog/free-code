@@ -255,8 +255,11 @@ export async function microcompactMessages(
   toolUseContext?: ToolUseContext,
   querySource?: QuerySource,
 ): Promise<MicrocompactResult> {
-  // Clear suppression flag at start of new microcompact attempt
-  clearCompactWarningSuppression()
+  const isMainThread =
+    querySource !== undefined && isMainThreadQuerySource(querySource)
+  if (isMainThread) {
+    clearCompactWarningSuppression()
+  }
 
   // Time-based trigger runs first and short-circuits. If the gap since the
   // last assistant message exceeds the threshold, the server cache has expired
@@ -279,7 +282,7 @@ export async function microcompactMessages(
     if (
       mod.isCachedMicrocompactEnabled() &&
       mod.isModelSupportedForCacheEditing(model) &&
-      isMainThreadQuerySource(querySource)
+      isMainThread
     ) {
       return await cachedMicrocompactPath(messages, querySource)
     }

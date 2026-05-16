@@ -181,6 +181,7 @@ describe('reactiveCompact', () => {
     )
 
     expect(deps.setLastSummarizedMessageId).not.toHaveBeenCalled()
+    expect(deps.suppressCompactWarning).not.toHaveBeenCalled()
   })
 
   test('setLastSummarizedMessageId is called for main-thread querySource', async () => {
@@ -200,6 +201,7 @@ describe('reactiveCompact', () => {
     )
 
     expect(deps.setLastSummarizedMessageId).toHaveBeenCalledWith(undefined)
+    expect(deps.suppressCompactWarning).toHaveBeenCalledTimes(1)
   })
 
   test('reactiveCompactOnPromptTooLong defaults to undefined when querySource omitted', async () => {

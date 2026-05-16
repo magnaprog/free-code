@@ -197,10 +197,21 @@ export async function buildInheritedEnvSetupCommand(): Promise<{
   })
 
   const quotedPath = quote([envFilePath])
+  let cleaned = false
+  let cleanupTimer: ReturnType<typeof setTimeout> | undefined
+  const cleanup = async () => {
+    if (cleaned) return
+    cleaned = true
+    if (cleanupTimer) clearTimeout(cleanupTimer)
+    await unlink(envFilePath).catch(() => {})
+  }
+  cleanupTimer = setTimeout(() => {
+    void cleanup()
+  }, 10 * 60 * 1000)
+  cleanupTimer.unref?.()
+
   return {
     command: `. ${quotedPath}; __free_code_env_status=$?; command rm -f ${quotedPath}; [ $__free_code_env_status -eq 0 ] || exit $__free_code_env_status; unset __free_code_env_status;`,
-    cleanup: async () => {
-      await unlink(envFilePath).catch(() => {})
-    },
+    cleanup,
   }
 }

@@ -633,6 +633,7 @@ function createAnthropicStreamFromBedrock(
         if (downstreamCanceled) return
         cleanup()
         await Promise.resolve(upstreamIterator?.return?.()).catch(() => {})
+        if (downstreamCanceled) return
         emit('error', {
           type: 'error',
           error: {
@@ -640,7 +641,9 @@ function createAnthropicStreamFromBedrock(
             message: getErrorMessage(error, 'Bedrock ConverseStream error'),
           },
         })
-        controller.close()
+        if (!downstreamCanceled) {
+          controller.close()
+        }
       }
     },
     async cancel(reason) {

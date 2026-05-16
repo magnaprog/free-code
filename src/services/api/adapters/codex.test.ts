@@ -644,17 +644,28 @@ describe('codex fetch adapter translation', () => {
   })
 
   test('translates streaming failures to Anthropic error events', async () => {
+    let upstreamCanceled = false
+    const upstream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            `data: ${JSON.stringify({
+              type: 'response.failed',
+              response: {
+                status: 'failed',
+                error: { message: 'model failed' },
+              },
+            })}\n\n`,
+          ),
+        )
+      },
+      cancel() {
+        upstreamCanceled = true
+      },
+    })
     const translated =
       await codexFetchAdapterTestHooks.translateCodexStreamToAnthropic(
-        sseResponse([
-          {
-            type: 'response.failed',
-            response: {
-              status: 'failed',
-              error: { message: 'model failed' },
-            },
-          },
-        ]),
+        new Response(upstream, { headers: { 'Content-Type': 'text/event-stream' } }),
         'gpt-5.5',
       )
 
@@ -662,6 +673,7 @@ describe('codex fetch adapter translation', () => {
     expect(text).toContain('event: error')
     expect(text).toContain('"message":"model failed"')
     expect(text).not.toContain('event: message_stop')
+    expect(upstreamCanceled).toBe(true)
   })
 
   test('translates generic streaming error events to Anthropic error events', async () => {

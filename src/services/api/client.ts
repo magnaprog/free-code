@@ -221,7 +221,7 @@ export async function getAnthropicClient({
     defaultHeaders: stripInheritedAuthHeaders(defaultHeaders),
     fetchOptions: getProxyFetchOptions() as ClientOptions['fetchOptions'],
   }
-  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK)) {
+  if (apiProvider === 'bedrock') {
     if (
       model &&
       getRequiredNonClaudeAdapterForModel('bedrock', model) ===
@@ -276,7 +276,7 @@ export async function getAnthropicClient({
     // we have always been lying about the return type - this doesn't support batching or models
     return new AnthropicBedrock(bedrockArgs) as unknown as Anthropic
   }
-  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)) {
+  if (apiProvider === 'foundry') {
     const { AnthropicFoundry } = await import('@anthropic-ai/foundry-sdk')
     // Determine Azure AD token provider based on configuration.
     // The Foundry SDK has no skipAuth flag and requires a non-empty apiKey
@@ -316,7 +316,7 @@ export async function getAnthropicClient({
     // we have always been lying about the return type - this doesn't support batching or models
     return new AnthropicFoundry(foundryArgs) as unknown as Anthropic
   }
-  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX)) {
+  if (apiProvider === 'vertex') {
     // Refresh GCP credentials if gcpAuthRefresh is configured and credentials are expired
     // This is similar to how we handle AWS credential refresh for Bedrock
     if (!isEnvTruthy(process.env.CLAUDE_CODE_SKIP_VERTEX_AUTH)) {
