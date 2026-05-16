@@ -563,4 +563,106 @@ describe('OpenAI chat completions fetch adapter', () => {
     expect(called).toBe(true)
     expect(response.status).toBe(200)
   })
+
+  test('SSE parser flushes final event when stream ends without trailing newline', async () => {
+    // Regression for Codex finding #9 (round 39 fix). Pre-fix, the
+    // parser broke on `done` and discarded any partial line still
+    // sitting in `buffer`. Some upstreams (notably small-chunk gateways)
+    // yield the final `data: {...}` frame without a trailing `\n`; the
+    // consumer-facing message_stop event was silently lost.
+    //
+    // Fixture: 3 SSE frames. The first two end with `\n` (normal).
+    // The third (containing the finish_reason=stop) has NO trailing
+    // newline. With the fix, all three are processed; without the
+    // fix, the third (which carries the stop_reason) would be dropped.
+    const frames = [
+      `data: ${JSON.stringify({
+        id: 'cmpl-1',
+        choices: [
+          {
+            index: 0,
+            delta: { content: 'first' },
+            finish_reason: null,
+          },
+        ],
+      })}\n\n`,
+      `data: ${JSON.stringify({
+        id: 'cmpl-1',
+        choices: [
+          {
+            index: 0,
+            delta: { content: ' last' },
+            finish_reason: null,
+          },
+        ],
+      })}\n\n`,
+      // No trailing newline — simulates upstream closing the connection
+      // mid-line. Must still be processed on `done`.
+      `data: ${JSON.stringify({
+        id: 'cmpl-1',
+        choices: [
+          {
+            index: 0,
+            delta: {},
+            finish_reason: 'stop',
+          },
+        ],
+        usage: { prompt_tokens: 5, completion_tokens: 2 },
+      })}`,
+    ]
+    const sseBody = frames.join('')
+
+    globalThis.fetch = (() => {
+      return Promise.resolve(
+        new Response(sseBody, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      )
+    }) as typeof globalThis.fetch
+
+    const fetch = createOpenAIChatCompletionsFetch('k', {
+      baseUrl: 'https://opencode.example/zen/v1',
+    })
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      body: JSON.stringify({
+        model: 'qwen-test',
+        messages: [{ role: 'user', content: 'hi' }],
+        stream: true,
+      }),
+    })
+
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let out = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      out += decoder.decode(value, { stream: true })
+    }
+
+    // The pre-fix bug would drop the third frame (the one carrying
+    // finish_reason='stop'). Post-fix, message_stop is emitted with
+    // stop_reason='end_turn' (the adapter's mapping of finish_reason=
+    // 'stop' per getStopReason()).
+    const events = out
+      .split('\n\n')
+      .filter(block => block.startsWith('event: '))
+      .map(block => {
+        const [eventLine, dataLine] = block.split('\n')
+        return {
+          event: eventLine?.slice('event: '.length) ?? '',
+          data: dataLine?.slice('data: '.length) ?? '',
+        }
+      })
+
+    const messageDeltas = events.filter(e => e.event === 'message_delta')
+    expect(messageDeltas.length).toBeGreaterThan(0)
+    const finalDelta = JSON.parse(messageDeltas[messageDeltas.length - 1]!.data)
+    expect(finalDelta.delta?.stop_reason).toBe('end_turn')
+
+    // Usage must also have arrived via the third (newline-less) frame.
+    expect(finalDelta.usage?.input_tokens).toBe(5)
+  })
 })

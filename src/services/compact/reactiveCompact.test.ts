@@ -117,6 +117,76 @@ describe('reactiveCompact', () => {
     expect(deps.suppressCompactWarning).toHaveBeenCalledTimes(1)
     expect(deps.clearUserContextCache).toHaveBeenCalledTimes(1)
   })
+
+  test('threads querySource through to runPostCompactCleanup (round-40 fix / Codex #5)', async () => {
+    // Pre-fix: tryReactiveCompact received querySource but didn't pass
+    // it to reactiveCompactOnPromptTooLong, which then called
+    // deps.runPostCompactCleanup() with no args. The cleanup treats
+    // undefined as main-thread, which would clobber main-thread
+    // module-level state when invoked from a subagent.
+    process.env.CLAUDE_CODE_REACTIVE_COMPACT = '1'
+    const messages = conversationWithOldImage()
+    const deps = createDeps()
+
+    // Use an agent-prefixed querySource — the postCompactCleanup's
+    // isMainThread check would handle this differently than undefined.
+    const subagentSource = 'agent:test-agent' as never
+    const result = await reactive.tryReactiveCompact(
+      {
+        hasAttempted: false,
+        querySource: subagentSource,
+        aborted: false,
+        messages,
+        cacheSafeParams: createCacheSafeParams(messages),
+      },
+      deps,
+    )
+
+    expect(result).toBe(compactResult)
+    expect(deps.runPostCompactCleanup).toHaveBeenCalledWith(subagentSource)
+  })
+
+  test('reactiveCompactOnPromptTooLong forwards options.querySource (manual /compact path)', async () => {
+    // Manual /compact path goes through reactiveCompactOnPromptTooLong
+    // directly, not via tryReactiveCompact. Verify the options.querySource
+    // also threads through.
+    process.env.CLAUDE_CODE_REACTIVE_COMPACT = '1'
+    const messages = conversationWithOldImage()
+    const deps = createDeps()
+    const cacheSafeParams = createCacheSafeParams(messages)
+
+    const outcome = await reactive.reactiveCompactOnPromptTooLong(
+      messages,
+      cacheSafeParams,
+      { trigger: 'manual', querySource: 'repl_main_thread' as never },
+      deps,
+    )
+
+    expect(outcome.ok).toBe(true)
+    expect(deps.runPostCompactCleanup).toHaveBeenCalledWith(
+      'repl_main_thread',
+    )
+  })
+
+  test('reactiveCompactOnPromptTooLong defaults to undefined when querySource omitted (manual /compact omission OK)', async () => {
+    // Manual /compact callers omit querySource by design — they're
+    // main-thread-only, and undefined is the documented safe default
+    // for runPostCompactCleanup's isMainThreadCompact check.
+    process.env.CLAUDE_CODE_REACTIVE_COMPACT = '1'
+    const messages = conversationWithOldImage()
+    const deps = createDeps()
+    const cacheSafeParams = createCacheSafeParams(messages)
+
+    const outcome = await reactive.reactiveCompactOnPromptTooLong(
+      messages,
+      cacheSafeParams,
+      { trigger: 'manual' }, // no querySource
+      deps,
+    )
+
+    expect(outcome.ok).toBe(true)
+    expect(deps.runPostCompactCleanup).toHaveBeenCalledWith(undefined)
+  })
 })
 
 function createDeps(): ReactiveCompactDeps & {

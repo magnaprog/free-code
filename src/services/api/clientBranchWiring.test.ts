@@ -250,3 +250,65 @@ describe('provider branch-wiring — auth suppression', () => {
     expect(last?.args.authToken).toBeNull()
   })
 })
+
+describe('non-direct providers — no Anthropic auth preflight', () => {
+  // Regression for round-42 fix to Codex finding #1. Pre-fix,
+  // getAnthropicClient ran `checkAndRefreshOAuthTokenIfNeeded` and
+  // `configureApiKeyHeaders` BEFORE provider dispatch. For non-direct
+  // providers (Bedrock / Vertex / Foundry / OpenAI / OpenCode Zen /
+  // Codex), that preflight read real OAuth files and could execute a
+  // user-configured apiKeyHelper shell command — even though the
+  // downstream non-direct branch never used the result.
+  //
+  // After the fix, preflight is gated on
+  // `getAPIProvider() === 'firstParty'`. The strongest regression
+  // signal we can capture in a unit test is: with NO Anthropic auth
+  // source set in env, a non-direct provider must still construct.
+  // Pre-fix, `configureApiKeyHeaders` → `getApiKeyFromApiKeyHelper`
+  // path is benign (returns undefined when no helper configured), but
+  // `getApiKey` further upstream and `isAnthropicAuthEnabled()` reach
+  // could throw. We assert construction success as a behavioral
+  // smoke check; deeper isolation would require mocking utils/auth.
+
+  beforeEach(() => {
+    captured.length = 0
+    for (const key of trackedEnv) delete process.env[key]
+    // INTENTIONALLY do not set ANTHROPIC_API_KEY. The fix means
+    // non-direct paths must not require Anthropic auth.
+  })
+
+  test('Bedrock SDK branch constructs without ANTHROPIC_API_KEY', async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = '1'
+    process.env.CLAUDE_CODE_SKIP_BEDROCK_AUTH = '1'
+    process.env.AWS_BEARER_TOKEN_BEDROCK = 'bedrock-test-token'
+    await expect(
+      getAnthropicClient({
+        maxRetries: 0,
+        model: 'anthropic.claude-3-5-sonnet-20240620-v1:0',
+      }),
+    ).resolves.toBeDefined()
+    expect(captured.pop()?.name).toBe('AnthropicBedrock')
+  })
+
+  test('OpenAI direct branch constructs without ANTHROPIC_API_KEY', async () => {
+    process.env.CLAUDE_CODE_USE_OPENAI = '1'
+    process.env.OPENAI_API_KEY = 'sk-openai-test'
+    await expect(
+      getAnthropicClient({ maxRetries: 0, model: 'gpt-4o-mini' }),
+    ).resolves.toBeDefined()
+    expect(captured.pop()?.name).toBe('Anthropic')
+  })
+
+  test('OpenCode openai_chat_completions branch constructs without ANTHROPIC_API_KEY', async () => {
+    process.env.CLAUDE_CODE_USE_OPENAI = '1'
+    process.env.CLAUDE_CODE_USE_OPENCODE_GO = '1'
+    process.env.OPENCODE_API_KEY = 'opencode-test-key'
+    await expect(
+      getAnthropicClient({
+        maxRetries: 0,
+        model: 'qwen2.5-coder-32b-instruct',
+      }),
+    ).resolves.toBeDefined()
+    expect(captured.pop()?.name).toBe('Anthropic')
+  })
+})
