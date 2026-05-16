@@ -19,6 +19,7 @@ const SECRET_KEYS = new Set([
 ])
 
 const REDACTED = '[REDACTED]'
+const TRUNCATED_MARKER_PATTERN = /…\[truncated after \d+ bytes\]$/
 
 function normalizeKey(key: string): string {
   return key.replace(/[^a-zA-Z0-9]/g, '').toLowerCase()
@@ -85,6 +86,14 @@ export function redactSecrets(input: string): string {
       /("((?:[^"\\]|\\.)*)"\s*:\s*)"((?:[^"\\]|\\.)*)"/g,
       (match: string, prefix: string, key: string) =>
         isSecretKey(decodeJsonStringLiteral(key)) ? `${prefix}"${REDACTED}"` : match,
+    )
+    .replace(
+      /("((?:[^"\\]|\\.)*)"\s*:\s*)"((?:[^"\\]|\\.)*)$/g,
+      (match: string, prefix: string, key: string) => {
+        if (!isSecretKey(decodeJsonStringLiteral(key))) return match
+        const marker = match.match(TRUNCATED_MARKER_PATTERN)?.[0] ?? ''
+        return `${prefix}"${REDACTED}"${marker}`
+      },
     )
     .replace(/\bBearer\s+[-._~+/A-Za-z0-9]+=*/gi, `Bearer ${REDACTED}`)
     .replace(

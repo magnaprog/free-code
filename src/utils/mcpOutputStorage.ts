@@ -15,6 +15,38 @@ import {
   safeFilenameFromToolUseId,
 } from './toolResultStorage.js'
 
+export const MAX_MCP_BINARY_CONTENT_BYTES = 25 * 1024 * 1024
+
+export type McpBinaryBudget = {
+  usedBytes: number
+}
+
+export function estimateBase64DecodedBytes(base64Data: string): number {
+  const trimmed = base64Data.replace(/\s/g, '')
+  if (trimmed.length === 0) return 0
+  const padding = trimmed.endsWith('==') ? 2 : trimmed.endsWith('=') ? 1 : 0
+  return Math.max(0, Math.floor((trimmed.length * 3) / 4) - padding)
+}
+
+export function reserveMcpBinaryBytes(
+  base64Data: string,
+  budget: McpBinaryBudget,
+  sourceDescription: string,
+): { ok: true } | { ok: false; message: string } {
+  const byteCount = estimateBase64DecodedBytes(base64Data)
+  if (budget.usedBytes + byteCount > MAX_MCP_BINARY_CONTENT_BYTES) {
+    return {
+      ok: false,
+      message:
+        `${sourceDescription}Binary content omitted: MCP binary output would exceed ` +
+        `${formatFileSize(MAX_MCP_BINARY_CONTENT_BYTES)} for this result ` +
+        `(${formatFileSize(budget.usedBytes + byteCount)} requested).`,
+    }
+  }
+  budget.usedBytes += byteCount
+  return { ok: true }
+}
+
 /**
  * Generates a format description string based on the MCP result type and schema.
  */

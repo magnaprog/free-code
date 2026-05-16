@@ -74,7 +74,6 @@ import {
   errorMessage,
   TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
 } from '../../utils/errors.js'
-import { formatFileSize } from '../../utils/format.js'
 import { getMCPUserAgent } from '../../utils/http.js'
 import { maybeNotifyIDEConnected } from '../../utils/ide.js'
 import { maybeResizeAndDownsampleImageBuffer } from '../../utils/imageResizer.js'
@@ -83,7 +82,9 @@ import {
   getBinaryBlobSavedMessage,
   getFormatDescription,
   getLargeOutputInstructions,
+  type McpBinaryBudget,
   persistBinaryContent,
+  reserveMcpBinaryBytes,
 } from '../../utils/mcpOutputStorage.js'
 import {
   getContentSizeEstimate,
@@ -223,36 +224,6 @@ const DEFAULT_MCP_TOOL_TIMEOUT_MS = 100_000_000
  * docs into tool.description; this caps the p95 tail without losing the intent.
  */
 const MAX_MCP_DESCRIPTION_LENGTH = 2048
-const MAX_MCP_BINARY_CONTENT_BYTES = 25 * 1024 * 1024
-
-type McpBinaryBudget = {
-  usedBytes: number
-}
-
-function estimateBase64DecodedBytes(data: string): number {
-  const trimmed = data.trim()
-  const padding = trimmed.endsWith('==') ? 2 : trimmed.endsWith('=') ? 1 : 0
-  return Math.max(0, Math.floor((trimmed.length * 3) / 4) - padding)
-}
-
-function reserveMcpBinaryBytes(
-  base64Data: string,
-  budget: McpBinaryBudget,
-  sourceDescription: string,
-): { ok: true } | { ok: false; message: string } {
-  const byteCount = estimateBase64DecodedBytes(base64Data)
-  if (budget.usedBytes + byteCount > MAX_MCP_BINARY_CONTENT_BYTES) {
-    return {
-      ok: false,
-      message:
-        `${sourceDescription}Binary content omitted: MCP binary output would exceed ` +
-        `${formatFileSize(MAX_MCP_BINARY_CONTENT_BYTES)} for this tool result ` +
-        `(${formatFileSize(budget.usedBytes + byteCount)} requested).`,
-    }
-  }
-  budget.usedBytes += byteCount
-  return { ok: true }
-}
 
 /**
  * Gets the timeout for MCP tool calls in milliseconds.

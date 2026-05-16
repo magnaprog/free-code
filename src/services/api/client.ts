@@ -228,7 +228,10 @@ export async function getAnthropicClient({
       getRequiredNonClaudeAdapterForModel('bedrock', model) ===
         'bedrock-converse'
     ) {
-      const bedrockConverseFetch = createBedrockConverseFetch()
+      const bedrockConverseFetch = createBedrockConverseFetch(
+        undefined,
+        resolvedFetch,
+      )
       const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
         ...NON_DIRECT_ARGS,
         ...NON_DIRECT_ENV_BEARER_SUPPRESSION,

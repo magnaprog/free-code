@@ -223,11 +223,13 @@ import {
   logEvent,
 } from '../analytics/index.js'
 import {
+  canUseCachedMicrocompactForQuery,
   consumePendingCacheEdits,
   getPinnedCacheEdits,
   markToolsSentToAPIState,
   pinCacheEdits,
 } from '../compact/microCompact.js'
+import { suppressCompactWarning } from '../compact/compactWarningState.js'
 import { getInitializationStatus } from '../lsp/manager.js'
 import { isToolFromMcpServer } from '../mcp/utils.js'
 import { withStreamingVCR, withVCR } from '../vcr.js'
@@ -249,6 +251,7 @@ import {
 import {
   CACHE_TTL_1HOUR_MS,
   checkResponseForCacheBreak,
+  notifyCacheDeletion,
   recordPromptState,
 } from './promptCacheBreakDetection.js'
 import {
@@ -1252,11 +1255,8 @@ async function* queryModel(
     )
   }
   const cacheEditingSourceEligible =
-    getAPIProvider() === 'firstParty' &&
-    options.querySource !== undefined &&
-    isMainThreadQuerySource(options.querySource)
-  const canUseCachedMCForQuery =
-    cachedMCEnabled && cacheEditingSourceEligible
+    canUseCachedMicrocompactForQuery(options.querySource)
+  const canUseCachedMCForQuery = cachedMCEnabled && cacheEditingSourceEligible
 
   const useGlobalCacheFeature = shouldUseGlobalCacheScope()
   const willDefer = (t: Tool) =>
@@ -2452,18 +2452,6 @@ async function* queryModel(
         })
       }
 
-      // Check if the cache actually broke based on response tokens
-      if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
-        void checkResponseForCacheBreak(
-          options.querySource,
-          usage.cache_read_input_tokens,
-          usage.cache_creation_input_tokens,
-          messages,
-          options.agentId,
-          streamRequestId,
-        )
-      }
-
       // Process fallback percentage header and quota status if available
       // streamResponse is set when the stream is created in the withRetry callback above
       // TypeScript's control flow analysis can't track that streamResponse is set in the callback
@@ -2872,6 +2860,25 @@ async function* queryModel(
         options.model,
       )
     }
+  }
+
+  if (consumedCacheEdits?.edits.length) {
+    suppressCompactWarning()
+    if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
+      notifyCacheDeletion(options.querySource, options.agentId)
+    }
+  }
+
+  // Check if the cache actually broke based on response tokens
+  if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
+    void checkResponseForCacheBreak(
+      options.querySource,
+      usage.cache_read_input_tokens,
+      usage.cache_creation_input_tokens,
+      messages,
+      options.agentId,
+      streamRequestId,
+    )
   }
 
   // Mark all registered tools as sent to API so they become eligible for deletion

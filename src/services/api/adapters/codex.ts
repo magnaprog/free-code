@@ -42,6 +42,21 @@ export const CODEX_MODELS = CHATGPT_CODEX_MODELS.map(m => ({
 const OPENAI_REASONING_CACHE_LIMIT = 200
 const reasoningItemsByToolCallId = new Map<string, Record<string, unknown>[]>()
 
+function isOfficialOpenAIResponsesUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url)
+    return (
+      parsed.protocol === 'https:' &&
+      parsed.hostname === 'api.openai.com' &&
+      parsed.username === '' &&
+      parsed.password === '' &&
+      (parsed.port === '' || parsed.port === '443')
+    )
+  } catch {
+    return false
+  }
+}
+
 /**
  * Preserves known OpenAI Responses IDs and maps legacy Claude defaults to
  * equivalent Codex-family fallbacks.
@@ -59,10 +74,7 @@ export function mapClaudeModelToCodex(
   options: TranslationOptions = {},
 ): string {
   if (!claudeModel) return DEFAULT_CODEX_MODEL
-  if (
-    options.targetBackend === 'openai-responses' &&
-    claudeModel === process.env.ANTHROPIC_CUSTOM_MODEL_OPTION
-  ) {
+  if (claudeModel === process.env.ANTHROPIC_CUSTOM_MODEL_OPTION) {
     return claudeModel
   }
   const preserveOpenAIResponsesModelIds =
@@ -1489,6 +1501,8 @@ export function createOpenAIResponsesFetch(
       preserveOpenAIResponsesModelIds: true,
       targetBackend: 'openai-responses',
     })
+    const shouldSendOpenAIMetadata =
+      !suppressOpenAIMetadata && isOfficialOpenAIResponsesUrl(responsesUrl)
     const openAIResponse = await upstreamFetch(responsesUrl, {
       ...init,
       method: 'POST',
@@ -1496,11 +1510,11 @@ export function createOpenAIResponsesFetch(
         'Content-Type': 'application/json',
         Accept: codexBody.stream ? 'text/event-stream' : 'application/json',
         Authorization: `Bearer ${apiKey}`,
-        ...(!suppressOpenAIMetadata &&
+        ...(shouldSendOpenAIMetadata &&
           process.env.OPENAI_ORG_ID && {
             'OpenAI-Organization': process.env.OPENAI_ORG_ID,
           }),
-        ...(!suppressOpenAIMetadata &&
+        ...(shouldSendOpenAIMetadata &&
           process.env.OPENAI_PROJECT_ID && {
             'OpenAI-Project': process.env.OPENAI_PROJECT_ID,
           }),

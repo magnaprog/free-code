@@ -61,6 +61,16 @@ let pendingCacheEdits:
   | import('./cachedMicrocompact.js').CacheEditsBlock
   | null = null
 
+export function canUseCachedMicrocompactForQuery(
+  querySource?: QuerySource,
+): boolean {
+  return (
+    querySource !== undefined &&
+    querySource.startsWith('repl_main_thread') &&
+    getAPIProvider() === 'firstParty'
+  )
+}
+
 async function getCachedMCModule(): Promise<
   typeof import('./cachedMicrocompact.js')
 > {
@@ -278,18 +288,16 @@ export async function microcompactMessages(
   // tool_results in the global cachedMCState, which would cause the main
   // thread to try deleting tools that don't exist in its own conversation.
   if (
-    isMainThread &&
-    getAPIProvider() === 'firstParty' &&
+    canUseCachedMicrocompactForQuery(querySource) &&
     feature('CACHED_MICROCOMPACT')
   ) {
     const mod = await getCachedMCModule()
     const model = toolUseContext?.options.mainLoopModel ?? getMainLoopModel()
     if (
       mod.isCachedMicrocompactEnabled() &&
-      mod.isModelSupportedForCacheEditing(model) &&
-      isMainThread
+      mod.isModelSupportedForCacheEditing(model)
     ) {
-      return await cachedMicrocompactPath(messages, querySource)
+      return await cachedMicrocompactPath(messages)
     }
   }
 
@@ -312,7 +320,6 @@ export async function microcompactMessages(
  */
 async function cachedMicrocompactPath(
   messages: Message[],
-  querySource: QuerySource | undefined,
 ): Promise<MicrocompactResult> {
   const mod = await getCachedMCModule()
   const state = ensureCachedMCState()
@@ -362,17 +369,6 @@ async function cachedMicrocompactPath(
       threshold: config.triggerThreshold,
       keepRecent: config.keepRecent,
     })
-
-    // Suppress warning after successful compaction
-    suppressCompactWarning()
-
-    // Notify cache break detection that cache reads will legitimately drop
-    if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
-      // Pass the actual querySource — main-thread detection prefix-matches
-      // so output-style variants enter here, and getTrackingKey keys on the
-      // full source string, not the 'repl_main_thread' prefix.
-      notifyCacheDeletion(querySource ?? 'repl_main_thread')
-    }
 
     // Return messages unchanged - cache_reference and cache_edits are added at API layer
     // Boundary message is deferred until after API response so we can use

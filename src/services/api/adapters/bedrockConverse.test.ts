@@ -12,6 +12,23 @@ function parseSseData(text: string): Record<string, unknown>[] {
 }
 
 describe('bedrock converse fetch adapter translation', () => {
+  test('uses upstream fetch for pass-through routes', async () => {
+    const dispatcher = { name: 'bedrock-dispatcher' }
+    let observedInit: (RequestInit & { dispatcher?: unknown }) | undefined
+    const upstreamFetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      observedInit = init as RequestInit & { dispatcher?: unknown }
+      return new Response('ok')
+    }) as typeof fetch
+    const fetch = createBedrockConverseFetch(undefined, upstreamFetch)
+
+    const response = await fetch('https://example.test/other', {
+      dispatcher,
+    } as RequestInit & { dispatcher: unknown })
+
+    expect(await response.text()).toBe('ok')
+    expect(observedInit?.dispatcher).toBe(dispatcher)
+  })
+
   test('maps Anthropic request controls to Converse fields', () => {
     const request =
       bedrockConverseFetchAdapterTestHooks.translateToConverseRequest({

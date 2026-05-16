@@ -16,6 +16,7 @@ import { tokenCountWithEstimation } from '../../utils/tokens.js'
 import { getMaxOutputTokensForModel } from '../api/claude.js'
 import { notifyCompaction } from '../api/promptCacheBreakDetection.js'
 import { setLastSummarizedMessageId } from '../SessionMemory/sessionMemoryUtils.js'
+import { suppressCompactWarning } from './compactWarningState.js'
 import {
   type CompactionResult,
   compactConversation,
@@ -317,6 +318,7 @@ async function runAutoCompact(
         // and the old message UUID will no longer exist after the REPL replaces messages
         if (isMainThreadQuerySource(querySource)) {
           setLastSummarizedMessageId(undefined)
+          suppressCompactWarning()
         }
         runPostCompactCleanup(querySource)
         // Reset cache read baseline so the post-compact drop isn't flagged as a
@@ -354,6 +356,7 @@ async function runAutoCompact(
     // and the old message UUID will no longer exist in the new messages array
     if (isMainThreadQuerySource(querySource)) {
       setLastSummarizedMessageId(undefined)
+      suppressCompactWarning()
     }
     runPostCompactCleanup(querySource)
 

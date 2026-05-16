@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  estimateBase64DecodedBytes,
+  reserveMcpBinaryBytes,
+} from './mcpOutputStorage.js'
+import {
   safeFilenameFromToolUseId,
   sanitizeToolResultId,
 } from './toolResultStorage.js'
@@ -47,6 +51,29 @@ describe('sanitizeToolResultId', () => {
     // mostly fires on the empty-string case rather than via stripping.
     const result = sanitizeToolResultId('')
     expect(result.startsWith('toolu_anon_')).toBe(true)
+  })
+})
+
+describe('MCP binary output budget', () => {
+  test('estimates base64 decoded bytes before decoding', () => {
+    expect(estimateBase64DecodedBytes('')).toBe(0)
+    expect(estimateBase64DecodedBytes('TQ==')).toBe(1)
+    expect(estimateBase64DecodedBytes('TWE=')).toBe(2)
+    expect(estimateBase64DecodedBytes('TWFu')).toBe(3)
+    expect(estimateBase64DecodedBytes('T W\nF u')).toBe(3)
+  })
+
+  test('reserves an aggregate budget across MCP binary blobs', () => {
+    const budget = { usedBytes: 25 * 1024 * 1024 - 1 }
+
+    expect(reserveMcpBinaryBytes('TQ==', budget, '')).toEqual({ ok: true })
+    const rejected = reserveMcpBinaryBytes('TQ==', budget, '')
+
+    expect(rejected.ok).toBe(false)
+    if (!rejected.ok) {
+      expect(rejected.message).toContain('omitted')
+      expect(rejected.message).toContain('25MB')
+    }
   })
 })
 

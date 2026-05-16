@@ -16,6 +16,7 @@ export type PinnedCacheEdits = {
 export type CachedMCState = {
   pinnedEdits: PinnedCacheEdits[]
   registeredTools: Set<string>
+  pendingToolOrder: string[]
   toolOrder: string[]
   deletedRefs: Set<string>
 }
@@ -24,6 +25,7 @@ export function createCachedMCState(): CachedMCState {
   return {
     pinnedEdits: [],
     registeredTools: new Set(),
+    pendingToolOrder: [],
     toolOrder: [],
     deletedRefs: new Set(),
   }
@@ -51,7 +53,7 @@ export function registerToolResult(
   }
 
   state.registeredTools.add(toolUseId)
-  state.toolOrder.push(toolUseId)
+  state.pendingToolOrder.push(toolUseId)
 }
 
 export function registerToolMessage(
@@ -94,11 +96,18 @@ export function createCacheEditsBlock(
   }
 }
 
-export function markToolsSentToAPI(_state: CachedMCState): void {}
+export function markToolsSentToAPI(state: CachedMCState): void {
+  if (state.pendingToolOrder.length === 0) {
+    return
+  }
+  state.toolOrder.push(...state.pendingToolOrder)
+  state.pendingToolOrder.length = 0
+}
 
 export function resetCachedMCState(state: CachedMCState): void {
   state.pinnedEdits.length = 0
   state.registeredTools.clear()
+  state.pendingToolOrder.length = 0
   state.toolOrder.length = 0
   state.deletedRefs.clear()
 }

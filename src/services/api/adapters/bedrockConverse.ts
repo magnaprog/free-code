@@ -706,6 +706,7 @@ function createBedrockErrorResponse(status: number, error: unknown): Response {
 export function createBedrockConverseFetch(
   runtimeClientFactory: BedrockRuntimeClientFactory = async () =>
     (await createBedrockRuntimeClient()) as BedrockRuntimeClientLike,
+  upstreamFetch: typeof globalThis.fetch = globalThis.fetch,
 ): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
   return async (
     input: RequestInfo | URL,
@@ -721,7 +722,7 @@ export function createBedrockConverseFetch(
       return countTokensUnsupportedResponse()
     }
     if (route === 'other') {
-      return globalThis.fetch(input, init)
+      return upstreamFetch(input, init)
     }
 
     const anthropicBody = await parseAnthropicBody(init)

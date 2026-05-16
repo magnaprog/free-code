@@ -13,9 +13,41 @@
  * loop. The summation + padding multiplier is verified end-to-end
  * for one representative case.
  */
-import { describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
 import type { Message } from '../../types/message.js'
-import { estimateMessageTokens } from './microCompact.js'
+import {
+  canUseCachedMicrocompactForQuery,
+  estimateMessageTokens,
+} from './microCompact.js'
+import {
+  createCachedMCState,
+  getToolResultsToDelete,
+  markToolsSentToAPI,
+  registerToolResult,
+} from './cachedMicrocompact.js'
+
+const providerEnvKeys = [
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CODE_USE_FOUNDRY',
+  'CLAUDE_CODE_USE_OPENAI',
+  'CLAUDE_CODE_USE_OPENCODE_GO',
+] as const
+const originalProviderEnv = Object.fromEntries(
+  providerEnvKeys.map(key => [key, process.env[key]]),
+)
+
+afterEach(() => {
+  for (const key of providerEnvKeys) {
+    const value = originalProviderEnv[key]
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+})
+
+function clearProviderEnv() {
+  for (const key of providerEnvKeys) delete process.env[key]
+}
 
 // `roughTokenCountEstimation` returns ceil(content.length / 4) by default
 // (see services/tokenEstimation.ts). All assertions below use the
@@ -46,6 +78,38 @@ function assistantMessageWithBlocks(blocks: unknown[]): Message {
     message: { role: 'assistant', content: blocks as never, id: 'msg-1' },
   } as unknown as Message
 }
+
+describe('cached microcompact state', () => {
+  test('does not make newly registered tool results eligible before a successful send', () => {
+    const state = createCachedMCState()
+    for (const id of ['tool-1', 'tool-2']) {
+      registerToolResult(state, id)
+    }
+
+    expect(state.toolOrder).toEqual([])
+    expect(state.pendingToolOrder).toEqual(['tool-1', 'tool-2'])
+    expect(getToolResultsToDelete(state)).toEqual([])
+
+    markToolsSentToAPI(state)
+
+    expect(state.toolOrder).toEqual(['tool-1', 'tool-2'])
+    expect(state.pendingToolOrder).toEqual([])
+  })
+
+  test('cached microcompact excludes SDK and non-first-party providers', () => {
+    clearProviderEnv()
+    expect(canUseCachedMicrocompactForQuery('repl_main_thread')).toBe(true)
+    expect(
+      canUseCachedMicrocompactForQuery(
+        'repl_main_thread:outputStyle:custom' as never,
+      ),
+    ).toBe(true)
+    expect(canUseCachedMicrocompactForQuery('sdk')).toBe(false)
+
+    process.env.CLAUDE_CODE_USE_BEDROCK = '1'
+    expect(canUseCachedMicrocompactForQuery('repl_main_thread')).toBe(false)
+  })
+})
 
 describe('estimateMessageTokens', () => {
   test('returns 0 for empty message list', () => {

@@ -73,6 +73,34 @@ describe('codex fetch adapter translation', () => {
     }
   })
 
+  test('preserves custom model option on the ChatGPT Codex backend', () => {
+    const originalCustomModel = process.env.ANTHROPIC_CUSTOM_MODEL_OPTION
+    process.env.ANTHROPIC_CUSTOM_MODEL_OPTION = 'custom-codex-model'
+    try {
+      const { codexBody, codexModel } =
+        codexFetchAdapterTestHooks.translateToCodexBody(
+          {
+            model: 'custom-codex-model',
+            stream: false,
+            messages: [{ role: 'user', content: 'hello' }],
+          },
+          {
+            preserveOpenAIResponsesModelIds: false,
+            targetBackend: 'chatgpt-codex',
+          },
+        )
+
+      expect(codexModel).toBe('custom-codex-model')
+      expect(codexBody.model).toBe('custom-codex-model')
+    } finally {
+      if (originalCustomModel === undefined) {
+        delete process.env.ANTHROPIC_CUSTOM_MODEL_OPTION
+      } else {
+        process.env.ANTHROPIC_CUSTOM_MODEL_OPTION = originalCustomModel
+      }
+    }
+  })
+
   test('applies explicit model mapper before OpenAI Responses translation', () => {
     const { codexBody, codexModel } =
       codexFetchAdapterTestHooks.translateToCodexBody(
@@ -771,6 +799,42 @@ describe('codex fetch adapter translation', () => {
     expect(text).toContain('event: error')
     expect(text).toContain('"message":"stream transport failed"')
     expect(text).not.toContain('event: message_stop')
+  })
+
+  test('does not send OpenAI org/project headers to custom gateways', async () => {
+    const originalOrg = process.env.OPENAI_ORG_ID
+    const originalProject = process.env.OPENAI_PROJECT_ID
+    process.env.OPENAI_ORG_ID = 'org-secret'
+    process.env.OPENAI_PROJECT_ID = 'project-secret'
+    let observedHeaders: Headers | undefined
+    try {
+      const upstreamFetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        observedHeaders = new Headers(init?.headers)
+        return new Response(JSON.stringify({ output: [] }), {
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }) as typeof fetch
+      const fetch = createOpenAIResponsesFetch('sk-test', 'https://gateway.example/v1', {
+        upstreamFetch,
+      })
+
+      await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        body: JSON.stringify({
+          model: 'gpt-5.5',
+          stream: false,
+          messages: [{ role: 'user', content: 'hello' }],
+        }),
+      })
+
+      expect(observedHeaders?.has('OpenAI-Organization')).toBe(false)
+      expect(observedHeaders?.has('OpenAI-Project')).toBe(false)
+    } finally {
+      if (originalOrg === undefined) delete process.env.OPENAI_ORG_ID
+      else process.env.OPENAI_ORG_ID = originalOrg
+      if (originalProject === undefined) delete process.env.OPENAI_PROJECT_ID
+      else process.env.OPENAI_PROJECT_ID = originalProject
+    }
   })
 
   test('bounds OpenAI Responses non-OK error bodies before returning them', async () => {
