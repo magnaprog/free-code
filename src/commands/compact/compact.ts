@@ -19,7 +19,10 @@ import {
 } from '../../services/compact/compact.js'
 import { suppressCompactWarning } from '../../services/compact/compactWarningState.js'
 import { microcompactMessages } from '../../services/compact/microCompact.js'
-import { runPostCompactCleanup } from '../../services/compact/postCompactCleanup.js'
+import {
+  isMainThreadQuerySource,
+  runPostCompactCleanup,
+} from '../../services/compact/postCompactCleanup.js'
 import { trySessionMemoryCompaction } from '../../services/compact/sessionMemoryCompact.js'
 import { setLastSummarizedMessageId } from '../../services/SessionMemory/sessionMemoryUtils.js'
 import type { ToolUseContext } from '../../Tool.js'
@@ -80,10 +83,14 @@ export const call: LocalCommandCall = async (args, context) => {
           preCompactHookResult,
         )
         if (sessionMemoryResult) {
-          getUserContext.cache.clear?.()
-          // Pass the caller's querySource so subagent-invoked /compact
-          // doesn't clobber main-thread module-level state. Mirrors
-          // the round-40 fix to reactiveCompactOnPromptTooLong.
+          // Subagent-invoked /compact must not clobber main-thread
+          // module-level state. runPostCompactCleanup itself is
+          // querySource-aware; mirror that gating for the
+          // getUserContext cache so subagent compacts leave the main
+          // thread's user-context cache intact.
+          if (isMainThreadQuerySource(context.options.querySource)) {
+            getUserContext.cache.clear?.()
+          }
           runPostCompactCleanup(context.options.querySource)
           // Reset cache read baseline so the post-compact drop isn't flagged
           // as a break. compactConversation does this internally; SM-compact doesn't.
@@ -152,9 +159,9 @@ export const call: LocalCommandCall = async (args, context) => {
     // Suppress the "Context left until auto-compact" warning after successful compaction
     suppressCompactWarning()
 
-    getUserContext.cache.clear?.()
-    // Pass the caller's querySource so subagent-invoked /compact
-    // doesn't clobber main-thread module-level state.
+    if (isMainThreadQuerySource(context.options.querySource)) {
+      getUserContext.cache.clear?.()
+    }
     runPostCompactCleanup(context.options.querySource)
 
     return {
@@ -229,7 +236,11 @@ async function compactViaReactive(
     const outcome = await reactive.reactiveCompactOnPromptTooLong(
       messages,
       cacheSafeParams,
-      { customInstructions: mergedInstructions, trigger: 'manual' },
+      {
+        customInstructions: mergedInstructions,
+        trigger: 'manual',
+        querySource: context.options.querySource,
+      },
     )
 
     if (!outcome.ok) {

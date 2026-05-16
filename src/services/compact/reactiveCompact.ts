@@ -19,7 +19,10 @@ import {
 } from './compact.js'
 import { suppressCompactWarning } from './compactWarningState.js'
 import { groupMessagesByApiRound } from './grouping.js'
-import { runPostCompactCleanup } from './postCompactCleanup.js'
+import {
+  isMainThreadQuerySource,
+  runPostCompactCleanup,
+} from './postCompactCleanup.js'
 import { setLastSummarizedMessageId } from '../SessionMemory/sessionMemoryUtils.js'
 import { selectTailForCompaction } from './tailSelector.js'
 import {
@@ -191,7 +194,12 @@ export async function reactiveCompactOnPromptTooLong(
     deps.setLastSummarizedMessageId(undefined)
     deps.runPostCompactCleanup(options.querySource)
     deps.suppressCompactWarning()
-    deps.clearUserContextCache()
+    // Subagent-invoked reactive compact must not clobber main-thread
+    // getUserContext cache; gate on the same predicate as
+    // runPostCompactCleanup's internal isMainThreadCompact branch.
+    if (isMainThreadQuerySource(options.querySource)) {
+      deps.clearUserContextCache()
+    }
 
     logEvent('tengu_reactive_compact_succeeded', {
       triggerAuto: options.trigger === 'auto',

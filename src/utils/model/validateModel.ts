@@ -55,29 +55,34 @@ export async function validateModel(
     return { valid: true }
   }
 
-  // OpenCode Zen routing happens before the generic openai-responses check.
-  // getAPIProvider() maps both OpenAI and OpenCode to 'openai', and
-  // getRequiredNonClaudeAdapterForModel returns 'openai-responses' for
-  // every openai-provider model. But OpenCode supports three runtime
-  // transports (anthropic_messages, openai_responses,
-  // openai_chat_completions) selected per-model — and is wired via
-  // OPENCODE_API_KEY, not OPENAI_API_KEY. Without this gate, a user
-  // running `CLAUDE_CODE_USE_OPENCODE_GO=1 OPENCODE_API_KEY=...` with
-  // no OPENAI_API_KEY would have every model rejected here even
-  // though the runtime client would have routed them correctly.
-  const { isOpenCodeGoEnabled, getOpenCodeGoApiKey, getOpenCodeTransportForModel } =
-    await import('../../services/api/openCodeGo.js')
-  if (isOpenCodeGoEnabled() && getOpenCodeGoApiKey()) {
-    const transport = getOpenCodeTransportForModel(normalizedModel)
-    if (transport === 'gemini_native') {
-      return {
-        valid: false,
-        error: `Model '${normalizedModel}' (Gemini via OpenCode Zen) requires the native /models/{id} adapter, which is not wired yet.`,
+  // OpenCode Zen routing happens before the generic openai-responses check,
+  // but ONLY when getAPIProvider() actually selects OpenCode/OpenAI.
+  // getAPIProvider precedence is Bedrock > Vertex > Foundry > openai >
+  // firstParty (providers.ts:6-17). If a higher-precedence provider env
+  // is set, the runtime client dispatches there even when
+  // CLAUDE_CODE_USE_OPENCODE_GO=1 is also set, so OpenCode-based
+  // validation would accept a model that the runtime actually rejects.
+  // Gating on getAPIProvider() === 'openai' keeps validation aligned
+  // with runtime dispatch.
+  const apiProvider = getAPIProvider()
+  if (apiProvider === 'openai') {
+    const {
+      isOpenCodeGoEnabled,
+      getOpenCodeGoApiKey,
+      getOpenCodeTransportForModel,
+    } = await import('../../services/api/openCodeGo.js')
+    if (isOpenCodeGoEnabled() && getOpenCodeGoApiKey()) {
+      const transport = getOpenCodeTransportForModel(normalizedModel)
+      if (transport === 'gemini_native') {
+        return {
+          valid: false,
+          error: `Model '${normalizedModel}' (Gemini via OpenCode Zen) requires the native /models/{id} adapter, which is not wired yet.`,
+        }
       }
+      // anthropic_messages, openai_responses, openai_chat_completions all wired.
+      validModelCache.set(normalizedModel, true)
+      return { valid: true }
     }
-    // anthropic_messages, openai_responses, openai_chat_completions all wired.
-    validModelCache.set(normalizedModel, true)
-    return { valid: true }
   }
 
   const requiredAdapter = getRequiredNonClaudeAdapterForModel(

@@ -28,15 +28,21 @@ import { resetMicrocompactState } from './microCompact.js'
  * pass querySource — undefined is only safe for callers that are
  * genuinely main-thread-only (/compact, /clear).
  */
-export function runPostCompactCleanup(querySource?: QuerySource): void {
-  // Subagents (agent:*) run in the same process and share module-level
-  // state with the main thread. Only reset main-thread module-level state
-  // (context-collapse, memory file cache) for main-thread compacts.
-  // Same startsWith pattern as isMainThread (index.ts:188).
-  const isMainThreadCompact =
+// Subagents (agent:*) run in the same process and share module-level
+// state with the main thread. Use this predicate to gate any cache
+// clear or module-state reset that would clobber main-thread state
+// when invoked from a subagent.
+// Same startsWith pattern as isMainThread (index.ts:188).
+export function isMainThreadQuerySource(querySource?: QuerySource): boolean {
+  return (
     querySource === undefined ||
     querySource.startsWith('repl_main_thread') ||
     querySource === 'sdk'
+  )
+}
+
+export function runPostCompactCleanup(querySource?: QuerySource): void {
+  const isMainThreadCompact = isMainThreadQuerySource(querySource)
 
   resetMicrocompactState()
   if (feature('CONTEXT_COLLAPSE')) {

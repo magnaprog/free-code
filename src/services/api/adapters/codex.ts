@@ -607,14 +607,23 @@ async function translateCodexStreamToAnthropic(
 
         const decoder = new TextDecoder()
         let buffer = ''
+        let streamDone = false
 
-        while (true) {
+        // Flush leftover buffer on `done` so the final SSE frame is
+        // processed even when the upstream ends without a trailing
+        // `\n`. Mirrors the round-39 fix in openaiChatCompletions.ts.
+        // Codex/OpenAI Responses can emit response.completed (final
+        // usage + finish reason) in the last frame.
+        while (!streamDone) {
           const { done, value } = await reader.read()
-          if (done) break
-
-          buffer += decoder.decode(value, { stream: true })
+          if (done) {
+            buffer += decoder.decode()
+            streamDone = true
+          } else {
+            buffer += decoder.decode(value, { stream: true })
+          }
           const lines = buffer.split('\n')
-          buffer = lines.pop() || ''
+          buffer = streamDone ? '' : lines.pop() || ''
 
           for (const line of lines) {
             const trimmed = line.trim()
