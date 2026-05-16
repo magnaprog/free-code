@@ -16,22 +16,6 @@ type ProcessQueueResult = {
 }
 
 /**
- * Check if a queued command is a slash command (value starts with '/').
- */
-function isSlashCommand(cmd: QueuedCommand): boolean {
-  if (typeof cmd.value === 'string') {
-    return cmd.value.trim().startsWith('/')
-  }
-  // For ContentBlockParam[], check the first text block
-  for (const block of cmd.value) {
-    if (block.type === 'text') {
-      return block.text.trim().startsWith('/')
-    }
-  }
-  return false
-}
-
-/**
  * Processes commands from the queue.
  *
  * User-facing commands (prompts, bash, slash) are drained ONE at a time so
