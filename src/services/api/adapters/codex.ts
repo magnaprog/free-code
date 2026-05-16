@@ -1270,6 +1270,9 @@ export function createCodexFetch(
           'OpenAI-Beta': 'responses=experimental',
         },
         body: JSON.stringify(codexBody),
+        // Forward CLI abort signal so Ctrl-C tears down the upstream
+        // streaming connection instead of leaking it.
+        signal: init?.signal,
       })
     }
 
@@ -1353,6 +1356,9 @@ export function createOpenAIResponsesFetch(
         }),
       },
       body: JSON.stringify(codexBody),
+      // Forward CLI abort signal so Ctrl-C tears down the upstream
+      // streaming connection instead of leaking it.
+      signal: init?.signal,
     })
 
     if (!openAIResponse.ok) {

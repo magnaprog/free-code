@@ -176,12 +176,26 @@ export async function getAnthropicClient({
     defaultHeaders['x-anthropic-additional-protection'] = 'true'
   }
 
-  logForDebugging('[API:auth] OAuth token check starting')
-  await checkAndRefreshOAuthTokenIfNeeded()
-  logForDebugging('[API:auth] OAuth token check complete')
+  // Anthropic auth preflight (OAuth refresh + apiKeyHelper) only applies to
+  // the direct first-party path. Running it for non-direct providers
+  // (Bedrock / Vertex / Foundry / OpenAI direct / OpenCode Zen / Codex)
+  // wastes network on Anthropic OAuth endpoints and can have user-visible
+  // side effects: apiKeyHelper may be a shell command (`getApiKeyFromApiKeyHelper`
+  // at utils/auth.ts:471-563) and OAuth refresh may rotate stored tokens
+  // (utils/auth.ts:1577-1689). Gate on the actual provider so non-direct
+  // clients reach their own auth pipeline (AWS creds, Azure tokens,
+  // googleAuth, Codex OAuth, OpenCode/OpenAI bearer keys) without touching
+  // Anthropic auth state.
+  const apiProvider = getAPIProvider()
+  const isFirstPartyDirect = apiProvider === 'firstParty'
+  if (isFirstPartyDirect) {
+    logForDebugging('[API:auth] OAuth token check starting')
+    await checkAndRefreshOAuthTokenIfNeeded()
+    logForDebugging('[API:auth] OAuth token check complete')
 
-  if (!isClaudeAISubscriber()) {
-    await configureApiKeyHeaders(defaultHeaders, getIsNonInteractiveSession())
+    if (!isClaudeAISubscriber()) {
+      await configureApiKeyHeaders(defaultHeaders, getIsNonInteractiveSession())
+    }
   }
 
   const resolvedFetch = buildFetch(fetchOverride, source)

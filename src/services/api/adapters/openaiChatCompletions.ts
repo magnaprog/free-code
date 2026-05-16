@@ -862,6 +862,9 @@ export function createOpenAIChatCompletionsFetch(
         [authHeader]: authValue,
       },
       body: JSON.stringify(chatBody),
+      // Propagate abort signal so CLI Ctrl-C / streaming cancellation
+      // tears down the upstream connection rather than leaking it.
+      signal: init?.signal,
     })
 
     if (!chatResponse.ok) {

@@ -700,14 +700,26 @@ export function createBedrockConverseFetch(
         ConverseStreamCommand,
       } = await import('@aws-sdk/client-bedrock-runtime')
 
+      // Forward CLI abort signal into the AWS SDK call so Ctrl-C tears
+      // down the upstream Bedrock streaming connection instead of
+      // leaking it. The smithy HTTP handler honors abortSignal on
+      // send(); ConverseStreamCommand stream emit completes on abort.
+      const sendOptions = init?.signal
+        ? { abortSignal: init.signal }
+        : undefined
+
       if (anthropicBody.stream === true) {
         const output = await client.send(
           new ConverseStreamCommand(converseRequest),
+          sendOptions,
         )
         return createAnthropicStreamFromBedrock(output.stream, model)
       }
 
-      const output = await client.send(new ConverseCommand(converseRequest))
+      const output = await client.send(
+        new ConverseCommand(converseRequest),
+        sendOptions,
+      )
       return translateConverseOutputToAnthropic(output, model)
     } catch (error) {
       const status =
