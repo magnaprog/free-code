@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'bun:test'
 import {
   getOpenCodeAnthropicBaseUrl,
+  getOpenCodeGoApiKey,
   getOpenCodeGoBaseUrl,
   getOpenCodeGoModel,
   getOpenCodeTransportForModel,
+  isOpenCodeGoEnabled,
   normalizeOpenCodeGoModel,
   OPENCODE_ZEN_DEFAULT_BASE_URL,
 } from './openCodeGo.js'
@@ -93,6 +95,54 @@ describe('OpenCode Zen helpers', () => {
     expect(getOpenCodeTransportForModel('opencode/gemini-3-flash')).toBe(
       'gemini_native',
     )
+  })
+
+  test('isOpenCodeGoEnabled gates on CLAUDE_CODE_USE_OPENCODE_GO truthy value', () => {
+    expect(isOpenCodeGoEnabled({})).toBe(false)
+    expect(isOpenCodeGoEnabled({ CLAUDE_CODE_USE_OPENCODE_GO: '1' })).toBe(true)
+    expect(isOpenCodeGoEnabled({ CLAUDE_CODE_USE_OPENCODE_GO: 'true' })).toBe(
+      true,
+    )
+    // Falsy values from isEnvTruthy: empty, 'false', '0', undefined.
+    expect(isOpenCodeGoEnabled({ CLAUDE_CODE_USE_OPENCODE_GO: '' })).toBe(false)
+    expect(isOpenCodeGoEnabled({ CLAUDE_CODE_USE_OPENCODE_GO: '0' })).toBe(false)
+    expect(isOpenCodeGoEnabled({ CLAUDE_CODE_USE_OPENCODE_GO: 'false' })).toBe(
+      false,
+    )
+  })
+
+  test('getOpenCodeGoApiKey follows documented env precedence', () => {
+    // OPENCODE_API_KEY wins (user-facing canonical name).
+    expect(getOpenCodeGoApiKey({ OPENCODE_API_KEY: 'a' })).toBe('a')
+    // Then legacy OPENCODE_GO_API_KEY.
+    expect(getOpenCodeGoApiKey({ OPENCODE_GO_API_KEY: 'b' })).toBe('b')
+    // Then fork-specific FREE_CODE_OPENCODE_GO_API_KEY.
+    expect(getOpenCodeGoApiKey({ FREE_CODE_OPENCODE_GO_API_KEY: 'c' })).toBe(
+      'c',
+    )
+    // Precedence: OPENCODE_API_KEY > OPENCODE_GO_API_KEY > FREE_CODE_*.
+    expect(
+      getOpenCodeGoApiKey({
+        OPENCODE_API_KEY: 'a',
+        OPENCODE_GO_API_KEY: 'b',
+        FREE_CODE_OPENCODE_GO_API_KEY: 'c',
+      }),
+    ).toBe('a')
+    expect(
+      getOpenCodeGoApiKey({
+        OPENCODE_GO_API_KEY: 'b',
+        FREE_CODE_OPENCODE_GO_API_KEY: 'c',
+      }),
+    ).toBe('b')
+    // Empty env returns undefined (no key set → caller must throw).
+    expect(getOpenCodeGoApiKey({})).toBeUndefined()
+    // Empty string treated as unset (|| falls through).
+    expect(
+      getOpenCodeGoApiKey({
+        OPENCODE_API_KEY: '',
+        OPENCODE_GO_API_KEY: 'b',
+      }),
+    ).toBe('b')
   })
 
   test('per-model transport routing — others → openai_chat_completions', () => {
