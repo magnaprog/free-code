@@ -564,6 +564,51 @@ describe('OpenAI chat completions fetch adapter', () => {
     expect(response.status).toBe(200)
   })
 
+  test('propagates abort signal to upstream fetch (round-42 / Codex #8)', async () => {
+    // Pre-fix: the adapter's upstream fetch did not pass init?.signal,
+    // so Ctrl-C / CLI streaming cancellation didn't tear down the
+    // upstream HTTP connection. Post-fix, signal: init?.signal is
+    // forwarded into globalThis.fetch.
+    let observedSignal: AbortSignal | undefined
+    globalThis.fetch = ((_input: unknown, init?: RequestInit) => {
+      observedSignal = init?.signal ?? undefined
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            id: 'cmpl-1',
+            choices: [
+              {
+                index: 0,
+                message: { content: 'ok' },
+                finish_reason: 'stop',
+              },
+            ],
+            usage: { prompt_tokens: 1, completion_tokens: 1 },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+    }) as typeof globalThis.fetch
+
+    const controller = new AbortController()
+    const fetch = createOpenAIChatCompletionsFetch('k', {
+      baseUrl: 'https://opencode.example/zen/v1',
+    })
+    await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      body: JSON.stringify({
+        model: 'qwen-test',
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+      signal: controller.signal,
+    })
+
+    // The same AbortSignal instance must propagate through to the
+    // upstream fetch. Object identity check; if pre-fix code is
+    // restored, observedSignal would be undefined.
+    expect(observedSignal).toBe(controller.signal)
+  })
+
   test('SSE parser flushes final event when stream ends without trailing newline', async () => {
     // Regression for Codex finding #9 (round 39 fix). Pre-fix, the
     // parser broke on `done` and discarded any partial line still
