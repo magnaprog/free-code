@@ -53,6 +53,16 @@ describe('secret redaction', () => {
     expect(redacted).toContain('"safe":"visible"')
   })
 
+  test('redacts truncated JSON secret values', () => {
+    const redacted = redactSecrets(
+      '{"access_token":"sk-partial-secret…[truncated after 4096 bytes]',
+    )
+
+    expect(redacted).toContain('"access_token":"[REDACTED]"')
+    expect(redacted).toContain('truncated after 4096 bytes')
+    expect(redacted).not.toContain('sk-partial-secret')
+  })
+
   test('redacts sensitive URL parameters', () => {
     const redacted = redactSecrets(
       'https://example.test/callback?code=abc&state=def&foo=bar access_token=secret',

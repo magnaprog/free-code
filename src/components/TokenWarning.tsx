@@ -3,7 +3,6 @@ import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { useSyncExternalStore } from 'react';
 import { Box, Text } from '../ink.js';
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js';
 import { calculateTokenWarningState, getEffectiveContextWindowSize, isAutoCompactEnabled } from '../services/compact/autoCompact.js';
 import { useCompactWarningSuppression } from '../services/compact/compactWarningHook.js';
 import { getUpgradeMessage } from '../utils/model/contextWindowUpgradeCheck.js';
@@ -128,7 +127,10 @@ export function TokenWarning(t0) {
   let reactiveOnlyMode = false;
   let collapseMode = false;
   if (feature("REACTIVE_COMPACT")) {
-    if (getFeatureValue_CACHED_MAY_BE_STALE("tengu_cobalt_raccoon", false)) {
+    const {
+      isReactiveOnlyMode
+    } = require("../services/compact/reactiveCompact.js") as typeof import('../services/compact/reactiveCompact.js');
+    if (isReactiveOnlyMode()) {
       reactiveOnlyMode = true;
     }
   }

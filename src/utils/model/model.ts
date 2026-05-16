@@ -36,6 +36,7 @@ import {
   OPENAI_RESPONSES_MODELS,
   getKnownNonClaudeModelCapability,
 } from './providerCapabilities.js'
+import { getOpenCodeGoModel } from '../../services/api/openCodeGo.js'
 
 export type ModelShortName = string
 export type ModelName = string
@@ -187,6 +188,12 @@ export function getRuntimeMainLoopModel(params: {
  * @returns The default model setting to use
  */
 export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
+  if (
+    getAPIProvider() === 'openai' &&
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENCODE_GO)
+  ) {
+    return getOpenCodeGoModel() || 'opencode-go/model-required'
+  }
   if (getAPIProvider() === 'openai' && process.env.OPENAI_API_KEY) {
     return process.env.OPENAI_MODEL || DEFAULT_OPENAI_RESPONSES_MODEL
   }

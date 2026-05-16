@@ -28,11 +28,12 @@ const FILES_API_BETA_HEADER = 'files-api-2025-04-14,oauth-2025-04-20'
 const ANTHROPIC_VERSION = '2023-06-01'
 
 // API base URL - uses ANTHROPIC_BASE_URL set by env-manager for the appropriate environment
-// Falls back to public API for standalone usage
+// Falls back to public API for standalone usage. Trim matches SDK env handling
+// so whitespace values resolve to the default rather than producing a malformed URL.
 function getDefaultApiBaseUrl(): string {
   return (
-    process.env.ANTHROPIC_BASE_URL ||
-    process.env.CLAUDE_CODE_API_BASE_URL ||
+    process.env.ANTHROPIC_BASE_URL?.trim() ||
+    process.env.CLAUDE_CODE_API_BASE_URL?.trim() ||
     'https://api.anthropic.com'
   )
 }

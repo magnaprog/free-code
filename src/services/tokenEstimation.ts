@@ -24,7 +24,7 @@ import {
 import { jsonStringify } from '../utils/slowOperations.js'
 import { isToolReferenceBlock } from '../utils/toolSearch.js'
 import { getAPIMetadata, getExtraBodyParams } from './api/claude.js'
-import { translateToConverseRequest } from './api/bedrock-converse-fetch-adapter.js'
+import { translateToConverseRequest } from './api/adapters/bedrockConverse.js'
 import { getAnthropicClient } from './api/client.js'
 import { withTokenCountVCR } from './vcr.js'
 import { getRequiredNonClaudeAdapterForModel } from '../utils/model/providerCapabilities.js'

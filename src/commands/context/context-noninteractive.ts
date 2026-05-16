@@ -101,11 +101,17 @@ function formatContextAsMarkdownTable(data: ContextData): string {
     messageBreakdown,
     systemTools,
     systemPromptSections,
+    tokenLedger,
   } = data
 
   let output = `## Context Usage\n\n`
   output += `**Model:** ${model}  \n`
   output += `**Tokens:** ${formatTokens(totalTokens)} / ${formatTokens(rawMaxTokens)} (${percentage}%)\n`
+  if (tokenLedger) {
+    output += `**Effective window:** ${formatTokens(tokenLedger.effectiveWindow)} (output reserve ${formatTokens(tokenLedger.outputReservation)})\n`
+    output += `**Thresholds:** warn ${formatTokens(tokenLedger.threshold.warn)} · compact ${formatTokens(tokenLedger.threshold.compact)} · block ${formatTokens(tokenLedger.threshold.block)}\n`
+    output += `**Compaction config:** ${tokenLedger.configSummary}\n`
+  }
 
   // Context-collapse status. Always show when the runtime gate is on —
   // the user needs to know which strategy is managing their context
@@ -143,6 +149,9 @@ function formatContextAsMarkdownTable(data: ContextData): string {
       } else if (h.emptySpawnWarningEmitted) {
         output += `**Collapse idle:** ${h.totalEmptySpawns} consecutive empty runs\n`
       }
+    } else {
+      output +=
+        '**Context strategy:** normal (CONTEXT_COLLAPSE enabled but inactive/no-op)\n'
     }
   }
   output += '\n'
@@ -185,6 +194,16 @@ function formatContextAsMarkdownTable(data: ContextData): string {
       output += `| Autocompact buffer | ${formatTokens(autocompactCategory.tokens)} | ${percentDisplay}% |\n`
     }
 
+    output += `\n`
+  }
+
+  if (tokenLedger?.topContributors.length) {
+    output += `### Top Contributors\n\n`
+    output += `| Kind | Description | Tokens |\n`
+    output += `|------|-------------|--------|\n`
+    for (const contributor of tokenLedger.topContributors.slice(0, 5)) {
+      output += `| ${contributor.kind} | ${escapeMarkdownTableCell(contributor.description)} | ${formatTokens(contributor.tokens)} |\n`
+    }
     output += `\n`
   }
 
@@ -322,4 +341,8 @@ function formatContextAsMarkdownTable(data: ContextData): string {
   }
 
   return output
+}
+
+function escapeMarkdownTableCell(value: string): string {
+  return value.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ')
 }

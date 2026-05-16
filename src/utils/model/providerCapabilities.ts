@@ -7,6 +7,7 @@ export type ModelProviderAdapterId =
   | 'anthropic-foundry'
   | 'openai-responses'
   | 'chatgpt-codex'
+  | 'opencode-go'
   | 'bedrock-converse'
   | 'vertex-gemini'
   | 'azure-foundry-inference'

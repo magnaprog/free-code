@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test'
-import { bedrockConverseFetchAdapterTestHooks } from './bedrock-converse-fetch-adapter.js'
+import {
+  bedrockConverseFetchAdapterTestHooks,
+  createBedrockConverseFetch,
+} from './bedrockConverse.js'
 
 function parseSseData(text: string): Record<string, unknown>[] {
   return text
@@ -9,6 +12,23 @@ function parseSseData(text: string): Record<string, unknown>[] {
 }
 
 describe('bedrock converse fetch adapter translation', () => {
+  test('uses upstream fetch for pass-through routes', async () => {
+    const dispatcher = { name: 'bedrock-dispatcher' }
+    let observedInit: (RequestInit & { dispatcher?: unknown }) | undefined
+    const upstreamFetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      observedInit = init as RequestInit & { dispatcher?: unknown }
+      return new Response('ok')
+    }) as typeof fetch
+    const fetch = createBedrockConverseFetch(undefined, upstreamFetch)
+
+    const response = await fetch('https://example.test/other', {
+      dispatcher,
+    } as RequestInit & { dispatcher: unknown })
+
+    expect(await response.text()).toBe('ok')
+    expect(observedInit?.dispatcher).toBe(dispatcher)
+  })
+
   test('maps Anthropic request controls to Converse fields', () => {
     const request =
       bedrockConverseFetchAdapterTestHooks.translateToConverseRequest({
@@ -424,19 +444,128 @@ describe('bedrock converse fetch adapter translation', () => {
     expect(text).toContain('"id":"toolu_fallback_2"')
   })
 
-  test('translates ConverseStream service errors to Anthropic error events', async () => {
-    async function* stream() {
-      yield {
-        validationException: {
-          name: 'ValidationException',
-          message: 'bad converse request',
-        },
-      }
+  test('removes init abort listener after non-stream Bedrock request', async () => {
+    const controller = new AbortController()
+    let addCount = 0
+    let removeCount = 0
+    const originalAddEventListener = controller.signal.addEventListener.bind(
+      controller.signal,
+    )
+    const originalRemoveEventListener =
+      controller.signal.removeEventListener.bind(controller.signal)
+    controller.signal.addEventListener = ((...args) => {
+      addCount++
+      return originalAddEventListener(...args)
+    }) as typeof controller.signal.addEventListener
+    controller.signal.removeEventListener = ((...args) => {
+      removeCount++
+      return originalRemoveEventListener(...args)
+    }) as typeof controller.signal.removeEventListener
+
+    const fetch = createBedrockConverseFetch(async () => ({
+      send: async () => ({
+        output: { message: { role: 'assistant', content: [] } },
+        stopReason: 'end_turn',
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      }),
+    }))
+
+    await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: 'amazon.nova-pro-v1:0',
+        messages: [{ role: 'user', content: 'hello' }],
+      }),
+    })
+
+    expect(addCount).toBe(1)
+    expect(removeCount).toBe(1)
+  })
+
+  test('downstream body cancellation aborts Bedrock stream request', async () => {
+    let observedSignal: AbortSignal | undefined
+    const fetch = createBedrockConverseFetch(async () => ({
+      send: async (_command, options) => {
+        observedSignal = options?.abortSignal
+        return {
+          stream: {
+            [Symbol.asyncIterator]: () => ({
+              next: () => new Promise<IteratorResult<unknown>>(() => {}),
+              return: () => Promise.resolve({ done: true, value: undefined }),
+            }),
+          },
+        }
+      },
+    }))
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      body: JSON.stringify({
+        model: 'amazon.nova-pro-v1:0',
+        stream: true,
+        messages: [{ role: 'user', content: 'hello' }],
+      }),
+    })
+
+    expect(observedSignal?.aborted).toBe(false)
+    await response.body!.cancel('client-stop')
+    expect(observedSignal?.aborted).toBe(true)
+  })
+
+  test('downstream body cancellation returns upstream iterator', async () => {
+    let returnReason: unknown
+    let resolveNext: ((value: IteratorResult<unknown>) => void) | undefined
+    const iterator = {
+      next: () =>
+        new Promise<IteratorResult<unknown>>(resolve => {
+          resolveNext = resolve
+        }),
+      return: (reason?: unknown) => {
+        returnReason = reason
+        resolveNext?.({ done: true, value: undefined })
+        return Promise.resolve({ done: true, value: undefined })
+      },
+    }
+    const stream = {
+      [Symbol.asyncIterator]: () => iterator,
     }
 
     const response =
       bedrockConverseFetchAdapterTestHooks.createAnthropicStreamFromBedrock(
-        stream(),
+        stream as never,
+        'amazon.nova-pro-v1:0',
+      )
+
+    await response.body!.cancel('client-stop')
+    expect(returnReason).toBe('client-stop')
+  })
+
+  test('translates ConverseStream service errors to Anthropic error events', async () => {
+    let returned = false
+    const iterator = {
+      next: () =>
+        Promise.resolve({
+          done: false,
+          value: {
+            validationException: {
+              name: 'ValidationException',
+              message: 'bad converse request',
+            },
+          },
+        }),
+      return: () => {
+        returned = true
+        return Promise.resolve({ done: true, value: undefined })
+      },
+    }
+    const stream = {
+      [Symbol.asyncIterator]: () => iterator,
+    }
+
+    const response =
+      bedrockConverseFetchAdapterTestHooks.createAnthropicStreamFromBedrock(
+        stream as never,
         'amazon.nova-pro-v1:0',
       )
 
@@ -444,5 +573,6 @@ describe('bedrock converse fetch adapter translation', () => {
     expect(text).toContain('event: error')
     expect(text).toContain('validationException: bad converse request')
     expect(text).not.toContain('event: message_stop')
+    expect(returned).toBe(true)
   })
 })

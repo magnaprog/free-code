@@ -11,8 +11,11 @@ import { WEB_FETCH_TOOL_NAME } from '../../tools/WebFetchTool/prompt.js'
 import { WEB_SEARCH_TOOL_NAME } from '../../tools/WebSearchTool/prompt.js'
 import type { Message } from '../../types/message.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { getAgentContext } from '../../utils/agentContext.js'
 import { getMainLoopModel } from '../../utils/model/model.js'
+import { getAPIProvider } from '../../utils/model/providers.js'
 import { SHELL_TOOL_NAMES } from '../../utils/shell/shellToolUtils.js'
+import { isMainThreadQuerySource } from '../../utils/querySource.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -58,6 +61,17 @@ let cachedMCState: import('./cachedMicrocompact.js').CachedMCState | null = null
 let pendingCacheEdits:
   | import('./cachedMicrocompact.js').CacheEditsBlock
   | null = null
+
+export function canUseCachedMicrocompactForQuery(
+  querySource?: QuerySource,
+): boolean {
+  return (
+    querySource !== undefined &&
+    querySource.startsWith('repl_main_thread') &&
+    !getAgentContext() &&
+    getAPIProvider() === 'firstParty'
+  )
+}
 
 async function getCachedMCModule(): Promise<
   typeof import('./cachedMicrocompact.js')
@@ -112,8 +126,16 @@ export function pinCacheEdits(
   userMessageIndex: number,
   block: import('./cachedMicrocompact.js').CacheEditsBlock,
 ): void {
-  if (cachedMCState) {
-    cachedMCState.pinnedEdits.push({ userMessageIndex, block })
+  if (cachedMCState && cachedMCModule) {
+    cachedMCModule.stagePinnedCacheEdits(cachedMCState, userMessageIndex, block)
+  }
+}
+
+export function markCacheEditsAppliedState(
+  block: import('./cachedMicrocompact.js').CacheEditsBlock,
+): void {
+  if (cachedMCState && cachedMCModule) {
+    cachedMCModule.markCacheEditsApplied(cachedMCState, block)
   }
 }
 
@@ -169,6 +191,15 @@ export function estimateMessageTokens(messages: Message[]): number {
       continue
     }
 
+    // String-content shorthand is valid Anthropic Messages API input
+    // (createUserMessage emits it for plain text). Session-memory compact
+    // builds a string summary; skipping string content here would let
+    // estimateMessageTokens return 0 and a downstream threshold check
+    // would pass incorrectly.
+    if (typeof message.message.content === 'string') {
+      totalTokens += roughTokenCountEstimation(message.message.content)
+      continue
+    }
     if (!Array.isArray(message.message.content)) {
       continue
     }
@@ -240,23 +271,16 @@ function collectCompactableToolIds(messages: Message[]): string[] {
   return ids
 }
 
-// Prefix-match because promptCategory.ts sets the querySource to
-// 'repl_main_thread:outputStyle:<style>' when a non-default output style
-// is active. The bare 'repl_main_thread' is only used for the default style.
-// query.ts:350/1451 use the same startsWith pattern; the pre-existing
-// cached-MC `=== 'repl_main_thread'` check was a latent bug — users with a
-// non-default output style were silently excluded from cached MC.
-function isMainThreadSource(querySource: QuerySource | undefined): boolean {
-  return !querySource || querySource.startsWith('repl_main_thread')
-}
-
 export async function microcompactMessages(
   messages: Message[],
   toolUseContext?: ToolUseContext,
   querySource?: QuerySource,
 ): Promise<MicrocompactResult> {
-  // Clear suppression flag at start of new microcompact attempt
-  clearCompactWarningSuppression()
+  const isMainThread =
+    querySource !== undefined && isMainThreadQuerySource(querySource)
+  if (isMainThread) {
+    clearCompactWarningSuppression()
+  }
 
   // Time-based trigger runs first and short-circuits. If the gap since the
   // last assistant message exceeds the threshold, the server cache has expired
@@ -273,15 +297,17 @@ export async function microcompactMessages(
   // (session_memory, prompt_suggestion, etc.) from registering their
   // tool_results in the global cachedMCState, which would cause the main
   // thread to try deleting tools that don't exist in its own conversation.
-  if (feature('CACHED_MICROCOMPACT')) {
+  if (
+    canUseCachedMicrocompactForQuery(querySource) &&
+    feature('CACHED_MICROCOMPACT')
+  ) {
     const mod = await getCachedMCModule()
     const model = toolUseContext?.options.mainLoopModel ?? getMainLoopModel()
     if (
       mod.isCachedMicrocompactEnabled() &&
-      mod.isModelSupportedForCacheEditing(model) &&
-      isMainThreadSource(querySource)
+      mod.isModelSupportedForCacheEditing(model)
     ) {
-      return await cachedMicrocompactPath(messages, querySource)
+      return await cachedMicrocompactPath(messages)
     }
   }
 
@@ -304,7 +330,6 @@ export async function microcompactMessages(
  */
 async function cachedMicrocompactPath(
   messages: Message[],
-  querySource: QuerySource | undefined,
 ): Promise<MicrocompactResult> {
   const mod = await getCachedMCModule()
   const state = ensureCachedMCState()
@@ -354,17 +379,6 @@ async function cachedMicrocompactPath(
       threshold: config.triggerThreshold,
       keepRecent: config.keepRecent,
     })
-
-    // Suppress warning after successful compaction
-    suppressCompactWarning()
-
-    // Notify cache break detection that cache reads will legitimately drop
-    if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
-      // Pass the actual querySource — isMainThreadSource now prefix-matches
-      // so output-style variants enter here, and getTrackingKey keys on the
-      // full source string, not the 'repl_main_thread' prefix.
-      notifyCacheDeletion(querySource ?? 'repl_main_thread')
-    }
 
     // Return messages unchanged - cache_reference and cache_edits are added at API layer
     // Boundary message is deferred until after API response so we can use
@@ -424,11 +438,11 @@ export function evaluateTimeBasedTrigger(
   querySource: QuerySource | undefined,
 ): { gapMinutes: number; config: TimeBasedMCConfig } | null {
   const config = getTimeBasedMCConfig()
-  // Require an explicit main-thread querySource. isMainThreadSource treats
+  // Require an explicit main-thread querySource. isMainThreadQuerySource treats
   // undefined as main-thread (for cached-MC backward-compat), but several
   // callers (/context, /compact, analyzeContext) invoke microcompactMessages
   // without a source for analysis-only purposes — they should not trigger.
-  if (!config.enabled || !querySource || !isMainThreadSource(querySource)) {
+  if (!config.enabled || !querySource || !isMainThreadQuerySource(querySource)) {
     return null
   }
   const lastAssistant = messages.findLast(m => m.type === 'assistant')

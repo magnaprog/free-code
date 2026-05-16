@@ -1,4 +1,5 @@
 import axios, { type AxiosResponse } from 'axios'
+import { randomUUID } from 'crypto'
 import { LRUCache } from 'lru-cache'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -462,7 +463,7 @@ export async function getURLMarkdownContent(
   let persistedPath: string | undefined
   let persistedSize: number | undefined
   if (isBinaryContentType(contentType)) {
-    const persistId = `webfetch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const persistId = `webfetch-${Date.now()}-${randomUUID()}`
     const result = await persistBinaryContent(rawBuffer, contentType, persistId)
     if (!('error' in result)) {
       persistedPath = result.filepath

@@ -175,8 +175,10 @@ import { clearSessionMetadata, resetSessionFilePointer, adoptResumedSessionFile,
 import { deserializeMessages } from '../utils/conversationRecovery.js';
 import { extractReadFilesFromMessages, extractBashToolsFromMessages } from '../utils/queryHelpers.js';
 import { resetMicrocompactState } from '../services/compact/microCompact.js';
-import { runPostCompactCleanup } from '../services/compact/postCompactCleanup.js';
+import { suppressCompactWarning } from '../services/compact/compactWarningState.js';
+import { isMainThreadQuerySource, runPostCompactCleanup } from '../services/compact/postCompactCleanup.js';
 import { provisionContentReplacementState, reconstructContentReplacementState, type ContentReplacementRecord } from '../utils/toolResultStorage.js';
+import { setLastSummarizedMessageId } from '../services/SessionMemory/sessionMemoryUtils.js';
 import { partialCompactConversation } from '../services/compact/compact.js';
 import type { LogOption } from '../types/logs.js';
 import type { AgentColorName } from '../tools/AgentTool/agentColorManager.js';
@@ -4988,6 +4990,10 @@ export function REPL({
               proactiveModule?.setContextBlocked(false);
             }
             setConversationId(randomUUID());
+            if (isMainThreadQuerySource(context.options.querySource)) {
+              setLastSummarizedMessageId(undefined);
+              suppressCompactWarning();
+            }
             runPostCompactCleanup(context.options.querySource);
             if (direction === 'from') {
               const r = textForResubmit(message);

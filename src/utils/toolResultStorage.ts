@@ -3,9 +3,9 @@
  */
 
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
+import { createHash, randomUUID } from 'crypto'
 import { mkdir, writeFile } from 'fs/promises'
-import { join } from 'path'
-import { getOriginalCwd, getSessionId } from '../bootstrap/state.js'
+import { basename, dirname, join } from 'path'
 import {
   BYTES_PER_TOKEN,
   DEFAULT_MAX_RESULT_SIZE_CHARS,
@@ -14,13 +14,18 @@ import {
 } from '../constants/toolLimits.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { logEvent } from '../services/analytics/index.js'
+import {
+  appendArtifactRecord,
+  buildToolResultArtifactRef,
+} from '../services/context/ArtifactIndex.js'
+import { isArtifactIndexingEnabled } from '../services/context/contextRecallEnabled.js'
 import { sanitizeToolNameForAnalytics } from '../services/analytics/metadata.js'
 import type { Message } from '../types/message.js'
 import { logForDebugging } from './debug.js'
 import { getErrnoCode, toError } from './errors.js'
 import { formatFileSize } from './format.js'
 import { logError } from './log.js'
-import { getProjectDir } from './sessionStorage.js'
+import { getTranscriptPath } from './sessionStorage.js'
 import { jsonStringify } from './slowOperations.js'
 
 // Subdirectory name for tool results within a session
@@ -95,7 +100,9 @@ export type PersistToolResultError = {
  * Get the session directory (projectDir/sessionId)
  */
 function getSessionDir(): string {
-  return join(getProjectDir(getOriginalCwd()), getSessionId())
+  const transcriptPath = getTranscriptPath()
+  const sessionStem = basename(transcriptPath).replace(/\.jsonl$/, '')
+  return join(dirname(transcriptPath), sessionStem)
 }
 
 /**
@@ -108,12 +115,91 @@ export function getToolResultsDir(): string {
 // Preview size in bytes for the reference message
 export const PREVIEW_SIZE_BYTES = 2000
 
+const indexedToolResultArtifacts = new Set<string>()
+
+function stringifyPersistableToolResultContent(
+  content: NonNullable<ToolResultBlockParam['content']>,
+): string {
+  return Array.isArray(content) ? jsonStringify(content, null, 2) : content
+}
+
+export async function recordToolResultArtifact(input: {
+  toolUseId: string
+  toolName: string
+  path: string
+  content: string
+  preview: string
+}): Promise<void> {
+  // gate on opt-in flag. Plan: feature-off should have zero side effect.
+  if (!isArtifactIndexingEnabled()) return
+  if (indexedToolResultArtifacts.has(input.toolUseId)) return
+  indexedToolResultArtifacts.add(input.toolUseId)
+  try {
+    await appendArtifactRecord(
+      buildToolResultArtifactRef({
+        toolUseId: input.toolUseId,
+        toolName: input.toolName,
+        path: input.path,
+        content: input.content,
+        preview: input.preview,
+      }),
+    )
+  } catch (error) {
+    indexedToolResultArtifacts.delete(input.toolUseId)
+    logError(toError(error))
+  }
+}
+
+/**
+ * Sanitize a tool_use_id for use as a filename component. Provider
+ * streams (especially gateway-mediated ones) can emit attacker-controlled
+ * IDs; a value like `../escape` would otherwise let join() write outside
+ * the tool-results dir. Strip every character outside a conservative
+ * allowlist; empty results fall back to a random UUID so the call still
+ * succeeds and the artifact is referenceable.
+ */
+export function sanitizeToolResultId(id: string): string {
+  const cleaned = id.replace(/[^a-zA-Z0-9._-]/g, '_')
+  // Reject leading dots so `.` and `..` cannot collide with parent dirs
+  // even though join() would resolve `..` away; defense in depth.
+  const safe = cleaned.replace(/^\.+/, '_')
+  return safe.length > 0 ? safe : `toolu_anon_${randomUUID()}`
+}
+
+/**
+ * Produce a collision-resistant filename component from a raw ID. The
+ * sanitizer alone collapses distinct inputs to the same string (`a/b`
+ * and `a:b` both → `a_b`); combined with persistToolResult's `wx`-flag
+ * EEXIST-as-success path that would silently alias the second write to
+ * the first file's content. We append a short deterministic sha256
+ * suffix so distinct raw IDs are collision-resistant while preserving
+ * replay-idempotency (same raw ID → same filename → same EEXIST-success
+ * behavior on retry).
+ *
+ * Suffix is 11 base64url chars ≈ 66 bits. Birthday-paradox collision
+ * probability is ~n²/(2·2^66): at 10K session size ≈ 7×10⁻¹³, at 1M ≈
+ * 7×10⁻⁹. Not injective (truncated hash), but the bound is well below
+ * any realistic per-session risk.
+ *
+ * Empty `rawId` uses a deterministic anonymous prefix so two calls with
+ * '' produce the same filename (replay-idempotent for the degenerate
+ * input). Without this, sanitizeToolResultId('') would return a random
+ * UUID prefix and break the invariant.
+ */
+export function safeFilenameFromToolUseId(rawId: string): string {
+  const prefix = rawId.length === 0
+    ? 'toolu_anon_empty'
+    : sanitizeToolResultId(rawId).slice(0, 32)
+  const hash = createHash('sha256').update(rawId).digest('base64url').slice(0, 11)
+  return `${prefix}-${hash}`
+}
+
 /**
  * Get the filepath where a tool result would be persisted.
  */
 export function getToolResultPath(id: string, isJson: boolean): string {
   const ext = isJson ? 'json' : 'txt'
-  return join(getToolResultsDir(), `${id}.${ext}`)
+  return join(getToolResultsDir(), `${safeFilenameFromToolUseId(id)}.${ext}`)
 }
 
 /**
@@ -152,7 +238,7 @@ export async function persistToolResult(
 
   await ensureToolResultsDir()
   const filepath = getToolResultPath(toolUseId, isJson)
-  const contentStr = isJson ? jsonStringify(content, null, 2) : content
+  const contentStr = stringifyPersistableToolResultContent(content)
 
   // tool_use_id is unique per invocation and content is deterministic for a
   // given id, so skip if the file already exists. This prevents re-writing
@@ -317,6 +403,14 @@ async function maybePersistLargeToolResult(
     // If persistence failed, return the original block unchanged
     return toolResultBlock
   }
+
+  await recordToolResultArtifact({
+    toolUseId: toolResultBlock.tool_use_id,
+    toolName,
+    path: result.filepath,
+    content: stringifyPersistableToolResultContent(content),
+    preview: result.preview,
+  })
 
   const message = buildLargeToolResultMessage(result)
 
@@ -727,9 +821,24 @@ function replaceToolResultContents(
 
 async function buildReplacement(
   candidate: ToolResultCandidate,
+  toolName: string | undefined,
 ): Promise<{ content: string; originalSize: number } | null> {
   const result = await persistToolResult(candidate.content, candidate.toolUseId)
   if (isPersistError(result)) return null
+
+  // index the persisted artifact from the aggregate-budget path too,
+  // not just the single-large-result path. Without this, ContextRecall is
+  // blind to half the persisted tool results in a session.
+  if (toolName !== undefined) {
+    await recordToolResultArtifact({
+      toolUseId: candidate.toolUseId,
+      toolName,
+      path: result.filepath,
+      content: stringifyPersistableToolResultContent(candidate.content),
+      preview: result.preview,
+    })
+  }
+
   return {
     content: buildLargeToolResultMessage(result),
     originalSize: result.originalSize,
@@ -770,20 +879,27 @@ export async function enforceToolResultBudget(
   messages: Message[],
   state: ContentReplacementState,
   skipToolNames: ReadonlySet<string> = new Set(),
+  opts: { forcedPerMessageLimit?: number } = {},
 ): Promise<{
   messages: Message[]
   newlyReplaced: ToolResultReplacementRecord[]
 }> {
   const candidatesByMessage = collectCandidatesByMessage(messages)
-  const nameByToolUseId =
+  const nameByToolUseIdForSkip =
     skipToolNames.size > 0 ? buildToolNameMap(messages) : undefined
   const shouldSkip = (id: string): boolean =>
-    nameByToolUseId !== undefined &&
-    skipToolNames.has(nameByToolUseId.get(id) ?? '')
+    nameByToolUseIdForSkip !== undefined &&
+    skipToolNames.has(nameByToolUseIdForSkip.get(id) ?? '')
   // Resolve once per call. A mid-session flag change only affects FRESH
   // messages (prior decisions are frozen via seenIds/replacements), so
   // prompt cache for already-seen content is preserved regardless.
-  const limit = getPerMessageBudgetLimit()
+  //
+  // reactive compact may force a lower limit for emergency
+  // recovery from prompt_too_long errors. The state is mutated as usual,
+  // so the more-aggressive replacements persist into subsequent calls
+  // — that is intentional: once persisted to disk, the preview is what
+  // future requests should see (prompt cache stability vs token saving).
+  const limit = opts.forcedPerMessageLimit ?? getPerMessageBudgetLimit()
 
   // Walk each API-level message group independently. For previously-processed messages
   // (all IDs in seenIds) this just re-applies cached replacements. For the
@@ -850,10 +966,17 @@ export async function enforceToolResultBudget(
     return { messages, newlyReplaced: [] }
   }
 
+  const nameByToolUseIdForIndex =
+    nameByToolUseIdForSkip ??
+    (isArtifactIndexingEnabled() ? buildToolNameMap(messages) : undefined)
+
   // Fresh: concurrent persist for all selected candidates across all
   // messages. In practice toPersist comes from a single message per turn.
   const freshReplacements = await Promise.all(
-    toPersist.map(async c => [c, await buildReplacement(c)] as const),
+    toPersist.map(
+      async c =>
+        [c, await buildReplacement(c, nameByToolUseIdForIndex?.get(c.toolUseId))] as const,
+    ),
   )
   const newlyReplaced: ToolResultReplacementRecord[] = []
   let replacedSize = 0
@@ -926,9 +1049,15 @@ export async function applyToolResultBudget(
   state: ContentReplacementState | undefined,
   writeToTranscript?: (records: ToolResultReplacementRecord[]) => void,
   skipToolNames?: ReadonlySet<string>,
+  opts: { forcedPerMessageLimit?: number } = {},
 ): Promise<Message[]> {
   if (!state) return messages
-  const result = await enforceToolResultBudget(messages, state, skipToolNames)
+  const result = await enforceToolResultBudget(
+    messages,
+    state,
+    skipToolNames,
+    opts,
+  )
   if (result.newlyReplaced.length > 0) {
     writeToTranscript?.(result.newlyReplaced)
   }

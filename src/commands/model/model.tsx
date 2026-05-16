@@ -10,7 +10,6 @@ import type { LocalJSXCommandCall } from '../../types/command.js';
 import type { EffortLevel } from '../../utils/effort.js';
 import { isBilledAsExtraUsage } from '../../utils/extraUsage.js';
 import { clearFastModeCooldown, isFastModeAvailable, isFastModeEnabled, isFastModeSupportedByModel } from '../../utils/fastMode.js';
-import { MODEL_ALIASES } from '../../utils/model/aliases.js';
 import { checkOpus1mAccess, checkSonnet1mAccess } from '../../utils/model/check1mAccess.js';
 import { getDefaultMainLoopModelSetting, getModelBackendContextDescription, isOpus1mMergeEnabled, renderDefaultModelSetting } from '../../utils/model/model.js';
 import { isModelAllowed } from '../../utils/model/modelAllowlist.js';
@@ -172,12 +171,6 @@ function SetModelAndClose({
         return;
       }
 
-      // Skip validation for known aliases - they're predefined and should work
-      if (isKnownAlias(model)) {
-        setModel(model);
-        return;
-      }
-
       // Validate and set custom model
       try {
         // Don't use parseUserSpecifiedModel for non-aliases since it lowercases the input
@@ -237,9 +230,6 @@ function SetModelAndClose({
     void handleModelChange();
   }, [model, onDone, setAppState]);
   return null;
-}
-function isKnownAlias(model: string): boolean {
-  return (MODEL_ALIASES as readonly string[]).includes(model.toLowerCase().trim());
 }
 function isOpus1mUnavailable(model: string): boolean {
   const m = model.toLowerCase();

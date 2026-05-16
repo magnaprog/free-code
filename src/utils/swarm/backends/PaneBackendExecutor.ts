@@ -8,7 +8,8 @@ import { jsonStringify } from '../../../utils/slowOperations.js'
 import { writeToMailbox } from '../../../utils/teammateMailbox.js'
 import {
   buildInheritedCliFlags,
-  buildInheritedEnvVars,
+  buildInheritedEnvSetupCommand,
+  buildTeammateSpawnShellCommand,
   getTeammateCommand,
 } from '../spawnUtils.js'
 import { assignTeammateColor } from '../teammateLayoutManager.js'
@@ -148,14 +149,23 @@ export class PaneBackendExecutor implements TeammateExecutor {
       const flagsStr = inheritedFlags ? ` ${inheritedFlags}` : ''
       const workingDir = config.cwd
 
-      // Build environment variables to forward to teammate
-      const envStr = buildInheritedEnvVars()
-
-      const spawnCommand = `cd ${quote([workingDir])} && env ${envStr} ${quote([binaryPath])} ${teammateArgs}${flagsStr}`
+      const envSetup = await buildInheritedEnvSetupCommand()
+      const spawnCommand = buildTeammateSpawnShellCommand({
+        envSetupCommand: envSetup.command,
+        workingDir,
+        binaryPath,
+        teammateArgs,
+        flagsStr,
+      })
 
       // Send the command to the new pane
       // Use swarm socket when running outside tmux (external swarm session)
-      await this.backend.sendCommandToPane(paneId, spawnCommand, !insideTmux)
+      try {
+        await this.backend.sendCommandToPane(paneId, spawnCommand, !insideTmux)
+      } catch (error) {
+        await envSetup.cleanup()
+        throw error
+      }
 
       // Track the spawned teammate
       this.spawnedTeammates.set(agentId, { paneId, insideTmux })

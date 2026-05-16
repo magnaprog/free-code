@@ -2,6 +2,10 @@
  * Shared utilities for spawning teammates across different backends.
  */
 
+import { randomUUID } from 'crypto'
+import { unlink, writeFile } from 'fs/promises'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import {
   getChromeFlagOverride,
   getFlagSettingsPath,
@@ -99,6 +103,25 @@ const TEAMMATE_ENV_VARS = [
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_USE_VERTEX',
   'CLAUDE_CODE_USE_FOUNDRY',
+  'CLAUDE_CODE_USE_OPENAI',
+  'CLAUDE_CODE_USE_OPENCODE_GO',
+  // OpenAI / OpenCode Zen auth + routing
+  'OPENAI_API_KEY',
+  'OPENCODE_API_KEY',
+  'OPENCODE_GO_API_KEY',
+  'FREE_CODE_OPENCODE_GO_API_KEY',
+  'OPENCODE_BASE_URL',
+  'FREE_CODE_OPENCODE_GO_BASE_URL',
+  'OPENCODE_MODEL',
+  'OPENCODE_GO_MODEL',
+  'FREE_CODE_OPENCODE_GO_MODEL',
+  // OpenAI direct routing — without these, teammates with OpenAI flag
+  // but custom endpoint/org/project lose those settings and route to
+  // default OpenAI.
+  'OPENAI_MODEL',
+  'OPENAI_BASE_URL',
+  'OPENAI_ORG_ID',
+  'OPENAI_PROJECT_ID',
   // Custom API endpoint
   'ANTHROPIC_BASE_URL',
   // Config directory override
@@ -128,19 +151,67 @@ const TEAMMATE_ENV_VARS = [
 ] as const
 
 /**
- * Builds the `env KEY=VALUE ...` string for teammate spawn commands.
- * Always includes CLAUDECODE=1 and CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1,
- * plus any provider/config env vars that are set in the current process.
+ * Writes inherited teammate env vars to a 0600 shell fragment and returns a
+ * command prefix that sources and deletes it inside a subshell. This avoids
+ * typing API keys into tmux panes while still propagating provider config to
+ * shells that do not inherit the parent process env.
  */
-export function buildInheritedEnvVars(): string {
-  const envVars = ['CLAUDECODE=1', 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1']
+export function buildTeammateSpawnShellCommand(options: {
+  envSetupCommand: string
+  workingDir: string
+  binaryPath: string
+  teammateArgs: string
+  flagsStr?: string
+}): string {
+  const flagsStr = options.flagsStr ?? ''
+  return `( ${options.envSetupCommand} cd ${quote([options.workingDir])} && exec ${quote([options.binaryPath])} ${options.teammateArgs}${flagsStr} )`
+}
+
+export async function buildInheritedEnvSetupCommand(): Promise<{
+  command: string
+  cleanup: () => Promise<void>
+}> {
+  const envVars: Array<[string, string]> = [
+    ['CLAUDECODE', '1'],
+    ['CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS', '1'],
+  ]
 
   for (const key of TEAMMATE_ENV_VARS) {
     const value = process.env[key]
     if (value !== undefined && value !== '') {
-      envVars.push(`${key}=${quote([value])}`)
+      envVars.push([key, value])
     }
   }
 
-  return envVars.join(' ')
+  const envFilePath = join(
+    tmpdir(),
+    `free-code-teammate-env-${process.pid}-${randomUUID()}.sh`,
+  )
+  const content = envVars
+    .map(([key, value]) => `export ${key}=${quote([value])}`)
+    .join('\n')
+  await writeFile(envFilePath, `${content}\n`, {
+    flag: 'wx',
+    mode: 0o600,
+    encoding: 'utf8',
+  })
+
+  const quotedPath = quote([envFilePath])
+  let cleaned = false
+  let cleanupTimer: ReturnType<typeof setTimeout> | undefined
+  const cleanup = async () => {
+    if (cleaned) return
+    cleaned = true
+    if (cleanupTimer) clearTimeout(cleanupTimer)
+    await unlink(envFilePath).catch(() => {})
+  }
+  cleanupTimer = setTimeout(() => {
+    void cleanup()
+  }, 10 * 60 * 1000)
+  cleanupTimer.unref?.()
+
+  return {
+    command: `. ${quotedPath}; __free_code_env_status=$?; command rm -f ${quotedPath}; [ $__free_code_env_status -eq 0 ] || exit $__free_code_env_status; unset __free_code_env_status;`,
+    cleanup,
+  }
 }

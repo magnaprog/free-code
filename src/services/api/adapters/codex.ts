@@ -17,16 +17,20 @@
  * - https://chatgpt.com/backend-api/codex/responses
  */
 
+import { randomUUID } from 'crypto'
 import {
   getCodexOAuthTokens,
   getFreshCodexOAuthTokens,
-} from '../../utils/auth.js'
+} from '../../../utils/auth.js'
 import {
   CHATGPT_CODEX_MODELS,
   DEFAULT_CODEX_MODEL,
   isKnownOpenAIResponsesModel,
-} from '../../utils/model/providerCapabilities.js'
-import { redactSecrets } from '../../utils/redaction.js'
+} from '../../../utils/model/providerCapabilities.js'
+import { redactSecrets } from '../../../utils/redaction.js'
+import { readProviderErrorBody } from './adapterUtils.js'
+
+const MAX_BUFFERED_TOOL_ARGUMENT_CHARS = 64_000
 
 // ── Available Codex models ──────────────────────────────────────────
 export const CODEX_MODELS = CHATGPT_CODEX_MODELS.map(m => ({
@@ -38,6 +42,21 @@ export const CODEX_MODELS = CHATGPT_CODEX_MODELS.map(m => ({
 const OPENAI_REASONING_CACHE_LIMIT = 200
 const reasoningItemsByToolCallId = new Map<string, Record<string, unknown>[]>()
 
+function isOfficialOpenAIResponsesUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url)
+    return (
+      parsed.protocol === 'https:' &&
+      parsed.hostname === 'api.openai.com' &&
+      parsed.username === '' &&
+      parsed.password === '' &&
+      (parsed.port === '' || parsed.port === '443')
+    )
+  } catch {
+    return false
+  }
+}
+
 /**
  * Preserves known OpenAI Responses IDs and maps legacy Claude defaults to
  * equivalent Codex-family fallbacks.
@@ -47,6 +66,7 @@ const reasoningItemsByToolCallId = new Map<string, Record<string, unknown>[]>()
 type TranslationOptions = {
   preserveOpenAIResponsesModelIds?: boolean
   targetBackend?: 'openai-responses' | 'chatgpt-codex'
+  mapModel?: (model: string) => string
 }
 
 export function mapClaudeModelToCodex(
@@ -54,6 +74,9 @@ export function mapClaudeModelToCodex(
   options: TranslationOptions = {},
 ): string {
   if (!claudeModel) return DEFAULT_CODEX_MODEL
+  if (claudeModel === process.env.ANTHROPIC_CUSTOM_MODEL_OPTION) {
+    return claudeModel
+  }
   const preserveOpenAIResponsesModelIds =
     options.preserveOpenAIResponsesModelIds ?? true
   if (
@@ -64,9 +87,19 @@ export function mapClaudeModelToCodex(
   }
   if (isCodexModel(claudeModel)) return claudeModel
   const lower = claudeModel.toLowerCase()
-  if (lower.includes('opus')) return DEFAULT_CODEX_MODEL
-  if (lower.includes('haiku')) return 'gpt-5.4-mini'
-  if (lower.includes('sonnet')) return DEFAULT_CODEX_MODEL
+  const isClaudeFamilyModel =
+    lower === 'opus' ||
+    lower === 'haiku' ||
+    lower === 'sonnet' ||
+    lower.startsWith('claude-') ||
+    lower.startsWith('anthropic.claude')
+  if (isClaudeFamilyModel) {
+    if (lower.includes('haiku')) return 'gpt-5.4-mini'
+    return DEFAULT_CODEX_MODEL
+  }
+  if (options.targetBackend === 'openai-responses') {
+    return claudeModel
+  }
   if (options.targetBackend === 'chatgpt-codex' && lower.startsWith('gpt-')) {
     return claudeModel
   }
@@ -81,6 +114,12 @@ export function mapClaudeModelToCodex(
 export function isCodexModel(model: string): boolean {
   return CODEX_MODELS.some(m => m.id === model)
 }
+
+// Route classification shared with other adapters.
+import {
+  classifyAnthropicMessagesUrl,
+  countTokensUnsupportedResponse,
+} from '../anthropicMessagesPath.js'
 
 function cloneRecord(record: Record<string, unknown>): Record<string, unknown> {
   try {
@@ -401,7 +440,10 @@ function translateToCodexBody(
   const shouldStream =
     targetBackend === 'chatgpt-codex' ? true : anthropicBody.stream === true
 
-  const codexModel = mapClaudeModelToCodex(claudeModel, options)
+  const mappingOptions = { ...options, targetBackend }
+  const codexModel = options.mapModel && claudeModel
+    ? options.mapModel(claudeModel)
+    : mapClaudeModelToCodex(claudeModel, mappingOptions)
   const reasoningEffort = mapFreeCodeEffortToOpenAIReasoningEffort(
     outputConfig?.effort,
   )
@@ -520,6 +562,30 @@ function getOpenAIResponseErrorMessage(event: Record<string, unknown>): string {
   return redactSecrets(code ? `${code}: ${message}` : message)
 }
 
+type StreamingToolCall = {
+  key: string
+  index?: number
+  id: string
+  name: string
+  bufferedArguments: string
+  argumentCharsSeen: number
+  started: boolean
+  stopped: boolean
+}
+
+function bufferToolArguments(entry: StreamingToolCall, chunk: string): void {
+  if (
+    entry.bufferedArguments.length + chunk.length >
+    MAX_BUFFERED_TOOL_ARGUMENT_CHARS
+  ) {
+    throw new Error(
+      `OpenAI Responses stream buffered more than ${MAX_BUFFERED_TOOL_ARGUMENT_CHARS} tool argument characters before the tool name arrived`,
+    )
+  }
+  entry.bufferedArguments += chunk
+  entry.argumentCharsSeen += chunk.length
+}
+
 /**
  * Translates Codex streaming response to Anthropic format.
  * Converts Codex SSE events into Anthropic-compatible streaming events.
@@ -531,7 +597,9 @@ async function translateCodexStreamToAnthropic(
   codexResponse: Response,
   codexModel: string,
 ): Promise<Response> {
-  const messageId = `msg_codex_${Date.now()}`
+  const messageId = `msg_codex_${randomUUID()}`
+  let downstreamCanceled = false
+  let upstreamReader: ReadableStreamDefaultReader<Uint8Array> | undefined
 
   const readable = new ReadableStream({
     async start(controller) {
@@ -569,21 +637,182 @@ async function translateCodexStreamToAnthropic(
         ),
       )
 
-      // Track state for tool calls
+      // Track state for text and tool calls.
       let currentTextBlockStarted = false
-      let currentToolCallId = ''
-      let currentToolCallName = ''
-      let currentToolCallArgs = ''
-      let inToolCall = false
       let hadToolCalls = false
       let streamStopReason: 'end_turn' | 'max_tokens' = 'end_turn'
       const pendingReasoningItems: Record<string, unknown>[] = []
       const createFallbackToolUseId = createFallbackToolUseIdFactory()
+      const toolCalls = new Map<string, StreamingToolCall>()
+      const toolOrder: string[] = []
+      let currentToolCallKey: string | undefined
+
+      const closeTextBlock = () => {
+        if (!currentTextBlockStarted) return
+        controller.enqueue(
+          encoder.encode(
+            formatSSE('content_block_stop', JSON.stringify({
+              type: 'content_block_stop',
+              index: contentBlockIndex,
+            })),
+          ),
+        )
+        contentBlockIndex++
+        currentTextBlockStarted = false
+      }
+
+      const getToolKey = (
+        event: Record<string, unknown>,
+        item?: Record<string, unknown>,
+      ): string => {
+        const key =
+          item?.id ??
+          event.item_id ??
+          event.output_index ??
+          item?.call_id ??
+          (event as { item?: Record<string, unknown> }).item?.id
+        if (key !== undefined && key !== null) return String(key)
+        if (currentToolCallKey) return currentToolCallKey
+        return `fallback-${toolOrder.length}`
+      }
+
+      const getOrCreateToolCall = (
+        event: Record<string, unknown>,
+        item?: Record<string, unknown>,
+      ): StreamingToolCall => {
+        const key = getToolKey(event, item)
+        let entry = toolCalls.get(key)
+        if (!entry) {
+          closeTextBlock()
+          entry = {
+            key,
+            id: typeof item?.call_id === 'string'
+              ? item.call_id
+              : createFallbackToolUseId(),
+            name: typeof item?.name === 'string' ? item.name : '',
+            bufferedArguments: '',
+            argumentCharsSeen: 0,
+            started: false,
+            stopped: false,
+          }
+          toolCalls.set(key, entry)
+          toolOrder.push(key)
+        } else {
+          if (typeof item?.call_id === 'string') entry.id = item.call_id
+          if (typeof item?.name === 'string') entry.name = item.name
+        }
+        currentToolCallKey = key
+        return entry
+      }
+
+      const startToolCallBlock = (entry: StreamingToolCall): boolean => {
+        if (entry.started) return true
+        if (entry.name.length === 0) return false
+        closeTextBlock()
+        const index = entry.index ?? contentBlockIndex++
+        entry.index = index
+        controller.enqueue(
+          encoder.encode(
+            formatSSE('content_block_start', JSON.stringify({
+              type: 'content_block_start',
+              index,
+              content_block: {
+                type: 'tool_use',
+                id: entry.id,
+                name: entry.name,
+                input: {},
+              },
+            })),
+          ),
+        )
+        entry.started = true
+        hadToolCalls = true
+        if (entry.bufferedArguments.length > 0) {
+          controller.enqueue(
+            encoder.encode(
+              formatSSE('content_block_delta', JSON.stringify({
+                type: 'content_block_delta',
+                index,
+                delta: {
+                  type: 'input_json_delta',
+                  partial_json: entry.bufferedArguments,
+                },
+              })),
+            ),
+          )
+          entry.bufferedArguments = ''
+        }
+        return true
+      }
+
+      const emitToolArguments = (
+        entry: StreamingToolCall,
+        chunk: string,
+      ): void => {
+        if (!chunk) return
+        if (!entry.started && !startToolCallBlock(entry)) {
+          bufferToolArguments(entry, chunk)
+          return
+        }
+        controller.enqueue(
+          encoder.encode(
+            formatSSE('content_block_delta', JSON.stringify({
+              type: 'content_block_delta',
+              index: entry.index,
+              delta: {
+                type: 'input_json_delta',
+                partial_json: chunk,
+              },
+            })),
+          ),
+        )
+        entry.argumentCharsSeen += chunk.length
+      }
+
+      const mergeToolArguments = (
+        entry: StreamingToolCall,
+        fullArguments: string,
+      ): void => {
+        if (fullArguments.length <= entry.argumentCharsSeen) return
+        const suffix = fullArguments.startsWith(
+          entry.started ? '' : entry.bufferedArguments,
+        )
+          ? fullArguments.slice(entry.argumentCharsSeen)
+          : entry.argumentCharsSeen === 0
+            ? fullArguments
+            : ''
+        emitToolArguments(entry, suffix)
+      }
+
+      const finishToolCallBlock = (entry: StreamingToolCall): void => {
+        if (
+          !startToolCallBlock(entry) ||
+          entry.stopped ||
+          entry.index === undefined
+        ) {
+          return
+        }
+        controller.enqueue(
+          encoder.encode(
+            formatSSE('content_block_stop', JSON.stringify({
+              type: 'content_block_stop',
+              index: entry.index,
+            })),
+          ),
+        )
+        entry.stopped = true
+      }
 
       try {
-        const reader = codexResponse.body?.getReader()
+        upstreamReader = codexResponse.body?.getReader()
+        const reader = upstreamReader
         if (!reader) {
-          emitTextBlock(controller, encoder, contentBlockIndex, 'Error: No response body')
+          emitTextBlock(
+            controller,
+            encoder,
+            contentBlockIndex,
+            'Error: No response body',
+          )
           finishStream(
             controller,
             encoder,
@@ -597,16 +826,26 @@ async function translateCodexStreamToAnthropic(
 
         const decoder = new TextDecoder()
         let buffer = ''
+        let streamDone = false
 
-        while (true) {
+        // Flush leftover buffer on `done` so the final SSE frame is
+        // processed even when the upstream ends without a trailing
+        // `\n`. Codex/OpenAI Responses can emit response.completed
+        // (final usage + finish reason) in the last frame.
+        while (!streamDone && !downstreamCanceled) {
           const { done, value } = await reader.read()
-          if (done) break
-
-          buffer += decoder.decode(value, { stream: true })
+          if (downstreamCanceled) return
+          if (done) {
+            buffer += decoder.decode()
+            streamDone = true
+          } else {
+            buffer += decoder.decode(value, { stream: true })
+          }
           const lines = buffer.split('\n')
-          buffer = lines.pop() || ''
+          buffer = streamDone ? '' : lines.pop() || ''
 
           for (const line of lines) {
+            if (downstreamCanceled) return
             const trimmed = line.trim()
             if (!trimmed) continue
 
@@ -637,50 +876,12 @@ async function translateCodexStreamToAnthropic(
                 // OpenAI exposes reasoning summaries, not Anthropic signed
                 // thinking blocks. Do not synthesize Anthropic thinking.
               } else if (item?.type === 'message') {
-                // New text message block starting
-                if (inToolCall) {
-                  // Close the previous tool call block
-                  closeToolCallBlock(controller, encoder, contentBlockIndex, currentToolCallId, currentToolCallName, currentToolCallArgs)
-                  contentBlockIndex++
-                  inToolCall = false
-                }
+                closeTextBlock()
               } else if (item?.type === 'function_call') {
-                // Close text block if open
-                if (currentTextBlockStarted) {
-                  controller.enqueue(
-                    encoder.encode(
-                      formatSSE('content_block_stop', JSON.stringify({
-                        type: 'content_block_stop',
-                        index: contentBlockIndex,
-                      })),
-                    ),
-                  )
-                  contentBlockIndex++
-                  currentTextBlockStarted = false
+                const entry = getOrCreateToolCall(event, item)
+                if (typeof item.arguments === 'string') {
+                  mergeToolArguments(entry, item.arguments)
                 }
-
-                // Start tool_use block (Anthropic format)
-                currentToolCallId =
-                  (item.call_id as string) || createFallbackToolUseId()
-                currentToolCallName = (item.name as string) || ''
-                currentToolCallArgs = (item.arguments as string) || ''
-                inToolCall = true
-                hadToolCalls = true
-
-                controller.enqueue(
-                  encoder.encode(
-                    formatSSE('content_block_start', JSON.stringify({
-                      type: 'content_block_start',
-                      index: contentBlockIndex,
-                      content_block: {
-                        type: 'tool_use',
-                        id: currentToolCallId,
-                        name: currentToolCallName,
-                        input: {},
-                      },
-                    })),
-                  ),
-                )
               }
             }
 
@@ -716,7 +917,7 @@ async function translateCodexStreamToAnthropic(
                 outputTokens += 1
               }
             }
-            
+
             // Reasoning deltas
             else if (
               eventType === 'response.reasoning.delta' ||
@@ -729,27 +930,15 @@ async function translateCodexStreamToAnthropic(
             // ── Tool call argument deltas ───────────────────────
             else if (eventType === 'response.function_call_arguments.delta') {
               const argDelta = event.delta as string
-              if (typeof argDelta === 'string' && inToolCall) {
-                currentToolCallArgs += argDelta
-                controller.enqueue(
-                  encoder.encode(
-                    formatSSE('content_block_delta', JSON.stringify({
-                      type: 'content_block_delta',
-                      index: contentBlockIndex,
-                      delta: {
-                        type: 'input_json_delta',
-                        partial_json: argDelta,
-                      },
-                    })),
-                  ),
-                )
+              if (typeof argDelta === 'string') {
+                emitToolArguments(getOrCreateToolCall(event), argDelta)
               }
             }
 
             // Tool call arguments complete
             else if (eventType === 'response.function_call_arguments.done') {
-              if (inToolCall) {
-                currentToolCallArgs = (event.arguments as string) || currentToolCallArgs
+              if (typeof event.arguments === 'string') {
+                mergeToolArguments(getOrCreateToolCall(event), event.arguments)
               }
             }
 
@@ -757,24 +946,15 @@ async function translateCodexStreamToAnthropic(
             else if (eventType === 'response.output_item.done') {
               const item = event.item as Record<string, unknown>
               if (item?.type === 'function_call') {
-                rememberReasoningItemsForToolCall(item.call_id, pendingReasoningItems)
-                closeToolCallBlock(controller, encoder, contentBlockIndex, currentToolCallId, currentToolCallName, currentToolCallArgs)
-                contentBlockIndex++
-                inToolCall = false
-                currentToolCallArgs = ''
-              } else if (item?.type === 'message') {
-                if (currentTextBlockStarted) {
-                  controller.enqueue(
-                    encoder.encode(
-                      formatSSE('content_block_stop', JSON.stringify({
-                        type: 'content_block_stop',
-                        index: contentBlockIndex,
-                      })),
-                    ),
-                  )
-                  contentBlockIndex++
-                  currentTextBlockStarted = false
+                const entry = getOrCreateToolCall(event, item)
+                if (typeof item.arguments === 'string') {
+                  mergeToolArguments(entry, item.arguments)
                 }
+                rememberReasoningItemsForToolCall(item.call_id, pendingReasoningItems)
+                finishToolCallBlock(entry)
+                if (currentToolCallKey === entry.key) currentToolCallKey = undefined
+              } else if (item?.type === 'message') {
+                closeTextBlock()
               } else if (item?.type === 'reasoning') {
                 pendingReasoningItems.push(cloneRecord(item))
               }
@@ -810,6 +990,9 @@ async function translateCodexStreamToAnthropic(
           }
         }
       } catch (err) {
+        if (downstreamCanceled) return
+        await upstreamReader?.cancel().catch(() => {})
+        if (downstreamCanceled) return
         controller.enqueue(
           encoder.encode(
             formatSSE('error', JSON.stringify({
@@ -821,23 +1004,18 @@ async function translateCodexStreamToAnthropic(
             })),
           ),
         )
-        controller.close()
+        if (!downstreamCanceled) {
+          controller.close()
+        }
         return
       }
 
-      // Close any remaining open blocks
-      if (currentTextBlockStarted) {
-        controller.enqueue(
-          encoder.encode(
-            formatSSE('content_block_stop', JSON.stringify({
-              type: 'content_block_stop',
-              index: contentBlockIndex,
-            })),
-          ),
-        )
-      }
-      if (inToolCall) {
-        closeToolCallBlock(controller, encoder, contentBlockIndex, currentToolCallId, currentToolCallName, currentToolCallArgs)
+      if (downstreamCanceled) return
+
+      closeTextBlock()
+      for (const key of toolOrder) {
+        const entry = toolCalls.get(key)
+        if (entry) finishToolCallBlock(entry)
       }
 
       finishStream(
@@ -849,25 +1027,11 @@ async function translateCodexStreamToAnthropic(
         streamStopReason,
       )
     },
+    async cancel(reason) {
+      downstreamCanceled = true
+      await upstreamReader?.cancel(reason).catch(() => {})
+    },
   })
-
-  function closeToolCallBlock(
-    controller: ReadableStreamDefaultController,
-    encoder: TextEncoder,
-    index: number,
-    _toolCallId: string,
-    _toolCallName: string,
-    _toolCallArgs: string,
-  ) {
-    controller.enqueue(
-      encoder.encode(
-        formatSSE('content_block_stop', JSON.stringify({
-          type: 'content_block_stop',
-          index,
-        })),
-      ),
-    )
-  }
 
   function emitTextBlock(
     controller: ReadableStreamDefaultController,
@@ -968,7 +1132,7 @@ async function translateCodexStreamToAnthropicResponse(
   )
   const streamText = await streamResponse.text()
   const requestId =
-    streamResponse.headers.get('x-request-id') ?? `msg_codex_${Date.now()}`
+    streamResponse.headers.get('x-request-id') ?? `msg_codex_${randomUUID()}`
   const content: Array<Record<string, unknown>> = []
   const toolInputBuffers = new Map<number, string>()
   let usage: Record<string, number> = { input_tokens: 0, output_tokens: 0 }
@@ -1143,7 +1307,7 @@ async function translateCodexResponseToAnthropic(
     id:
       typeof response.id === 'string'
         ? response.id
-        : `msg_codex_${Date.now()}`,
+        : `msg_codex_${randomUUID()}`,
     type: 'message',
     role: 'assistant',
     content,
@@ -1207,13 +1371,20 @@ const OPENAI_RESPONSES_BASE_URL = 'https://api.openai.com/v1/responses'
  */
 export function createCodexFetch(
   accessToken: string,
+  upstreamFetch: typeof globalThis.fetch = globalThis.fetch,
 ): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = input instanceof Request ? input.url : String(input)
 
-    // Only intercept Anthropic API message calls
-    if (!url.includes('/v1/messages')) {
-      return globalThis.fetch(input, init)
+    // count_tokens must be answered locally — forwarding would POST
+    // prompt/tool body to api.anthropic.com. Other non-create URLs
+    // pass through unchanged.
+    const route = classifyAnthropicMessagesUrl(url)
+    if (route === 'count_tokens') {
+      return countTokensUnsupportedResponse()
+    }
+    if (route === 'other') {
+      return upstreamFetch(input, init)
     }
 
     // Parse the Anthropic request body
@@ -1243,7 +1414,8 @@ export function createCodexFetch(
       const tokens = freshTokens || getCodexOAuthTokens()
       const currentToken = tokens?.accessToken || accessToken
       const accountId = tokens?.accountId || extractAccountId(currentToken)
-      return globalThis.fetch(CODEX_BASE_URL, {
+      return upstreamFetch(CODEX_BASE_URL, {
+        ...init,
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1254,6 +1426,9 @@ export function createCodexFetch(
           'OpenAI-Beta': 'responses=experimental',
         },
         body: JSON.stringify(codexBody),
+        // Forward CLI abort signal so Ctrl-C tears down the upstream
+        // streaming connection instead of leaking it.
+        signal: init?.signal,
       })
     }
 
@@ -1264,7 +1439,7 @@ export function createCodexFetch(
     }
 
     if (!codexResponse.ok) {
-      const errorText = await codexResponse.text()
+      const errorText = await readProviderErrorBody(codexResponse)
       const errorBody = {
         type: 'error',
         error: {
@@ -1289,15 +1464,33 @@ export function createCodexFetch(
 export function createOpenAIResponsesFetch(
   apiKey: string,
   baseUrl = process.env.OPENAI_BASE_URL || OPENAI_RESPONSES_BASE_URL,
+  options: TranslationOptions & {
+    // When the caller is OpenCode Zen (not OpenAI direct), suppress
+    // OpenAI-specific metadata headers (org/project). Sending them to
+    // OpenCode leaks the user's OpenAI account identity to a third-
+    // party gateway.
+    suppressOpenAIMetadata?: boolean
+    upstreamFetch?: typeof globalThis.fetch
+  } = {},
 ): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
+  const {
+    upstreamFetch: upstreamFetchOverride,
+    suppressOpenAIMetadata,
+    ...translationOptions
+  } = options
+  const upstreamFetch = upstreamFetchOverride ?? globalThis.fetch
   const responsesUrl = baseUrl.endsWith('/responses')
     ? baseUrl
     : `${baseUrl.replace(/\/$/, '')}/responses`
 
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = input instanceof Request ? input.url : String(input)
-    if (!url.includes('/v1/messages')) {
-      return globalThis.fetch(input, init)
+    const route = classifyAnthropicMessagesUrl(url)
+    if (route === 'count_tokens') {
+      return countTokensUnsupportedResponse()
+    }
+    if (route === 'other') {
+      return upstreamFetch(input, init)
     }
 
     let anthropicBody: Record<string, unknown>
@@ -1314,27 +1507,36 @@ export function createOpenAIResponsesFetch(
     }
 
     const { codexBody, codexModel } = translateToCodexBody(anthropicBody, {
+      ...translationOptions,
       preserveOpenAIResponsesModelIds: true,
       targetBackend: 'openai-responses',
     })
-    const openAIResponse = await globalThis.fetch(responsesUrl, {
+    const shouldSendOpenAIMetadata =
+      !suppressOpenAIMetadata && isOfficialOpenAIResponsesUrl(responsesUrl)
+    const openAIResponse = await upstreamFetch(responsesUrl, {
+      ...init,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Accept: codexBody.stream ? 'text/event-stream' : 'application/json',
         Authorization: `Bearer ${apiKey}`,
-        ...(process.env.OPENAI_ORG_ID && {
-          'OpenAI-Organization': process.env.OPENAI_ORG_ID,
-        }),
-        ...(process.env.OPENAI_PROJECT_ID && {
-          'OpenAI-Project': process.env.OPENAI_PROJECT_ID,
-        }),
+        ...(shouldSendOpenAIMetadata &&
+          process.env.OPENAI_ORG_ID && {
+            'OpenAI-Organization': process.env.OPENAI_ORG_ID,
+          }),
+        ...(shouldSendOpenAIMetadata &&
+          process.env.OPENAI_PROJECT_ID && {
+            'OpenAI-Project': process.env.OPENAI_PROJECT_ID,
+          }),
       },
       body: JSON.stringify(codexBody),
+      // Forward CLI abort signal so Ctrl-C tears down the upstream
+      // streaming connection instead of leaking it.
+      signal: init?.signal,
     })
 
     if (!openAIResponse.ok) {
-      const errorText = await openAIResponse.text()
+      const errorText = await readProviderErrorBody(openAIResponse)
       return new Response(
         JSON.stringify({
           type: 'error',

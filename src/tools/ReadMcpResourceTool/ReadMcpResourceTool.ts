@@ -2,13 +2,16 @@ import {
   type ReadResourceResult,
   ReadResourceResultSchema,
 } from '@modelcontextprotocol/sdk/types.js'
+import { randomUUID } from 'crypto'
 import { z } from 'zod/v4'
 import { ensureConnectedClient } from '../../services/mcp/client.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import {
   getBinaryBlobSavedMessage,
+  type McpBinaryBudget,
   persistBinaryContent,
+  reserveMcpBinaryBytes,
 } from '../../utils/mcpOutputStorage.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { isOutputLineTruncated } from '../../utils/terminal.js'
@@ -100,43 +103,50 @@ export const ReadMcpResourceTool = buildTool({
       ReadResourceResultSchema,
     )) as ReadResourceResult
 
-    // Intercept any blob fields: decode, write raw bytes to disk with a
-    // mime-derived extension, and replace with a path. Otherwise the base64
-    // would be stringified straight into the context.
-    const contents = await Promise.all(
-      result.contents.map(async (c, i) => {
-        if ('text' in c) {
-          return { uri: c.uri, mimeType: c.mimeType, text: c.text }
-        }
-        if (!('blob' in c) || typeof c.blob !== 'string') {
-          return { uri: c.uri, mimeType: c.mimeType }
-        }
-        const persistId = `mcp-resource-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 8)}`
-        const persisted = await persistBinaryContent(
-          Buffer.from(c.blob, 'base64'),
-          c.mimeType,
-          persistId,
-        )
-        if ('error' in persisted) {
-          return {
-            uri: c.uri,
-            mimeType: c.mimeType,
-            text: `Binary content could not be saved to disk: ${persisted.error}`,
-          }
-        }
-        return {
+    // Intercept blob fields before they enter context as base64.
+    const binaryBudget: McpBinaryBudget = { usedBytes: 0 }
+    const contents: Output['contents'] = []
+    for (const [i, c] of result.contents.entries()) {
+      if ('text' in c) {
+        contents.push({ uri: c.uri, mimeType: c.mimeType, text: c.text })
+        continue
+      }
+      if (!('blob' in c) || typeof c.blob !== 'string') {
+        contents.push({ uri: c.uri, mimeType: c.mimeType })
+        continue
+      }
+      const prefix = `[Resource from ${serverName} at ${c.uri}] `
+      const reserved = reserveMcpBinaryBytes(c.blob, binaryBudget, prefix)
+      if (!reserved.ok) {
+        contents.push({ uri: c.uri, mimeType: c.mimeType, text: reserved.message })
+        continue
+      }
+      const persistId = `mcp-resource-${Date.now()}-${i}-${randomUUID()}`
+      const persisted = await persistBinaryContent(
+        Buffer.from(c.blob, 'base64'),
+        c.mimeType,
+        persistId,
+      )
+      if ('error' in persisted) {
+        contents.push({
           uri: c.uri,
           mimeType: c.mimeType,
-          blobSavedTo: persisted.filepath,
-          text: getBinaryBlobSavedMessage(
-            persisted.filepath,
-            c.mimeType,
-            persisted.size,
-            `[Resource from ${serverName} at ${c.uri}] `,
-          ),
-        }
-      }),
-    )
+          text: `Binary content could not be saved to disk: ${persisted.error}`,
+        })
+        continue
+      }
+      contents.push({
+        uri: c.uri,
+        mimeType: c.mimeType,
+        blobSavedTo: persisted.filepath,
+        text: getBinaryBlobSavedMessage(
+          persisted.filepath,
+          c.mimeType,
+          persisted.size,
+          prefix,
+        ),
+      })
+    }
 
     return {
       data: { contents },

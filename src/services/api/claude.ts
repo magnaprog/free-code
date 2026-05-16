@@ -167,6 +167,7 @@ import { CHROME_TOOL_SEARCH_INSTRUCTIONS } from 'src/utils/claudeInChrome/prompt
 import { getMaxThinkingTokensForModel } from 'src/utils/context.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from 'src/utils/diagLogs.js'
+import { isMainThreadQuerySource } from 'src/utils/querySource.js'
 import { type EffortValue, modelSupportsEffort } from 'src/utils/effort.js'
 import {
   isFastModeAvailable,
@@ -222,11 +223,14 @@ import {
   logEvent,
 } from '../analytics/index.js'
 import {
+  canUseCachedMicrocompactForQuery,
   consumePendingCacheEdits,
   getPinnedCacheEdits,
+  markCacheEditsAppliedState,
   markToolsSentToAPIState,
   pinCacheEdits,
 } from '../compact/microCompact.js'
+import { suppressCompactWarning } from '../compact/compactWarningState.js'
 import { getInitializationStatus } from '../lsp/manager.js'
 import { isToolFromMcpServer } from '../mcp/utils.js'
 import { withStreamingVCR, withVCR } from '../vcr.js'
@@ -248,6 +252,7 @@ import {
 import {
   CACHE_TTL_1HOUR_MS,
   checkResponseForCacheBreak,
+  notifyCacheDeletion,
   recordPromptState,
 } from './promptCacheBreakDetection.js'
 import {
@@ -1250,6 +1255,9 @@ async function* queryModel(
       `Cached MC gate: enabled=${featureEnabled} modelSupported=${modelSupported} model=${options.model} supportedModels=${jsonStringify(config.supportedModels)}`,
     )
   }
+  const cacheEditingSourceEligible =
+    canUseCachedMicrocompactForQuery(options.querySource)
+  const canUseCachedMCForQuery = cachedMCEnabled && cacheEditingSourceEligible
 
   const useGlobalCacheFeature = shouldUseGlobalCacheScope()
   const willDefer = (t: Tool) =>
@@ -1480,9 +1488,7 @@ async function* queryModel(
   if (feature('CACHED_MICROCOMPACT')) {
     if (
       !cacheEditingHeaderLatched &&
-      cachedMCEnabled &&
-      getAPIProvider() === 'firstParty' &&
-      options.querySource === 'repl_main_thread'
+      canUseCachedMCForQuery
     ) {
       cacheEditingHeaderLatched = true
       setCacheEditingHeaderLatched(true)
@@ -1576,8 +1582,10 @@ async function* queryModel(
   // Consume pending cache edits ONCE before paramsFromContext is defined.
   // paramsFromContext is called multiple times (logging, retries), so consuming
   // inside it would cause the first call to steal edits from subsequent calls.
-  const consumedCacheEdits = cachedMCEnabled ? consumePendingCacheEdits() : null
-  const consumedPinnedEdits = cachedMCEnabled ? getPinnedCacheEdits() : []
+  const consumedCacheEdits = canUseCachedMCForQuery
+    ? consumePendingCacheEdits()
+    : null
+  const consumedPinnedEdits = canUseCachedMCForQuery ? getPinnedCacheEdits() : []
 
   // Capture the betas sent in the last API request, including the ones that
   // were dynamically added, so we can log and send it to telemetry.
@@ -1720,14 +1728,10 @@ async function* queryModel(
     // Cache editing beta: header is latched session-stable; useCachedMC
     // (controls cache_edits body behavior) stays live so edits stop when
     // the feature disables but the header doesn't flip.
-    const useCachedMC =
-      cachedMCEnabled &&
-      getAPIProvider() === 'firstParty' &&
-      options.querySource === 'repl_main_thread'
+    const useCachedMC = canUseCachedMCForQuery
     if (
       cacheEditingHeaderLatched &&
-      getAPIProvider() === 'firstParty' &&
-      options.querySource === 'repl_main_thread' &&
+      cacheEditingSourceEligible &&
       !betasParams.includes(cacheEditingBetaHeader)
     ) {
       betasParams.push(cacheEditingBetaHeader)
@@ -2449,18 +2453,6 @@ async function* queryModel(
         })
       }
 
-      // Check if the cache actually broke based on response tokens
-      if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
-        void checkResponseForCacheBreak(
-          options.querySource,
-          usage.cache_read_input_tokens,
-          usage.cache_creation_input_tokens,
-          messages,
-          options.agentId,
-          streamRequestId,
-        )
-      }
-
       // Process fallback percentage header and quota status if available
       // streamResponse is set when the stream is created in the withRetry callback above
       // TypeScript's control flow analysis can't track that streamResponse is set in the callback
@@ -2871,8 +2863,28 @@ async function* queryModel(
     }
   }
 
+  if (consumedCacheEdits?.edits.length) {
+    markCacheEditsAppliedState(consumedCacheEdits)
+    suppressCompactWarning()
+    if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
+      notifyCacheDeletion(options.querySource, options.agentId)
+    }
+  }
+
+  // Check if the cache actually broke based on response tokens
+  if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
+    void checkResponseForCacheBreak(
+      options.querySource,
+      usage.cache_read_input_tokens,
+      usage.cache_creation_input_tokens,
+      messages,
+      options.agentId,
+      streamRequestId,
+    )
+  }
+
   // Mark all registered tools as sent to API so they become eligible for deletion
-  if (feature('CACHED_MICROCOMPACT') && cachedMCEnabled) {
+  if (feature('CACHED_MICROCOMPACT') && canUseCachedMCForQuery) {
     markToolsSentToAPIState()
   }
 

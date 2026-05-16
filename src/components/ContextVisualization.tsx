@@ -19,55 +19,38 @@ const RESERVED_CATEGORY_NAME = 'Autocompact buffer';
  * and don't appear in the conversation view.
  */
 function CollapseStatus() {
-  const $ = _c(2);
-  if (feature("CONTEXT_COLLAPSE")) {
-    let t0;
-    let t1;
-    if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
-      t1 = Symbol.for("react.early_return_sentinel");
-      bb0: {
-        const {
-          getStats,
-          isContextCollapseEnabled
-        } = require("../services/contextCollapse/index.js") as typeof import('../services/contextCollapse/index.js');
-        if (!isContextCollapseEnabled()) {
-          t1 = null;
-          break bb0;
-        }
-        const s = getStats();
-        const {
-          health: h
-        } = s;
-        const parts = [];
-        if (s.collapsedSpans > 0) {
-          parts.push(`${s.collapsedSpans} ${plural(s.collapsedSpans, "span")} summarized (${s.collapsedMessages} msgs)`);
-        }
-        if (s.stagedSpans > 0) {
-          parts.push(`${s.stagedSpans} staged`);
-        }
-        const summary = parts.length > 0 ? parts.join(", ") : h.totalSpawns > 0 ? `${h.totalSpawns} ${plural(h.totalSpawns, "spawn")}, nothing staged yet` : "waiting for first trigger";
-        let line2 = null;
-        if (h.totalErrors > 0) {
-          line2 = <Text color="warning">Collapse errors: {h.totalErrors}/{h.totalSpawns} spawns failed{h.lastError ? ` (last: ${h.lastError.slice(0, 60)})` : ""}</Text>;
-        } else {
-          if (h.emptySpawnWarningEmitted) {
-            line2 = <Text color="warning">Collapse idle: {h.totalEmptySpawns} consecutive empty runs</Text>;
-          }
-        }
-        t0 = <><Text dimColor={true}>Context strategy: collapse ({summary})</Text>{line2}</>;
-      }
-      $[0] = t0;
-      $[1] = t1;
-    } else {
-      t0 = $[0];
-      t1 = $[1];
-    }
-    if (t1 !== Symbol.for("react.early_return_sentinel")) {
-      return t1;
-    }
-    return t0;
+  if (!feature("CONTEXT_COLLAPSE")) {
+    return null;
   }
-  return null;
+
+  const {
+    getStats,
+    isContextCollapseEnabled
+  } = require("../services/contextCollapse/index.js") as typeof import('../services/contextCollapse/index.js');
+
+  if (!isContextCollapseEnabled()) {
+    return <Text dimColor={true}>Context strategy: normal (CONTEXT_COLLAPSE enabled but inactive/no-op)</Text>;
+  }
+
+  const s = getStats();
+  const {
+    health: h
+  } = s;
+  const parts = [];
+  if (s.collapsedSpans > 0) {
+    parts.push(`${s.collapsedSpans} ${plural(s.collapsedSpans, "span")} summarized (${s.collapsedMessages} msgs)`);
+  }
+  if (s.stagedSpans > 0) {
+    parts.push(`${s.stagedSpans} staged`);
+  }
+  const summary = parts.length > 0 ? parts.join(", ") : h.totalSpawns > 0 ? `${h.totalSpawns} ${plural(h.totalSpawns, "spawn")}, nothing staged yet` : "waiting for first trigger";
+  let line2 = null;
+  if (h.totalErrors > 0) {
+    line2 = <Text color="warning">Collapse errors: {h.totalErrors}/{h.totalSpawns} spawns failed{h.lastError ? ` (last: ${h.lastError.slice(0, 60)})` : ""}</Text>;
+  } else if (h.emptySpawnWarningEmitted) {
+    line2 = <Text color="warning">Collapse idle: {h.totalEmptySpawns} consecutive empty runs</Text>;
+  }
+  return <><Text dimColor={true}>Context strategy: collapse ({summary})</Text>{line2}</>;
 }
 
 // Order for displaying source groups: Project > User > Managed > Plugin > Built-in

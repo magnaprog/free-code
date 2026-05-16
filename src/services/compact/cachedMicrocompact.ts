@@ -15,7 +15,9 @@ export type PinnedCacheEdits = {
 
 export type CachedMCState = {
   pinnedEdits: PinnedCacheEdits[]
+  pendingPinnedEdits: PinnedCacheEdits[]
   registeredTools: Set<string>
+  pendingToolOrder: string[]
   toolOrder: string[]
   deletedRefs: Set<string>
 }
@@ -23,7 +25,9 @@ export type CachedMCState = {
 export function createCachedMCState(): CachedMCState {
   return {
     pinnedEdits: [],
+    pendingPinnedEdits: [],
     registeredTools: new Set(),
+    pendingToolOrder: [],
     toolOrder: [],
     deletedRefs: new Set(),
   }
@@ -51,7 +55,7 @@ export function registerToolResult(
   }
 
   state.registeredTools.add(toolUseId)
-  state.toolOrder.push(toolUseId)
+  state.pendingToolOrder.push(toolUseId)
 }
 
 export function registerToolMessage(
@@ -76,13 +80,10 @@ export function createCacheEditsBlock(
 ): CacheEditsBlock | null {
   const edits = toolUseIds
     .filter(id => !state.deletedRefs.has(id))
-    .map(id => {
-      state.deletedRefs.add(id)
-      return {
-        type: 'delete' as const,
-        cache_reference: id,
-      }
-    })
+    .map(id => ({
+      type: 'delete' as const,
+      cache_reference: id,
+    }))
 
   if (edits.length === 0) {
     return null
@@ -94,11 +95,40 @@ export function createCacheEditsBlock(
   }
 }
 
-export function markToolsSentToAPI(_state: CachedMCState): void {}
+export function stagePinnedCacheEdits(
+  state: CachedMCState,
+  userMessageIndex: number,
+  block: CacheEditsBlock,
+): void {
+  state.pendingPinnedEdits = [{ userMessageIndex, block }]
+}
+
+export function markCacheEditsApplied(
+  state: CachedMCState,
+  block: CacheEditsBlock,
+): void {
+  for (const edit of block.edits) {
+    state.deletedRefs.add(edit.cache_reference)
+  }
+  if (state.pendingPinnedEdits.length > 0) {
+    state.pinnedEdits.push(...state.pendingPinnedEdits)
+    state.pendingPinnedEdits.length = 0
+  }
+}
+
+export function markToolsSentToAPI(state: CachedMCState): void {
+  if (state.pendingToolOrder.length === 0) {
+    return
+  }
+  state.toolOrder.push(...state.pendingToolOrder)
+  state.pendingToolOrder.length = 0
+}
 
 export function resetCachedMCState(state: CachedMCState): void {
   state.pinnedEdits.length = 0
+  state.pendingPinnedEdits.length = 0
   state.registeredTools.clear()
+  state.pendingToolOrder.length = 0
   state.toolOrder.length = 0
   state.deletedRefs.clear()
 }

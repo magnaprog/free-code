@@ -13,10 +13,10 @@ import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { executePreCompactHooks } from '../../utils/hooks.js'
 import { logError } from '../../utils/log.js'
 import { tokenCountWithEstimation } from '../../utils/tokens.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 import { getMaxOutputTokensForModel } from '../api/claude.js'
 import { notifyCompaction } from '../api/promptCacheBreakDetection.js'
 import { setLastSummarizedMessageId } from '../SessionMemory/sessionMemoryUtils.js'
+import { suppressCompactWarning } from './compactWarningState.js'
 import {
   type CompactionResult,
   compactConversation,
@@ -27,7 +27,10 @@ import {
   type RecompactionInfo,
   throwIfPreCompactBlocked,
 } from './compact.js'
-import { runPostCompactCleanup } from './postCompactCleanup.js'
+import {
+  isMainThreadQuerySource,
+  runPostCompactCleanup,
+} from './postCompactCleanup.js'
 import { trySessionMemoryCompaction } from './sessionMemoryCompact.js'
 
 // Reserve this many tokens for output during compaction
@@ -193,7 +196,11 @@ function isProactiveAutoCompactSuppressedForQuery(
   // trySessionMemoryCompaction in the query loop — the /compact call site
   // still tries session memory first. Revisit if reactive-only graduates.
   if (feature('REACTIVE_COMPACT')) {
-    if (getFeatureValue_CACHED_MAY_BE_STALE('tengu_cobalt_raccoon', false)) {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { isReactiveOnlyMode } =
+      require('./reactiveCompact.js') as typeof import('./reactiveCompact.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    if (isReactiveOnlyMode()) {
       return true
     }
   }
@@ -296,7 +303,10 @@ async function runAutoCompact(
       )
     throwIfPreCompactBlocked(preCompactHookResult)
 
-    if (!preCompactHookResult.newCustomInstructions) {
+    if (
+      !preCompactHookResult.newCustomInstructions &&
+      isMainThreadQuerySource(querySource)
+    ) {
       const sessionMemoryResult = await trySessionMemoryCompaction(
         messages,
         toolUseContext.agentId,
@@ -306,12 +316,13 @@ async function runAutoCompact(
       if (sessionMemoryResult) {
         // Reset lastSummarizedMessageId since session memory compaction prunes messages
         // and the old message UUID will no longer exist after the REPL replaces messages
-        setLastSummarizedMessageId(undefined)
+        if (isMainThreadQuerySource(querySource)) {
+          setLastSummarizedMessageId(undefined)
+          suppressCompactWarning()
+        }
         runPostCompactCleanup(querySource)
         // Reset cache read baseline so the post-compact drop isn't flagged as a
         // break. compactConversation does this internally; SM-compact doesn't.
-        // BQ 2026-03-01: missing this made 20% of tengu_prompt_cache_break events
-        // false positives (systemPromptChanged=true, timeSinceLastAssistantMsg=-1).
         if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
           notifyCompaction(querySource ?? 'compact', toolUseContext.agentId)
         }
@@ -321,6 +332,10 @@ async function runAutoCompact(
         return {
           wasCompacted: true,
           compactionResult: sessionMemoryResult,
+          // Mirror legacy compact success: reset failure count so a prior
+          // run's failures don't trip the circuit breaker after an SM
+          // compact succeeds.
+          consecutiveFailures: 0,
         }
       }
     }
@@ -339,7 +354,10 @@ async function runAutoCompact(
 
     // Reset lastSummarizedMessageId since legacy compaction replaces all messages
     // and the old message UUID will no longer exist in the new messages array
-    setLastSummarizedMessageId(undefined)
+    if (isMainThreadQuerySource(querySource)) {
+      setLastSummarizedMessageId(undefined)
+      suppressCompactWarning()
+    }
     runPostCompactCleanup(querySource)
 
     return {
